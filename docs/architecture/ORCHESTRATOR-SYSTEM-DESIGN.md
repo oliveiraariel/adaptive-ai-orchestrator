@@ -1,8 +1,8 @@
 # ORCHESTRATOR-SYSTEM-DESIGN
 
-**Projeto:** Adaptive AI Orchestrator  
-**Versão:** v0.1 — design inicial  
-**Status:** Em desenvolvimento  
+**Projeto:** Adaptive AI Orchestrator
+**Versão:** v0.2 — design consolidado após revisão arquitetural
+**Status:** Design consolidado — pronto para Implementation Plan
 **Base:** `ORCHESTRATOR-SYSTEM-ARCHITECTURE.md` + `ORCHESTRATOR-REQUIREMENTS.md`
 
 **Discipline transversal:** `ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
@@ -4491,6 +4491,300 @@ traceability established
 ```
 
 ---
+
+
+---
+
+# 246. Consolidação da Revisão Arquitetural v0.2
+
+Esta versão consolida formalmente as decisões registradas em `ORCHESTRATOR-DESIGN-REVIEW.md`.
+
+A revisão não altera a arquitetura macro. Ela refina a forma dos módulos, interfaces e seams para reduzir abstrações artificiais e aumentar depth, leverage e locality.
+
+## 246.1 Seam Discipline
+
+Ports e adapters não devem ser criados por antecipação.
+
+A criação de um seam deve ser justificada por pelo menos uma necessidade real de:
+
+```text
+substituição
++
+isolamento
++
+dependência externa
++
+testabilidade relevante
++
+variação real
+```
+
+`AgentRuntime` permanece como seam real porque o Orchestrator deve permanecer independente do runtime e pode operar com OpenClaw inicialmente e Hermes/outros runtimes posteriormente.
+
+Os seguintes elementos devem permanecer internos ao módulo enquanto não houver necessidade concreta de exposição como seam:
+
+```text
+AgentCatalog
+SkillCatalog
+ModelCatalog
+Clock
+IdGenerator
+```
+
+## 246.2 Deep Module Rule
+
+Pipelines internos não devem ser tratados automaticamente como módulos públicos.
+
+A decomposição:
+
+```text
+CapabilityResolver
+AgentCandidates
+SkillCandidates
+ModelCandidates
+PolicyFilter
+MultiObjectiveEvaluator
+```
+
+pode existir como implementação interna de um módulo profundo de seleção.
+
+O chamador deve depender de uma interface pequena, e não reconstruir o pipeline interno.
+
+## 246.3 Resource Selection
+
+A forma preferencial é:
+
+```text
+Work Unit
+→ ResourceSelection
+→ ResourceConfiguration / SelectionDecision
+```
+
+A composição interna pode evoluir sem alterar a interface externa enquanto o seam permanecer estável.
+
+## 246.4 Result Evaluation
+
+A avaliação deve manter sua pipeline interna privada.
+
+Forma conceitual:
+
+```text
+EvaluationRequest
+→ Evaluation
+```
+
+A interface pública não deve expor obrigatoriamente:
+
+```text
+CriteriaResolver
+EvidenceResolver
+Evaluator
+StateUpdate
+```
+
+Esses elementos podem permanecer internos à implementação do módulo.
+
+## 246.5 Replanning
+
+A mesma regra se aplica ao replanning.
+
+A forma conceitual preferencial é:
+
+```text
+replan(projectState, trigger)
+→ PlanRevision
+```
+
+A análise de impacto, identificação do conjunto afetado, atualização de dependências e validação do plano devem permanecer localizadas dentro do módulo, salvo necessidade real de exposição.
+
+## 246.6 Delegation
+
+A delegação mantém um seam real em:
+
+```text
+Application
+→ AgentRuntime
+→ Runtime Adapter
+```
+
+O módulo de delegação deve esconder:
+
+```text
+handoff
+lifecycle
+execution correlation
+result normalization
+technical failure handling
+```
+
+O contrato interno não deve copiar a API de OpenClaw, Hermes ou outro runtime.
+
+## 246.7 Knowledge / Context
+
+Knowledge e Context continuam sendo conceitos distintos.
+
+O contexto necessário para uma Work Unit deve ser montado por uma unidade de aplicação e pode consultar fontes externas por seams somente quando houver dependência real.
+
+Backends específicos de recuperação não devem virar abstrações públicas antecipadamente.
+
+## 246.8 Skill Architecture
+
+O `SkillProfile` existente fornece a base conceitual.
+
+Características adicionais como:
+
+```text
+invocationPolicy
+skill composition
+provenance
+runtime-specific metadata
+```
+
+pertencem à futura Skill Architecture.
+
+Não implementar essas capacidades como parte obrigatória do núcleo do Orchestrator nesta fase sem uma Work Unit que as exija.
+
+## 246.9 Interface as Test Surface
+
+Testes comportamentais devem atravessar preferencialmente a interface externa do módulo.
+
+Quando um módulo interno for aprofundado e seus antigos testes se tornarem redundantes:
+
+```text
+shallow modules
+→ deep module
+→ interface tests
+→ remove redundant tests
+```
+
+## 246.10 Design It Twice
+
+As decisões de interface dos módulos críticos foram comparadas antes da implementação:
+
+```text
+Resource Selection
+Delegation
+Result Evaluation
+Replanning
+```
+
+O critério de comparação é:
+
+```text
+depth
++
+leverage
++
+locality
++
+seam placement
+```
+
+Essas decisões orientam a implementação, mas não impedem refinamentos durante uma Work Unit quando novas evidências surgirem.
+
+## 246.11 Technology Neutrality
+
+O Design não fixa linguagem de programação, framework, banco ou stack de implementação.
+
+A escolha tecnológica deve ocorrer quando uma Work Unit concreta exigir uma decisão, considerando:
+
+```text
+requisitos
++
+características da implementação
++
+agente
++
+Skill
++
+runtime
++
+ferramentas
++
+restrições do ecossistema
+```
+
+O Orchestrator deve permanecer capaz de coordenar Work Units implementadas em diferentes linguagens e stacks quando isso for adequado.
+
+## 246.12 Design Baseline
+
+Com esta consolidação:
+
+```text
+Requirements
+→ Architecture
+→ Design v0.2
+→ Implementation Plan
+```
+
+passa a ser a cadeia normativa de implementação.
+
+O Design v0.2 é a baseline arquitetural para o próximo gate.
+
+---
+
+# 247. Definition of Done — Design v0.2
+
+O Design v0.2 está pronto para o Implementation Plan quando:
+
+```text
+domain model defined
++
+application use cases defined
++
+runtime boundary defined
++
+necessary seams justified
++
+adapters identified
++
+state transitions defined
++
+contracts sufficiently defined
++
+testing strategy defined
++
+package/module responsibilities sufficiently clear
++
+architecture enforcement defined
++
+traceability established
++
+technology remains intentionally unconstrained
+```
+
+---
+
+# 248. Próximo Gate
+
+O próximo gate é:
+
+```text
+Design v0.2
+    ↓
+Implementation Plan
+    ↓
+Work Units
+    ↓
+Dependency ordering
+    ↓
+Acceptance criteria
+    ↓
+Verification
+    ↓
+Implementation
+```
+
+O `ORCHESTRATOR-IMPLEMENTATION-PLAN.md` v0.2 já materializa essa sequência em Work Units.
+
+A próxima unidade operacional é:
+
+```text
+WU-001 — Bootstrap agnóstico de linguagem
+```
+
+A implementação não deve fixar uma linguagem como requisito do Orchestrator.
+
 
 # 242. Specification-Driven Development
 
