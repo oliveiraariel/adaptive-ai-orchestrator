@@ -99,10 +99,16 @@ class OpenClawGatewayClient(OpenClawClient):
             "agent.wait",
             {"runId": run.run_id, "timeoutMs": 0},
         )
-        return self._normalize_wait_status(result.get("status"))
+        status = self._normalize_wait_status(result.get("status"))
+
+        if status == "TIMEOUT":
+            return "RUNNING"
+
+        return status
 
     def retrieve_result(self, external_id: str) -> object:
         run = self._get_run(external_id)
+
         result = self._rpc(
             "agent.wait",
             {
@@ -110,15 +116,29 @@ class OpenClawGatewayClient(OpenClawClient):
                 "timeoutMs": self._config.agent_wait_timeout_ms,
             },
         )
+
         status = self._normalize_wait_status(result.get("status"))
+
         if status == "TIMEOUT":
             raise OpenClawGatewayError(
                 f"OpenClaw agent run '{run.run_id}' is still running."
             )
+
         if status == "FAILED":
             error = result.get("error") or "OpenClaw agent run failed."
             raise OpenClawGatewayError(str(error))
-        return result
+
+        history = self._rpc(
+            "chat.history",
+            {"sessionKey": run.session_key},
+        )
+
+        output = self._extract_assistant_text(history)
+
+        return {
+            **result,
+            "output": output,
+        }
 
     def cancel(self, external_id: str) -> None:
         run = self._get_run(external_id)
@@ -272,6 +292,47 @@ class OpenClawGatewayClient(OpenClawClient):
         if not isinstance(decoded, dict):
             raise OpenClawGatewayError("OpenClaw Gateway returned a non-object frame.")
         return decoded
+
+    @staticmethod
+    def _extract_assistant_text(history: dict[str, Any]) -> str:
+        messages = history.get("messages")
+
+        if not isinstance(messages, list):
+            raise OpenClawGatewayError(
+                "OpenClaw chat.history returned no valid messages."
+            )
+
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+
+            if message.get("role") != "assistant":
+                continue
+
+            content = message.get("content")
+
+            if not isinstance(content, list):
+                continue
+
+            text_parts: list[str] = []
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+
+                if block.get("type") != "text":
+                    continue
+
+                text = block.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+
+            if text_parts:
+                return "".join(text_parts)
+
+        raise OpenClawGatewayError(
+            "OpenClaw chat.history contained no assistant text output."
+        )
 
     @staticmethod
     def _normalize_wait_status(status: object) -> str:

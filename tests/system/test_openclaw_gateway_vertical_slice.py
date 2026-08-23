@@ -27,7 +27,7 @@ def start_gateway() -> tuple[str, object, threading.Thread]:
                 "type": "hello-ok",
                 "protocol": 4,
                 "server": {"version": "test", "connId": "c"},
-                "features": {"methods": ["agent", "agent.wait", "sessions.abort"], "events": ["agent"]},
+                "features": {"methods": ["agent", "agent.wait", "chat.history", "sessions.abort"], "events": ["agent"]},
                 "snapshot": {},
                 "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
                 "policy": {"maxPayload": 26214400, "maxBufferedBytes": 52428800, "tickIntervalMs": 15000},
@@ -37,7 +37,31 @@ def start_gateway() -> tuple[str, object, threading.Thread]:
         request = json.loads(websocket.recv())
         payloads = {
             "agent": {"runId": "run-vertical-001", "acceptedAt": 1},
-            "agent.wait": {"status": "ok", "startedAt": 1, "endedAt": 2, "summary": "integration-ok"},
+            "agent.wait": {
+                "status": "ok",
+                "startedAt": 1,
+                "endedAt": 2,
+                "summary": "integration-ok",
+            },
+            "chat.history": {
+                "sessionKey": "orchestrator:task-gateway-001",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "integration test",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "integration-ok",
+                            }
+                        ],
+                        "stopReason": "stop",
+                    },
+                ],
+            },
             "sessions.abort": {"aborted": True},
         }
         websocket.send(json.dumps({

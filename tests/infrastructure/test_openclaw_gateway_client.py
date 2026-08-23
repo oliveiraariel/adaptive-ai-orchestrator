@@ -64,16 +64,44 @@ def start_gateway(responses: dict[str, dict], *, protocol: int = 4):
     ready.wait(1)
     return f"ws://127.0.0.1:{port}", holder, server, thread
 
-
 def test_gateway_protocol_submit_status_result_and_cancel() -> None:
     responses = {
         "agent": {"runId": "run-001", "acceptedAt": 123},
-        "agent.wait": {"status": "ok", "startedAt": 100, "endedAt": 200, "output": "done"},
+        "agent.wait": {
+            "status": "ok",
+            "startedAt": 100,
+            "endedAt": 200,
+            "stopReason": "stop",
+        },
+        "chat.history": {
+            "sessionKey": "orchestrator:task-001",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "do work",
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "done",
+                        }
+                    ],
+                    "stopReason": "stop",
+                },
+            ],
+        },
         "sessions.abort": {"aborted": True},
     }
+
     url, holder, server, thread = start_gateway(responses)
+
     try:
-        client = OpenClawGatewayClient(GatewayConfig(url=url, token="secret"))
+        client = OpenClawGatewayClient(
+            GatewayConfig(url=url, token="secret")
+        )
+
         external = client.submit({
             "task_id": "task-001",
             "work_unit_id": "wu-001",
@@ -93,19 +121,38 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
                 "provider": "provider-001",
             },
         })
+
         assert external == "gateway:run-001"
         assert client.get_status(external) == "COMPLETED"
         assert client.retrieve_result(external)["output"] == "done"
+
         client.cancel(external)
 
-        request_methods = [request["method"] for request in holder["requests"]]
-        assert request_methods == ["agent", "agent.wait", "agent.wait", "sessions.abort"]
-        assert holder["requests"][0]["params"]["sessionKey"] == "orchestrator:task-001"
-        assert holder["connect"]["params"]["auth"] == {"token": "secret"}
+        request_methods = [
+            request["method"]
+            for request in holder["requests"]
+        ]
+
+        assert request_methods == [
+            "agent",
+            "agent.wait",
+            "agent.wait",
+            "chat.history",
+            "sessions.abort",
+        ]
+
+        assert (
+            holder["requests"][0]["params"]["sessionKey"]
+            == "orchestrator:task-001"
+        )
+
+        assert holder["connect"]["params"]["auth"] == {
+            "token": "secret"
+        }
+
     finally:
         server.shutdown()
         thread.join(timeout=1)
-
 
 def test_gateway_client_rejects_protocol_mismatch() -> None:
     url, _, server, thread = start_gateway({"agent": {"runId": "run-001"}}, protocol=3)
@@ -135,7 +182,6 @@ def test_gateway_client_rejects_protocol_mismatch() -> None:
         server.shutdown()
         thread.join(timeout=1)
 
-
 def test_gateway_client_reports_wait_timeout_as_still_running() -> None:
     responses = {
         "agent": {"runId": "run-001", "acceptedAt": 123},
@@ -159,13 +205,92 @@ def test_gateway_client_reports_wait_timeout_as_still_running() -> None:
             "acceptance_criteria": ["status=ok"],
             "configuration": {"agent": "agent-001"},
         })
-        assert client.get_status(external) == "TIMEOUT"
+        assert client.get_status(external) == "RUNNING"
         try:
             client.retrieve_result(external)
         except OpenClawGatewayError as exc:
             assert "still running" in str(exc)
         else:
             raise AssertionError("Expected running execution to reject result retrieval.")
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
+
+
+def test_gateway_client_retrieves_assistant_text_from_chat_history() -> None:
+    responses = {
+        "agent": {"runId": "run-002", "acceptedAt": 123},
+        "agent.wait": {
+            "status": "ok",
+            "startedAt": 100,
+            "endedAt": 200,
+            "stopReason": "stop",
+        },
+        "chat.history": {
+            "sessionKey": "orchestrator:task-002",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "do work",
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "internal reasoning",
+                        },
+                        {
+                            "type": "text",
+                            "text": "ORCHESTRATOR_GATEWAY_OK",
+                        },
+                    ],
+                    "stopReason": "stop",
+                },
+            ],
+        },
+    }
+
+    url, holder, server, thread = start_gateway(responses)
+
+    try:
+        client = OpenClawGatewayClient(
+            GatewayConfig(url=url, token="secret")
+        )
+
+        external = client.submit({
+            "task_id": "task-002",
+            "work_unit_id": "wu-002",
+            "objective": "do work",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["ORCHESTRATOR_GATEWAY_OK"],
+            "acceptance_criteria": ["status=ok"],
+            "configuration": {
+                "agent": "agent-001",
+            },
+        })
+
+        assert client.retrieve_result(external)["output"] == (
+            "ORCHESTRATOR_GATEWAY_OK"
+        )
+
+        request_methods = [
+            request["method"] for request in holder["requests"]
+        ]
+        assert request_methods == [
+            "agent",
+            "agent.wait",
+            "chat.history",
+        ]
+        assert holder["requests"][2]["params"]["sessionKey"] == (
+            "orchestrator:task-002"
+        )
     finally:
         server.shutdown()
         thread.join(timeout=1)
