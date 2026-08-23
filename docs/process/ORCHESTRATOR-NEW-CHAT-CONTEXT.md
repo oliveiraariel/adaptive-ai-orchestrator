@@ -2,7 +2,7 @@
 
 **Projeto:** Adaptive AI Orchestrator
 **Documento:** Contexto de Retomada em Novo Chat
-**Versão:** 0.6
+**Versão:** 0.7
 **Status:** Fase 3 — OpenClaw Gateway real validado; próximo bloco: Runtime Event Monitoring
 
 ---
@@ -79,24 +79,106 @@ Esses documentos podem fornecer conhecimento histórico/metodológico, mas não 
 
 ---
 
-# 4. Ordem de leitura recomendada
+# 4. Ordem de leitura obrigatória para retomada
 
-Em uma retomada normal:
+Em um novo chat, a leitura deve seguir esta sequência:
 
 ```text
-1. CONTEXT.md
-2. ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
-3. ORCHESTRATOR-REQUIREMENTS.md
-4. ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
-5. ORCHESTRATOR-SYSTEM-DESIGN.md
-6. ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
-7. PHASE-3-GATE-REPORT.md
-8. PHASE-2-FINAL-REVIEW.md
+1.  CONTEXT.md
+
+2.  docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
+    (este documento)
+
+3.  docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+
+4.  docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+
+5.  docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
+
+6.  docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
+
+7.  docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
+
+8.  docs/process/PHASE-3-GATE-REPORT.md
+
+9.  docs/process/OPENCLAW-GATEWAY-RESEARCH-WU-051.md
+
+10. docs/architecture/OPENCLAW-GATEWAY-INTEGRATION-WU-052.md
+
+11. docs/process/DEVELOPMENT-CONTINUITY-v0.6.md
 ```
 
-Consultar documentos específicos adicionais conforme a tarefa.
+A ordem tem propósito:
+
+```text
+contexto
+→ continuidade
+→ arquitetura
+→ design
+→ disciplina de desenvolvimento
+→ plano da fase
+→ evidência do gate
+→ pesquisa OpenClaw
+→ implementação OpenClaw
+→ continuidade versionada
+```
+
+Não substituir essa sequência por leitura aleatória quando o objetivo for
+retomar o desenvolvimento.
+
+Consultar documentos adicionais somente quando a tarefa exigir.
 
 Não ler todo o legado por padrão.
+
+
+---
+
+### Protocolo de inicialização de novo chat
+
+Este documento deve ser tratado como o **primeiro documento operacional de retomada**.
+
+Ao receber este arquivo em um novo chat:
+
+1. Leia este documento integralmente.
+2. Leia os documentos indicados na seção **Ordem de leitura obrigatória para retomada**.
+3. Não implemente, altere arquivos ou proponha mudanças arquiteturais antes de concluir a leitura e reconstruir o estado atual.
+4. Ao terminar a leitura, apresente um **checkpoint de entendimento** contendo:
+   - objetivo atual do projeto;
+   - estado das fases;
+   - arquitetura vigente;
+   - decisões consolidadas relevantes;
+   - evidências de implementação/validação;
+   - pendências abertas;
+   - próximo Work Unit ou próximo gate;
+   - documentos que sustentam cada conclusão.
+5. Se houver conflito entre documentos, não escolha silenciosamente. Identifique a fonte, compare autoridade e evidência e destaque a divergência antes de propor uma alteração.
+6. Trate números de testes, estado do Git, versões de runtime e outros estados operacionais como **evidência de snapshot**: confirme no clone atual antes de declarar que ainda são verdadeiros.
+7. Não reabra uma decisão consolidada apenas porque ela poderia ser desenhada de outra forma. Reavalie-a somente diante de nova evidência, contradição, impacto desconhecido, mudança de contexto ou necessidade explícita.
+8. Não avance automaticamente para o próximo Work Unit. Primeiro confirme que o trabalho anterior está realmente consolidado e identifique o próximo passo documentado.
+9. Quando finalmente for necessário implementar, siga o ciclo do projeto:
+
+```text
+propor
+→ identificar indefinições
+→ pesquisar quando necessário
+→ testar hipótese
+→ decidir
+→ consolidar
+→ implementar
+→ verificar
+→ registrar evidência
+→ atualizar documentação
+→ versionar
+→ prosseguir
+```
+
+O objetivo desta inicialização é:
+
+```text
+retomar
+≠
+reiniciar
+```
 
 ---
 
@@ -443,13 +525,17 @@ não inventar
 
 # 16. Validação
 
-A Fase 2 foi validada no snapshot de implementação usado na consolidação com:
+A Fase 2 foi validada historicamente no snapshot usado na sua consolidação.
+
+A evidência mais recente da integração OpenClaw registrada neste contexto é:
 
 ```text
-237 passed
-PRACTICAL VALIDATION: PASS
-compileall: PASS
+207 tests passed
+real OpenClaw Gateway compatibility: PASS
+real output: ORCHESTRATOR_GATEWAY_OK
 ```
+
+Esses números são evidências de snapshots distintos e não devem ser misturados.
 
 Ao retomar em outro ambiente, executar novamente:
 
@@ -558,7 +644,7 @@ O novo chat NÃO deve:
 reconstruir arquitetura
 recomeçar requisitos
 ignorar implementação existente
-ignorar o Design v0.2
+ignorar o Design vigente
 misturar legado com o Orchestrator
 tratar hipótese como decisão
 ```
