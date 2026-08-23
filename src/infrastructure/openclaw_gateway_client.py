@@ -185,10 +185,10 @@ class OpenClawGatewayClient(OpenClawClient):
             "minProtocol": self._config.protocol_version,
             "maxProtocol": self._config.protocol_version,
             "client": {
-                "id": "adaptive-ai-orchestrator",
+                "id": "gateway-client",
                 "version": self._config.client_version,
                 "platform": self._config.platform,
-                "mode": "operator",
+                "mode": "backend",
             },
             "role": "operator",
             "scopes": ["operator.read", "operator.write"],

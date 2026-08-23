@@ -1,8 +1,8 @@
 # ORCHESTRATOR-SYSTEM-DESIGN
 
 **Projeto:** Adaptive AI Orchestrator
-**Versão:** v0.2 — design consolidado após revisão arquitetural
-**Status:** Design consolidado — pronto para Implementation Plan
+**Versão:** v0.2.1 — design consolidado + runtime authorization addendum
+**Status:** Design consolidado — atualização decorrente da integração real com OpenClaw
 **Base:** `ORCHESTRATOR-SYSTEM-ARCHITECTURE.md` + `ORCHESTRATOR-REQUIREMENTS.md`
 
 **Discipline transversal:** `ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
@@ -831,10 +831,17 @@ ResourceConfiguration
 ├── provider
 ├── tools
 ├── runtime
-└── policyConstraints
+├── policyConstraints
+└── runtimeAuthorizationConstraints
 ```
 
 Esse objeto representa uma configuração concreta candidata ou selecionada.
+
+`policyConstraints` representam restrições da decisão do Orchestrator.
+
+`runtimeAuthorizationConstraints` representam restrições que precisam ser
+respeitadas pelo runtime externo. Elas não autorizam automaticamente uma ação:
+devem ser validadas contra a policy efetiva do runtime antes da execução.
 
 ---
 
@@ -1355,6 +1362,31 @@ TaskPackage
 OpenClaw result
 → ResultPackage
 ```
+
+Antes de executar, o adapter deve respeitar a fronteira de autorização do
+runtime.
+
+Isso significa distinguir:
+
+```text
+modelo padrão do agente
+≠
+override explícito de provider/model
+```
+
+Um `ResourceConfiguration` pode selecionar um modelo logicamente, mas o adapter
+não deve elevar privilégios para forçar um override que o runtime não autorize.
+
+A decisão é:
+
+```text
+ResourceConfiguration
+→ Runtime Authorization Policy
+→ allowed / denied / escalation
+```
+
+Uma negativa de autorização deve ser traduzida como `PolicyViolation` ou erro
+de autorização equivalente, e não contornada automaticamente.
 
 Não deve conter:
 
@@ -2161,6 +2193,25 @@ select configuration
 
 mas não precisa conhecer diretamente a SDK de cada modelo.
 
+A seleção possui duas etapas distintas:
+
+```text
+1. elegibilidade e decisão do Orchestrator
+2. autorização efetiva do runtime
+```
+
+Portanto:
+
+```text
+ModelProfile elegível
+≠
+provider/model autorizado para override
+```
+
+A seleção do Orchestrator deve permanecer independente da tecnologia do runtime,
+enquanto o adapter deve verificar se a configuração selecionada pode ser
+expressa legalmente no runtime escolhido.
+
 ---
 
 # 109. Runtime session
@@ -2500,6 +2551,30 @@ Action
 → Policy Engine
 → allowed / denied / escalation
 ```
+
+A validação deve considerar pelo menos três fontes de autoridade:
+
+```text
+Orchestrator Policy
+        +
+Resource Configuration
+        +
+Runtime Authorization Policy
+```
+
+A decisão efetiva é:
+
+```text
+requested action
+→ Orchestrator policy
+→ runtime authorization
+→ allowed / denied / escalation
+```
+
+Uma configuração tecnicamente possível não é automaticamente autorizada.
+
+O sistema não deve resolver uma negativa de autorização aumentando privilégios
+sem uma decisão explícita de governança.
 
 ---
 
@@ -4952,3 +5027,320 @@ e, paralelamente:
 ```
 
 A intenção é que a arquitetura seja limpa **não porque possui determinada quantidade de camadas ou pastas**, mas porque suas responsabilidades, dependências e fronteiras são claras e verificáveis.
+
+
+---
+
+# 249. Runtime Authorization Boundary
+
+A integração real com o OpenClaw demonstrou que autorização do runtime é uma
+dimensão arquitetural própria e não deve ser confundida com seleção de recursos.
+
+A regra consolidada é:
+
+```text
+Resource Selection
+→ ResourceConfiguration
+→ Runtime Authorization
+→ Execution
+```
+
+Isso preserva a separação entre:
+
+```text
+"o que o Orchestrator escolheu"
+```
+
+e:
+
+```text
+"o que o runtime permite executar"
+```
+
+O runtime externo possui autoridade própria sobre chamadas e overrides.
+
+---
+
+# 250. OpenClaw Caller Identity
+
+Para a integração Gateway do OpenClaw, o adapter deve utilizar a identidade de
+cliente adequada ao papel de backend.
+
+A configuração de conexão deve representar:
+
+```text
+client.id   = gateway-client
+client.mode = backend
+```
+
+Esses valores pertencem ao adapter e não ao domínio.
+
+O Domain não deve conhecer identificadores específicos do OpenClaw.
+
+---
+
+# 251. Default Model versus Model Override
+
+O sistema deve distinguir:
+
+```text
+Default Model
+→ modelo previamente configurado no runtime/agent
+
+Explicit Model Override
+→ provider/model solicitado pela execução
+```
+
+Um default model pode estar autorizado para execução normal enquanto um override
+explícito pode exigir uma policy adicional.
+
+Portanto:
+
+```text
+model configured
+≠
+override authorized
+```
+
+O adapter não deve transformar uma negativa de override em autorização
+administrativa automática.
+
+---
+
+# 252. Runtime Authorization Levels
+
+O Orchestrator deve trabalhar com o princípio de menor privilégio.
+
+A estrutura conceitual é:
+
+```text
+Execution Operations
+→ runtime write/execute authority
+
+Administrative Operations
+→ runtime administrative authority
+```
+
+O fluxo normal de execução não deve utilizar autoridade administrativa apenas
+para selecionar um recurso.
+
+Quando uma operação exceder a autoridade normal:
+
+```text
+allowed
+→ execute
+
+denied
+→ PolicyViolation / AuthorizationFailure
+
+uncertain
+→ escalation / human decision
+```
+
+---
+
+# 253. Model Policy
+
+A política do runtime deve poder restringir overrides de modelo.
+
+No caso do OpenClaw, uma policy específica de modelos pode limitar quais
+combinações `provider/model` são autorizadas para override.
+
+O Orchestrator deve tratar isso como uma restrição externa:
+
+```text
+ModelCandidate
+→ Resource Selection
+→ Runtime Model Policy
+→ authorized candidate
+```
+
+Consequentemente, `ModelProfile`, `ResourceConfiguration` e `Runtime
+Authorization` permanecem conceitos distintos.
+
+---
+
+# 254. Control UI como Interface Externa
+
+O OpenClaw Control UI é uma interface de delivery/administração sobre o Gateway.
+
+Ela pode coexistir com o `OpenClawGatewayClient` do Orchestrator:
+
+```text
+                OpenClaw Gateway
+                 /            \
+                /              \
+        Control UI         Gateway Client
+        Browser             Orchestrator
+```
+
+A existência da Control UI não altera a arquitetura interna do Orchestrator.
+
+Ela é uma interface externa do runtime e pode ser usada para observação,
+configuração e operação manual.
+
+O Orchestrator continua utilizando o `AgentRuntime`/adapter para integração
+programática.
+
+---
+
+# 255. Authentication and Secrets
+
+Credenciais de runtime não pertencem ao Domain.
+
+O adapter deve receber credenciais por mecanismos de infraestrutura, configuração
+segura ou secret store.
+
+Nunca:
+
+```text
+token
+→ Domain
+```
+
+Nem:
+
+```text
+token
+→ código-fonte versionado
+```
+
+A autenticação da aplicação externa e a autorização da ação devem permanecer
+conceitualmente separadas:
+
+```text
+Authentication
+→ "quem é o caller?"
+
+Authorization
+→ "o que esse caller pode fazer?"
+```
+
+---
+
+# 256. Evidence from Real Runtime Integration
+
+A primeira integração real com OpenClaw revelou duas condições concretas:
+
+```text
+1. client identity/mode devem obedecer ao contrato do Gateway;
+2. provider/model overrides podem ser rejeitados por policy do runtime.
+```
+
+Essas condições foram tratadas como evidência de integração e incorporadas ao
+design.
+
+O aprendizado arquitetural é:
+
+```text
+compatibility ≠ mere protocol connectivity
+```
+
+Compatibilidade real exige:
+
+```text
+connection
++
+authentication
++
+caller identity
++
+authorization
++
+operation semantics
++
+result semantics
+```
+
+---
+
+# 257. Acceptance Requirement for Runtime Adapters
+
+Um runtime adapter só deve ser considerado compatível quando houver evidência
+para:
+
+```text
+handshake
+authentication
+authorization
+execution
+wait/monitor
+result retrieval
+cancellation, quando suportada
+error translation
+timeout behavior
+```
+
+Mocks e fakes continuam válidos para testes determinísticos, mas não substituem
+a validação contra o runtime real quando a integração externa for parte do
+escopo de aceitação.
+
+---
+
+# 258. Consequence for Resource Selection
+
+O pipeline consolidado passa a ser:
+
+```text
+WorkUnit
+→ CapabilityResolver
+→ AgentCandidates
+→ SkillCandidates
+→ ModelCandidates
+→ Orchestrator Policy
+→ MultiObjectiveEvaluator
+→ ResourceConfiguration
+→ Runtime Authorization
+→ Execution
+```
+
+A última etapa pertence ao adapter/runtime boundary.
+
+Ela não deve contaminar a lógica central com detalhes específicos do OpenClaw.
+
+---
+
+# 259. Consequence for Future Runtimes
+
+A regra não é exclusiva do OpenClaw.
+
+Outro runtime pode possuir:
+
+```text
+different authentication
+different scopes
+different model policy
+different execution authority
+```
+
+O `AgentRuntime` deve absorver essas diferenças.
+
+Assim:
+
+```text
+Application
+→ AgentRuntime
+```
+
+permanece estável, enquanto:
+
+```text
+OpenClawAdapter
+HermesAdapter
+OtherRuntimeAdapter
+```
+
+implementam seus mecanismos específicos.
+
+---
+
+# 260. Design Decision
+
+Fica consolidada a seguinte decisão:
+
+> **Seleção de recursos e autorização do runtime são responsabilidades distintas.**
+> O Orchestrator pode selecionar uma configuração segundo suas políticas e
+> critérios, mas o runtime externo mantém autoridade própria sobre autenticação,
+> permissões e overrides. Uma negativa do runtime deve resultar em rejeição,
+> reseleção ou escalonamento conforme a política; nunca em elevação silenciosa de
+> privilégios.
