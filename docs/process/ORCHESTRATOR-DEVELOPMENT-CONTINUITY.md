@@ -2,8 +2,8 @@
 
 **Projeto:** Adaptive AI Orchestrator
 **Documento:** Registro de Continuidade do Desenvolvimento
-**Versão do registro:** 0.5
-**Status:** Fase 2 concluída — próximo gate: integração real com OpenClaw Gateway
+**Versão do registro:** 0.6
+**Status:** Fase 3 — runtime compatibility validated; event monitoring, durable recovery and operational acceptance remain open
 
 ---
 
@@ -557,3 +557,210 @@ Next gate: OpenClaw Gateway Compatibility Spike
 ```
 
 Qualquer mudança significativa neste documento deve ser feita junto com a atualização do estado real do projeto.
+
+---
+
+# 22. Fase 3 — Integração Real com OpenClaw Gateway
+
+**Status: RUNTIME COMPATIBILITY VALIDATED**
+
+A Fase 3 deixou de ser apenas uma implementação contra fake Gateway.
+O runtime boundary foi exercitado contra uma instalação real do OpenClaw.
+
+## 22.1 Estado das Work Units
+
+```text
+WU-051  Gateway protocol research
+        ✅ consolidada
+
+WU-052  OpenClaw Gateway WebSocket adapter
+        ✅ implementada e validada
+
+WU-053  Gateway runtime vertical slice
+        ✅ validada localmente e em Gateway real
+
+WU-054  Live Gateway compatibility / acceptance
+        ✅ compatibilidade real mínima validada
+
+WU-055  Runtime event monitoring
+        ⏳ próximo bloco
+
+WU-056  Durable execution / recovery integration
+        ⏳ posterior
+
+WU-057  Operational acceptance
+        ⏳ ainda aberta
+```
+
+## 22.2 Implementação real validada
+
+```text
+AgentRuntime
+    ↓
+OpenClawAdapter
+    ↓
+OpenClawGatewayClient
+    ↓
+Gateway WebSocket/RPC
+    ↓
+OpenClaw Agent
+    ↓
+Codex
+    ↓
+openai/gpt-5.5
+```
+
+O cliente real suporta:
+
+```text
+connect
+agent
+agent.wait
+chat.history
+sessions.abort
+```
+
+## 22.3 Semântica de execução consolidada
+
+```text
+agent
+→ runId
+
+agent.wait
+→ estado terminal ou timeout de espera
+
+timeout de agent.wait
+→ não significa cancelamento
+
+get_status()
+→ timeout de espera é exposto como RUNNING
+
+retrieve_result()
+→ aguarda conclusão
+→ lê chat.history
+→ extrai texto do assistant
+```
+
+## 22.4 Resultado real
+
+Foi validado:
+
+```text
+task
+→ agent main
+→ GPT-5.5
+→ agent.wait
+→ chat.history
+→ output
+```
+
+Saída final:
+
+```text
+ORCHESTRATOR_GATEWAY_OK
+```
+
+## 22.5 Evidência da suíte
+
+Após a integração e os testes de regressão:
+
+```text
+207 tests passed
+```
+
+A suíte é a evidência autoritativa do clone em que foi executada.
+
+## 22.6 Descobertas de integração
+
+Foram consolidadas as seguintes decisões:
+
+```text
+1. Gateway protocol v4 é o contrato validado nesta integração.
+
+2. O cliente deve usar client.id = gateway-client
+   e client.mode = backend para o caller testado.
+
+3. O runtime efetivo permanece separado do domínio.
+
+4. Modelo listado não implica modelo executável.
+
+5. Overrides de provider/model podem ser rejeitados pelo runtime.
+
+6. O modelo default executável validado foi openai/gpt-5.5.
+
+7. agent.wait timeout é estado da espera, não estado terminal do run.
+
+8. O texto final deve ser recuperado do transcript via chat.history.
+
+9. Blocos de thinking não devem ser promovidos a output.
+
+10. SessionKey do adapter segue orchestrator:<task_id>.
+```
+
+## 22.7 Limitações ainda abertas
+
+```text
+runtime event streaming
+durable execution/recovery
+reconnect reconciliation
+production observability
+production security hardening
+deployment
+final operational acceptance
+```
+
+O projeto não deve ser classificado como production-ready.
+
+# 23. Ponto exato de retomada
+
+O próximo trabalho recomendado é:
+
+```text
+RUNTIME EVENT MONITORING
+        ↓
+definir eventos mínimos necessários
+        ↓
+normalizar lifecycle
+        ↓
+integrar com telemetry/evidence
+        ↓
+testar reconnection semantics
+```
+
+Somente depois:
+
+```text
+DURABLE EXECUTION / RECOVERY
+        ↓
+OPERATIONAL ACCEPTANCE
+```
+
+A investigação básica do Gateway não deve ser repetida sem mudança de versão,
+mudança de protocolo ou evidência contraditória.
+
+# 24. Regra de documentação após a integração real
+
+Qualquer alteração futura na integração OpenClaw deve atualizar, conforme o
+impacto:
+
+```text
+Design
+→ Work Unit / research
+→ Gate report
+→ Development Continuity
+→ New Chat Context
+→ tests
+```
+
+O objetivo é impedir que conhecimento operacional validado permaneça apenas
+no histórico de chat.
+
+# 25. Estado de versionamento
+
+```text
+Continuity version: 0.6
+Phase: 3
+Real OpenClaw Gateway compatibility: VALIDATED
+Automated regression: 207 passed
+Next gate: Runtime Event Monitoring
+```

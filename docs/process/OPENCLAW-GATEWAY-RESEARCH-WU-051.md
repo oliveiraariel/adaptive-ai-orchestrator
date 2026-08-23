@@ -2,56 +2,118 @@
 
 **Projeto:** Adaptive AI Orchestrator
 **Work Unit:** WU-051
-**Status:** Research consolidated
+**Status:** Research consolidated and validated against the tested runtime
 
-## Verified current protocol facts
+## Objective
 
-The current OpenClaw documentation defines the Gateway as the external control
-plane. External applications use WebSocket transport with JSON frames and RPC
-methods. The first pre-connect event is `connect.challenge`; the client then
-sends a `connect` request and receives `hello-ok` with the negotiated protocol
-and feature metadata.
+Establish the concrete OpenClaw Gateway contract required by the
+`AgentRuntime → OpenClawAdapter → OpenClawGatewayClient` boundary.
 
-The current operator client protocol is v4. The OpenClaw guidance recommends
-negotiating/pinning the protocol version used by the tested Gateway.
+## Verified protocol facts
 
-Agent execution is documented as:
+The OpenClaw Gateway uses WebSocket transport with JSON request/response
+frames and Gateway RPC methods. The tested connection begins with
+`connect.challenge`, followed by a `connect` request and `hello-ok`.
+
+The tested Gateway used protocol v4.
+
+Agent execution is asynchronous:
 
 ```text
 agent
-→ { runId, acceptedAt }
+→ runId / accepted acknowledgement
 → agent.wait
-→ terminal result
+→ terminal state
 ```
 
-`agent.wait` is wait-only: a timeout does not stop the underlying agent run.
-Cancellation is a separate operation. Gateway session controls expose
-`sessions.abort` and related run/session operations.
+`agent.wait` is wait-only. A wait timeout does not itself cancel the run.
+Cancellation uses a separate session/run operation.
 
-## Relevant schema contracts inspected
+The result transcript can be read through:
 
 ```text
-ConnectParamsSchema
-AgentParamsSchema
-AgentWaitParamsSchema
-AgentEventSchema
+chat.history
 ```
 
-Important `agent` inputs used by the Orchestrator adapter include:
+## Methods used by the validated adapter
 
 ```text
-message
-agentId
-model
-provider
-sessionKey
-timeout
-deliver
-idempotencyKey
+connect
+agent
+agent.wait
+chat.history
+sessions.abort
 ```
 
-The Orchestrator deliberately sends only the subset required by its internal
-execution contract.
+## Observed runtime configuration
+
+```text
+OpenClaw: 2026.7.1-2
+Gateway: loopback
+Port: 18789
+Protocol: v4
+Client id: gateway-client
+Client mode: backend
+Role: operator
+Scopes:
+  operator.read
+  operator.write
+```
+
+## Model availability finding
+
+The model catalog exposed multiple OpenAI models, but catalog presence was not
+equivalent to successful execution for the tested account/runtime route.
+
+Observed:
+
+```text
+openai/gpt-5.6-sol
+→ catalogued
+→ execution rejected by tested Codex/ChatGPT route
+
+openai/gpt-5.5
+→ configured as default
+→ real execution successful
+```
+
+Therefore the Orchestrator must distinguish:
+
+```text
+catalog availability
+runtime availability
+account/provider entitlement
+runtime authorization
+successful execution
+```
+
+## Result retrieval finding
+
+The final assistant answer was not taken solely from `agent.wait`.
+
+Validated flow:
+
+```text
+agent.wait
+→ terminal state
+
+chat.history(sessionKey)
+→ assistant message
+→ content[type=text]
+→ final output
+```
+
+`thinking` content is not promoted to result text.
+
+## Session contract
+
+The adapter uses:
+
+```text
+sessionKey = orchestrator:<task_id>
+```
+
+This isolates orchestration executions from the interactive main session.
 
 ## Architecture decision
 
@@ -67,17 +129,37 @@ OpenClawGatewayClient
 Gateway WebSocket + RPC
 ```
 
-The Domain and Application layers must not import Gateway protocol schemas,
-WebSocket types or OpenClaw SDK types.
+Domain and Application must not import OpenClaw protocol schemas, WebSocket
+types, SDK types or provider-specific runtime objects.
 
-## Source policy
+## Evidence
 
-The implementation was aligned with current official OpenClaw documentation
-and the public OpenClaw repository protocol schemas. The client is protocol-
-specific and therefore must be version-pinned/revalidated when OpenClaw changes
-the wire contract.
+A real task executed through the Gateway produced:
 
-References:
+```text
+ORCHESTRATOR_GATEWAY_OK
+```
+
+with:
+
+```text
+status = ok
+stopReason = stop
+```
+
+The full automated regression suite after integration reported:
+
+```text
+207 passed
+```
+
+## Research conclusion
+
+The OpenClaw Gateway is sufficiently understood for the validated execution
+path. Further research should now be driven by the next open capability:
+runtime event monitoring, reconnect semantics, or durable execution/recovery.
+
+## Sources
 
 - https://docs.openclaw.ai/gateway/protocol
 - https://docs.openclaw.ai/gateway/clients

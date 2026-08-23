@@ -2,8 +2,8 @@
 
 **Projeto:** Adaptive AI Orchestrator
 **Documento:** Contexto de Retomada em Novo Chat
-**Versão:** 0.5
-**Status:** Fase 2 concluída — próximo gate: OpenClaw Gateway Compatibility Spike
+**Versão:** 0.6
+**Status:** Fase 3 — OpenClaw Gateway real validado; próximo bloco: Runtime Event Monitoring
 
 ---
 
@@ -90,7 +90,8 @@ Em uma retomada normal:
 4. ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
 5. ORCHESTRATOR-SYSTEM-DESIGN.md
 6. ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
-7. PHASE-2-FINAL-REVIEW.md
+7. PHASE-3-GATE-REPORT.md
+8. PHASE-2-FINAL-REVIEW.md
 ```
 
 Consultar documentos específicos adicionais conforme a tarefa.
@@ -109,8 +110,10 @@ FASE 2 — EVOLUÇÃO OPERACIONAL
 ✅ concluída
 
 FASE 3 — INTEGRAÇÃO REAL COM OPENCLAW
-⏳ próximo gate
-```
+✅ compatibilidade de runtime validada
+
+PRÓXIMO BLOCO
+⏳ Runtime Event Monitoring
 
 ---
 
@@ -335,69 +338,82 @@ LearningCandidate
 
 # 13. Estado da integração OpenClaw
 
-Já existe:
+A integração real foi validada.
 
 ```text
 AgentRuntime
 ↓
 OpenClawAdapter
+↓
+OpenClawGatewayClient
+↓
+Gateway WebSocket / RPC
+↓
+agent
+↓
+agent.wait
+↓
+chat.history
+↓
+assistant text
 ```
 
-Também foi preparada integração compatível com execução por CLI.
-
-Mas ainda falta validar em ambiente OpenClaw real:
+Métodos concretamente utilizados:
 
 ```text
-Gateway
-WebSocket
-RPC
+connect
 agent
 agent.wait
-event stream
-cancelamento
-timeout
-sessões
+chat.history
+sessions.abort
 ```
 
-Não inventar protocolo.
-
----
-
-# 14. Próximo gate
-
-O próximo trabalho é:
-
-> **OpenClaw Gateway Compatibility Spike**
-
-Objetivo:
+Contrato de sessão:
 
 ```text
-identificar versão
-→ verificar instalação
-→ verificar Gateway
-→ autenticação
-→ conectar WebSocket
-→ listar/confirmar métodos
-→ executar agent
-→ esperar agent.wait
-→ observar eventos
-→ testar timeout/cancelamento
-→ registrar evidências
+sessionKey = orchestrator:<task_id>
 ```
 
-Depois:
+Semântica consolidada:
 
 ```text
-Real OpenClaw Vertical Slice
+agent.wait timeout
+→ RUNNING para get_status()
+
+agent.wait ok
+→ conclusão
+
+chat.history
+→ fonte do texto final
+
+thinking blocks
+→ não são output
 ```
 
-e depois:
+Validação real:
 
 ```text
-Real End-to-End
-→ Operational Acceptance
-→ Production Hardening
+OpenClaw real                 ✅
+Gateway / WebSocket           ✅
+protocol v4                   ✅
+agent main                   ✅
+Codex runtime                 ✅
+openai/gpt-5.5                ✅
+real execution                ✅
+real final text               ✅
+ORCHESTRATOR_GATEWAY_OK       ✅
+207 tests passed              ✅
 ```
+
+Descobertas importantes:
+
+```text
+catalog model ≠ executable model
+runtime authorization ≠ resource selection
+provider/model override pode ser rejeitado pelo runtime
+```
+
+O `gpt-5.5` foi o modelo efetivamente validado neste ambiente.
 
 ---
 
@@ -579,19 +595,33 @@ Não fazer commit sem antes verificar testes e diff.
 # 22. Ponto exato de retomada
 
 ```text
-Estado:
-Fase 2 concluída
+FASE 3 — compatibilidade real com OpenClaw: VALIDADA
 
-Próximo gate:
-OpenClaw Gateway Compatibility Spike
+207 testes: PASS
+
+Próximo trabalho:
+Runtime Event Monitoring
+```
+
+Antes de iniciar:
+
+```text
+ler ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+ler ORCHESTRATOR-SYSTEM-DESIGN.md
+ler PHASE-3-GATE-REPORT.md
+```
 
 Depois:
-WebSocket / RPC
-→ agent / agent.wait
-→ eventos
-→ vertical slice real
-→ end-to-end real
-→ operational acceptance
+
+```text
+propor
+→ pesquisar se necessário
+→ testar
+→ consolidar
+→ implementar
+→ verificar
+→ documentar
+→ versionar
 ```
 
 ---

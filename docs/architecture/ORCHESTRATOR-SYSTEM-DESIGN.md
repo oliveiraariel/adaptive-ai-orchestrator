@@ -1,8 +1,8 @@
 # ORCHESTRATOR-SYSTEM-DESIGN
 
 **Projeto:** Adaptive AI Orchestrator
-**Versão:** v0.2.1 — design consolidado + runtime authorization addendum
-**Status:** Design consolidado — atualização decorrente da integração real com OpenClaw
+**Versão:** v0.2.2 — design consolidado + real OpenClaw Gateway validation
+**Status:** Design consolidado — compatibilidade real com OpenClaw Gateway validada; monitoramento de eventos, recuperação durável e aceitação operacional final permanecem abertos
 **Base:** `ORCHESTRATOR-SYSTEM-ARCHITECTURE.md` + `ORCHESTRATOR-REQUIREMENTS.md`
 
 **Discipline transversal:** `ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
@@ -5220,23 +5220,47 @@ Authorization
 
 # 256. Evidence from Real Runtime Integration
 
-A primeira integração real com OpenClaw revelou duas condições concretas:
+A integração real com OpenClaw foi validada contra uma instalação local do
+runtime e passou a constituir evidência operacional do `AgentRuntime` boundary.
+
+A validação demonstrou:
 
 ```text
-1. client identity/mode devem obedecer ao contrato do Gateway;
-2. provider/model overrides podem ser rejeitados por policy do runtime.
+OpenClaw Gateway real
+        ↓
+WebSocket / RPC
+        ↓
+agent
+        ↓
+agent.wait
+        ↓
+chat.history
+        ↓
+assistant text
+        ↓
+AgentRuntime result
 ```
 
-Essas condições foram tratadas como evidência de integração e incorporadas ao
-design.
-
-O aprendizado arquitetural é:
+O ambiente validado utilizou:
 
 ```text
-compatibility ≠ mere protocol connectivity
+OpenClaw: 2026.7.1-2
+Gateway: loopback
+Protocol: v4
+Client id: gateway-client
+Client mode: backend
+Agent: main
+Runtime: codex
+Model: openai/gpt-5.5
 ```
 
-Compatibilidade real exige:
+O resultado real foi:
+
+```text
+ORCHESTRATOR_GATEWAY_OK
+```
+
+A compatibilidade real não deve ser reduzida a conectividade. Ela exige:
 
 ```text
 connection
@@ -5254,32 +5278,154 @@ result semantics
 
 ---
 
-# 257. Acceptance Requirement for Runtime Adapters
+# 257. Runtime Execution and Result Semantics
 
-Um runtime adapter só deve ser considerado compatível quando houver evidência
-para:
+A execução externa deve ser tratada como assíncrona.
+
+O fluxo consolidado é:
 
 ```text
-handshake
-authentication
-authorization
-execution
-wait/monitor
-result retrieval
-cancellation, quando suportada
-error translation
-timeout behavior
+agent
+→ runId
+→ agent.wait
 ```
 
-Mocks e fakes continuam válidos para testes determinísticos, mas não substituem
-a validação contra o runtime real quando a integração externa for parte do
-escopo de aceitação.
+`agent.wait` é uma operação de espera. Um timeout dessa operação não significa
+que o run foi cancelado ou que ocorreu uma falha terminal.
+
+No contrato do adapter:
+
+```text
+agent.wait = ok
+    → COMPLETED
+
+agent.wait = error
+    → FAILED
+
+agent.wait = timeout
+    → RUNNING para get_status()
+```
+
+Cancelamento é uma operação separada:
+
+```text
+sessions.abort
+```
+
+O estado terminal da execução e o conteúdo semântico do resultado são
+responsabilidades distintas.
+
+O resultado textual validado é obtido por:
+
+```text
+agent.wait
+→ chat.history(sessionKey)
+→ última mensagem assistant relevante
+→ content[type=text]
+```
+
+Blocos `thinking` não devem ser tratados como output semântico do agente.
+
+Portanto:
+
+```text
+execution state
+≠
+result content
+```
 
 ---
 
-# 258. Consequence for Resource Selection
+# 258. Session and Runtime Contract
 
-O pipeline consolidado passa a ser:
+A integração concreta usa:
+
+```text
+sessionKey = orchestrator:<task_id>
+```
+
+Essa convenção mantém a execução do Orchestrator isolada da sessão interativa
+principal do usuário.
+
+O adapter concreto suporta:
+
+```text
+connect
+agent
+agent.wait
+chat.history
+sessions.abort
+```
+
+A arquitetura permanece:
+
+```text
+Application
+    ↓
+AgentRuntime
+    ↓
+OpenClawAdapter
+    ↓
+OpenClawGatewayClient
+    ↓
+OpenClaw Gateway
+```
+
+Os detalhes do protocolo permanecem confinados à Infrastructure.
+
+O Domain não deve conhecer:
+
+```text
+OpenClaw protocol
+WebSocket types
+Gateway schemas
+provider SDKs
+runtime session identifiers
+runtime credentials
+```
+
+A identidade do caller também permanece detalhe da infraestrutura:
+
+```text
+client.id   = gateway-client
+client.mode = backend
+```
+
+---
+
+# 259. Model Availability, Authorization and Operational Evidence
+
+A integração real consolidou uma distinção necessária no Resource Selection:
+
+```text
+catalog availability
+        ≠
+runtime availability
+        ≠
+account/provider entitlement
+        ≠
+runtime authorization
+        ≠
+successful execution
+```
+
+Um modelo existente no catálogo não é automaticamente executável para uma
+determinada conta, provider ou rota do runtime.
+
+Na validação realizada:
+
+```text
+openai/gpt-5.6-sol
+→ não validado para execução na rota Codex/ChatGPT testada
+
+openai/gpt-5.5
+→ execução real validada
+```
+
+O Orchestrator, portanto, não deve interpretar a existência de um modelo no
+catálogo como autorização de execução.
+
+O pipeline consolidado permanece:
 
 ```text
 WorkUnit
@@ -5294,53 +5440,90 @@ WorkUnit
 → Execution
 ```
 
-A última etapa pertence ao adapter/runtime boundary.
+A negativa do runtime deve resultar em:
 
-Ela não deve contaminar a lógica central com detalhes específicos do OpenClaw.
+```text
+rejection
+ou
+reselection
+ou
+escalation
+```
+
+nunca em elevação silenciosa de privilégios.
+
+Evidência automatizada da integração:
+
+```text
+207 tests passed
+Gateway infrastructure tests PASS
+Gateway vertical slice PASS
+real Gateway execution PASS
+```
 
 ---
 
-# 259. Consequence for Future Runtimes
+# 260. Design Decision — Runtime Compatibility Acceptance
 
-A regra não é exclusiva do OpenClaw.
+Fica consolidada a seguinte decisão:
 
-Outro runtime pode possuir:
+> **A compatibilidade de um Runtime Adapter deve ser demonstrada por
+> comportamento operacional no runtime real e não somente por conformidade
+> com um mock ou fake.**
+
+Para o OpenClaw, a aceitação da integração desta etapa foi baseada em:
 
 ```text
-different authentication
-different scopes
-different model policy
-different execution authority
+handshake
++
+authentication
++
+caller identity
++
+authorization
++
+agent execution
++
+agent.wait semantics
++
+result retrieval
++
+assistant text extraction
++
+cancellation support
 ```
 
-O `AgentRuntime` deve absorver essas diferenças.
+O resultado real validado foi:
 
-Assim:
+```text
+ORCHESTRATOR_GATEWAY_OK
+```
+
+Mocks e fakes continuam obrigatórios para testes determinísticos e regressão,
+mas não substituem a evidência do runtime real quando a integração externa é
+parte do escopo de aceitação.
+
+Esta validação encerra o gate de compatibilidade real do caminho testado, mas
+não declara o sistema production-ready.
+
+Permanecem fora desta aceitação:
+
+```text
+runtime event monitoring
+durable execution / recovery
+reconnect reconciliation
+production observability
+security hardening
+deployment hardening
+final operational acceptance
+```
+
+A futura integração com outros runtimes deve preservar o mesmo seam:
 
 ```text
 Application
 → AgentRuntime
+→ Runtime-specific Adapter
 ```
 
-permanece estável, enquanto:
-
-```text
-OpenClawAdapter
-HermesAdapter
-OtherRuntimeAdapter
-```
-
-implementam seus mecanismos específicos.
-
----
-
-# 260. Design Decision
-
-Fica consolidada a seguinte decisão:
-
-> **Seleção de recursos e autorização do runtime são responsabilidades distintas.**
-> O Orchestrator pode selecionar uma configuração segundo suas políticas e
-> critérios, mas o runtime externo mantém autoridade própria sobre autenticação,
-> permissões e overrides. Uma negativa do runtime deve resultar em rejeição,
-> reseleção ou escalonamento conforme a política; nunca em elevação silenciosa de
-> privilégios.
+sem transportar conceitos específicos do OpenClaw para o Domain.

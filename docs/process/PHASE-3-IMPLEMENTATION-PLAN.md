@@ -1,101 +1,150 @@
 # Adaptive AI Orchestrator — Phase 3 Implementation Plan
 
-**Status:** Local implementation complete — live runtime gate pending
-**Purpose:** replace the Phase 2 external-runtime boundary with a verified
-OpenClaw Gateway implementation and then close the live-runtime operational gate.
+**Status:** Real Gateway compatibility validated; Phase 3 remains open for
+event monitoring, durable recovery and final operational acceptance.
+
+**Purpose:** implement and validate the direct OpenClaw Gateway boundary,
+then continue with runtime observability and durable execution semantics.
 
 ## Phase 3 sequence
 
 ```text
-WU-051  Gateway protocol research                          ✅
-WU-052  OpenClaw Gateway WebSocket Adapter                ✅
-   ↓
-WU-053  Gateway Runtime Vertical Slice                    ✅
-   ↓
-WU-054  Live Gateway Compatibility / Acceptance Test      ⏳
-   ↓
-WU-055  Runtime Event Monitoring                           ⏳
-   ↓
-WU-056  Durable Execution / Recovery Integration            ⏳
-   ↓
-WU-057  Operational Acceptance                             ⏳
+WU-051  Gateway protocol research                       ✅
+WU-052  OpenClaw Gateway WebSocket Adapter             ✅
+WU-053  Gateway Runtime Vertical Slice                 ✅
+WU-054  Live Gateway Compatibility / Acceptance        ✅
+WU-055  Runtime Event Monitoring                        ⏳
+WU-056  Durable Execution / Recovery Integration        ⏳
+WU-057  Operational Acceptance                          ⏳
 ```
+
+## WU-051 — Gateway protocol research
+
+Completed.
 
 ## WU-052 — Gateway WebSocket Adapter
 
-Implemented a concrete client behind `OpenClawClient` using the documented
-Gateway WebSocket + RPC protocol.
+Completed.
 
-Verified:
+Implemented a concrete `OpenClawGatewayClient` behind the existing
+`OpenClawClient` seam.
 
-- protocol v4 handshake;
-- operator scopes;
-- authentication fields;
-- `agent` submission;
-- `agent.wait` terminal status;
-- `sessions.abort` cancellation;
-- protocol mismatch failure;
-- timeout normalization;
-- error propagation.
+## WU-053 — Gateway Runtime Vertical Slice
 
-## WU-053 — Gateway Vertical Slice
+Completed.
 
-Validated the complete internal path:
+Validated internally through:
 
 ```text
 TaskPackage
 → OpenClawAdapter
 → OpenClawGatewayClient
-→ WebSocket Gateway
+→ Gateway
 → agent
 → agent.wait
-→ Result
+→ chat.history
 → AgentRuntimeResult
 ```
 
-The slice currently uses a local fake Gateway because a live OpenClaw instance is
-not available inside the development test environment.
+## WU-054 — Live Gateway Compatibility / Acceptance
 
-## WU-054 — Live Gateway Acceptance
+Completed for the tested local runtime path.
 
-This is the next environment-dependent gate.
-
-Required:
+Real validation used:
 
 ```text
 OpenClaw installed
-+ Gateway running
-+ protocol version known/pinned
-+ valid agent
-+ working model/provider
-+ authentication configured
+Gateway running
+protocol v4
+agent main
+working Codex route
+authenticated runtime
 ```
 
-Acceptance must execute the real Gateway rather than a fake server.
+Validated:
+
+```text
+openai/gpt-5.5
+```
+
+and:
+
+```text
+ORCHESTRATOR_GATEWAY_OK
+```
 
 ## WU-055 — Runtime Event Monitoring
 
-After live acceptance, subscribe to the `agent` event stream and normalize only
-metadata required by the Orchestrator. Do not copy prompts, tool arguments or
-raw sensitive content into telemetry by default.
+Next.
+
+Goals:
+
+```text
+subscribe to relevant Gateway agent/lifecycle events
+→ normalize lifecycle state
+→ integrate evidence/telemetry
+→ preserve runId/session correlation
+→ define reconnection/reconciliation semantics
+```
+
+Do not persist raw prompts, tool arguments, or sensitive message content into
+telemetry by default.
 
 ## WU-056 — Durable Execution / Recovery Integration
 
-Connect Gateway run identity, durable project state and recovery policy so that
-restart/recovery semantics remain deterministic and do not duplicate accepted
-runs.
+Future.
+
+Connect:
+
+```text
+Gateway run identity
++
+ProjectState
++
+ExecutionReference
++
+Recovery policy
+```
+
+and define deterministic behavior across restart/reconnect without duplicating
+accepted work.
 
 ## WU-057 — Operational Acceptance
 
-Close the live-runtime gate with:
+Future final gate.
+
+Acceptance should verify:
 
 ```text
 specified
++
 implemented
-verified
++
+automated verification
++
+real runtime evidence
++
 reviewed
++
 traceable
-operational evidence
++
+operationally documented
 ```
 
-Do not mark Phase 3 complete until the real environment passes this gate.
+## Global verification rule
+
+Every Work Unit must preserve:
+
+```text
+architecture verification
++
+full regression
++
+documented evidence
+```
+
+Current regression evidence:
+
+```text
+207 passed
+```
