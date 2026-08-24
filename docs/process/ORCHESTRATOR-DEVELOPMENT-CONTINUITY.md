@@ -2,7 +2,7 @@
 
 **Projeto:** Adaptive AI Orchestrator
 **Documento:** Registro de Continuidade do Desenvolvimento
-**Versão do registro:** 0.6
+**Versão do registro:** 0.7
 **Status:** Fase 3 — runtime compatibility validated; event monitoring, durable recovery and operational acceptance remain open
 
 ---
@@ -197,14 +197,19 @@ Estado atual:
 runtime boundary              ✅
 adapter boundary              ✅
 CLI-compatible integration    ✅
-OpenClaw Gateway real         ⏳
-WebSocket/RPC real            ⏳
+OpenClaw Gateway real         ✅
+WebSocket/RPC real            ✅
+real vertical slice           ✅
 live event stream             ⏳
+durable recovery              ⏳
+operational acceptance        ⏳
 ```
 
-A próxima fase deve validar a integração contra uma instalação real do OpenClaw e sua versão efetivamente utilizada.
+A compatibilidade mínima com uma instalação real do OpenClaw foi validada no caminho documentado em `OPENCLAW-GATEWAY-RESEARCH-WU-051.md`, `OPENCLAW-GATEWAY-INTEGRATION-WU-052.md` e `PHASE-3-GATE-REPORT.md`.
 
-Não inventar um protocolo externo não verificado.
+O próximo trabalho deve concentrar-se em **Runtime Event Monitoring**, sem repetir a investigação básica do Gateway salvo mudança de versão, protocolo ou evidência contraditória.
+
+Não inventar comportamento externo não verificado.
 
 ---
 
@@ -355,9 +360,19 @@ compileall: PASS
 
 Esses números correspondem ao snapshot utilizado na execução da Fase 2.
 
-Após aplicar os artefatos no clone local, a suíte completa deve ser executada novamente antes de qualquer novo commit.
+Na validação posterior da integração real com OpenClaw Gateway foi registrado outro snapshot:
 
-A validação local é a evidência autoritativa do estado atual do clone.
+```text
+207 tests passed
+real OpenClaw Gateway compatibility: PASS
+real output: ORCHESTRATOR_GATEWAY_OK
+```
+
+Esses snapshots possuem escopos e momentos distintos e **não devem ser combinados como se fossem a mesma execução**.
+
+Ao trabalhar em outro clone ou após mudanças relevantes, a suíte completa deve ser executada novamente antes de declarar o estado atual.
+
+A validação local mais recente é a evidência autoritativa do estado efetivamente presente no clone.
 
 ---
 
@@ -389,14 +404,16 @@ CI / VALIDATION FOUNDATION           ✅
 # 14. O que ainda não está concluído
 
 ```text
-REAL OPENCLAW GATEWAY INTEGRATION     ⏳
-WEBSOCKET / RPC VALIDATION            ⏳
-REAL EXECUTION EVENTS                 ⏳
-LIVE EXECUTION MONITORING             ⏳
-PRODUCTION TELEMETRY                  ⏳
-PRODUCTION SECURITY HARDENING         ⏳
-PRODUCTION DEPLOYMENT                 ⏳
+RUNTIME EVENT MONITORING                 ⏳
+EVENT STREAM / RECONCILIATION            ⏳
+DURABLE EXECUTION / RECOVERY             ⏳
+PRODUCTION TELEMETRY                     ⏳
+PRODUCTION SECURITY HARDENING            ⏳
+PRODUCTION DEPLOYMENT                    ⏳
+FINAL OPERATIONAL ACCEPTANCE             ⏳
 ```
+
+A integração real mínima com OpenClaw Gateway e a validação WebSocket/RPC já foram concluídas para o caminho testado.
 
 O projeto **não deve ser declarado production-ready** neste ponto.
 
@@ -407,42 +424,29 @@ O projeto **não deve ser declarado production-ready** neste ponto.
 O próximo gate oficial é:
 
 ```text
-OPENCLAW GATEWAY COMPATIBILITY SPIKE
+WU-055 — RUNTIME EVENT MONITORING
 ```
 
 Objetivo:
 
-1. identificar a versão real do OpenClaw disponível;
-2. confirmar modo de execução;
-3. confirmar autenticação/autorização;
-4. confirmar Gateway;
-5. confirmar WebSocket;
-6. confirmar RPC methods;
-7. confirmar `agent`;
-8. confirmar `agent.wait`;
-9. confirmar eventos;
-10. validar cancelamento/timeout;
-11. executar um vertical slice real;
-12. registrar evidências.
+1. identificar os eventos mínimos de lifecycle necessários;
+2. assinar eventos relevantes do Gateway;
+3. normalizar estado de execução;
+4. preservar correlação entre `runId`, sessão e Work Unit;
+5. integrar eventos com telemetry/evidence;
+6. definir semântica de reconnect/reconciliation;
+7. verificar comportamento com testes e evidência operacional.
 
 ---
 
 # 16. Próxima sequência prevista
 
 ```text
-Gateway Compatibility
+WU-055 Runtime Event Monitoring
         ↓
-WebSocket Transport
+WU-056 Durable Execution / Recovery
         ↓
-agent / agent.wait
-        ↓
-Runtime Events
-        ↓
-Real OpenClaw Vertical Slice
-        ↓
-End-to-End Real Execution
-        ↓
-Operational Acceptance
+WU-057 Operational Acceptance
         ↓
 Production Hardening
 ```
@@ -521,13 +525,16 @@ ler
 **Estado atual:**
 
 ```text
+Fase 1 concluída.
 Fase 2 concluída.
+Fase 3 em andamento.
+OpenClaw Gateway compatibility: VALIDATED.
 ```
 
 **Ponto de retomada:**
 
 ```text
-OpenClaw Gateway Compatibility Spike
+WU-055 — Runtime Event Monitoring
 ```
 
 **Pré-requisito externo:**
@@ -544,16 +551,17 @@ credenciais/autorização
 modelo/provider funcional
 ```
 
-Se essa dependência não estiver disponível, não inventar integração. Executar primeiro um compatibility spike documental/experimental e registrar o bloqueio.
+A investigação básica do Gateway não deve ser repetida sem mudança de versão, protocolo ou evidência contraditória.
 
 ---
 
 # 21. Registro de versão
 
 ```text
-Continuity version: 0.5
-Project state: Phase 2 complete
-Next gate: OpenClaw Gateway Compatibility Spike
+Continuity version: 0.7
+Project state: Phase 3 in progress
+Real OpenClaw Gateway compatibility: VALIDATED
+Next gate: WU-055 Runtime Event Monitoring
 ```
 
 Qualquer mudança significativa neste documento deve ser feita junto com a atualização do estado real do projeto.
@@ -758,9 +766,9 @@ no histórico de chat.
 # 25. Estado de versionamento
 
 ```text
-Continuity version: 0.6
+Continuity version: 0.7
 Phase: 3
 Real OpenClaw Gateway compatibility: VALIDATED
-Automated regression: 207 passed
-Next gate: Runtime Event Monitoring
+Automated regression snapshot: 207 passed
+Next gate: WU-055 Runtime Event Monitoring
 ```

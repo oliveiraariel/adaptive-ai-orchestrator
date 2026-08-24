@@ -1,0 +1,162 @@
+schema_version: 1
+project:
+  id: adaptive-ai-orchestrator
+  name: Adaptive AI Orchestrator
+  repository_role: authoritative-project-repository
+  current_phase: 3
+  current_status: runtime-compatibility-validated
+  next_work_unit: WU-055
+  next_work_unit_name: Runtime Event Monitoring
+
+authority_model:
+  normative_intent_precedence:
+    - specifications/orchestrator/PROJECT-DEFINITION.md
+    - specifications/orchestrator/ORCHESTRATOR-REQUIREMENTS.md
+    - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+    - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
+    - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
+    - docs/reviews/
+    - implementation-plans-and-work-units
+    - src/
+    - tests-and-evidence
+  operational_state_precedence:
+    - CONTEXT.md
+    - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
+    - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+    - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
+    - docs/process/PHASE-3-GATE-REPORT.md
+    - work-unit-evidence
+    - historical-continuity-snapshots
+  conflict_rule: >
+    Do not resolve conflicts silently. Compare artifact role, version, scope,
+    evidence and supersession before proposing an update.
+
+retrieval:
+  default_entrypoint: CONTEXT.md
+  load_entire_repository_by_default: false
+  prefer_targeted_reads: true
+  large_documents:
+    strategy: section-level-retrieval
+    paths:
+      - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
+      - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
+      - docs/architecture/ORCHESTRATOR-*.md
+  exclude:
+    - .venv/**
+    - .pytest_cache/**
+    - "**/__pycache__/**"
+    - "**/*.pyc"
+  default_exclude_from_authoritative_retrieval:
+    - specifications/MASTER-SPECIFICATION.md
+    - specifications/MASTER-SPECIFICATION-v0.2.md
+    - specifications/MASTER-SPECIFICATION-v0.3.md
+    - docs/process/history/skill/**
+
+artifact_groups:
+  authoritative_specification:
+    authority: normative
+    default_retrieval: true
+    paths:
+      - specifications/orchestrator/PROJECT-DEFINITION.md
+      - specifications/orchestrator/ORCHESTRATOR-REQUIREMENTS.md
+
+  authoritative_architecture_design:
+    authority: normative
+    default_retrieval: targeted
+    paths:
+      - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+      - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
+      - docs/architecture/ORCHESTRATOR-CAPABILITIES.md
+      - docs/architecture/ORCHESTRATOR-KNOWLEDGE-MAP.md
+      - docs/architecture/ORCHESTRATOR-PROJECT-MANAGEMENT.md
+      - docs/architecture/ORCHESTRATOR-STRUCTURAL-ANALYSIS.md
+      - docs/architecture/ORCHESTRATOR-ECOSYSTEM-AWARENESS.md
+      - docs/architecture/ORCHESTRATOR-AGENT-AND-SKILL-ANALYSIS.md
+      - docs/architecture/ORCHESTRATOR-RESOURCE-MODEL-SELECTION.md
+      - docs/architecture/ORCHESTRATOR-DELEGATION-AND-COORDINATION.md
+      - docs/architecture/ORCHESTRATOR-RESULT-EVALUATION.md
+      - docs/architecture/ORCHESTRATOR-REPLANNING.md
+      - docs/architecture/ORCHESTRATOR-CONTINUITY-AND-LEARNING.md
+
+  development_discipline:
+    authority: normative-process
+    default_retrieval: targeted
+    paths:
+      - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
+
+  current_operational_context:
+    authority: operational-current
+    default_retrieval: true
+    paths:
+      - CONTEXT.md
+      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
+      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+      - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
+      - docs/process/PHASE-3-GATE-REPORT.md
+      - docs/process/OPENCLAW-GATEWAY-RESEARCH-WU-051.md
+      - docs/architecture/OPENCLAW-GATEWAY-INTEGRATION-WU-052.md
+
+  implementation:
+    authority: implementation
+    default_retrieval: on-demand
+    paths:
+      - src/domain/**
+      - src/application/**
+      - src/infrastructure/**
+      - src/interfaces/**
+
+  verification_evidence:
+    authority: evidence
+    default_retrieval: on-demand
+    paths:
+      - tests/**
+      - scripts/validate.py
+      - docs/architecture/*-WU-*.md
+
+  historical_plans_and_snapshots:
+    authority: historical
+    default_retrieval: false
+    paths:
+      - docs/process/ORCHESTRATOR-IMPLEMENTATION-PLAN.md
+      - docs/process/PHASE-2-IMPLEMENTATION-PLAN.md
+      - docs/process/PHASE-2-FINAL-REVIEW.md
+      - docs/process/DEVELOPMENT-CONTINUITY-v0.5.md
+      - docs/process/DEVELOPMENT-CONTINUITY-v0.6.md
+
+  legacy_professional_software_engineering_skill:
+    authority: legacy-non-authoritative
+    default_retrieval: false
+    compatibility_review_required: true
+    paths:
+      - specifications/MASTER-SPECIFICATION.md
+      - specifications/MASTER-SPECIFICATION-v0.2.md
+      - specifications/MASTER-SPECIFICATION-v0.3.md
+      - docs/process/history/skill/**
+
+dynamic_state:
+  source_of_truth: adaptive-ai-orchestrator-core
+  static_repository_files_are_not_live_state: true
+  future_tool_or_api_access_required_for:
+    - live-project-state
+    - active-work-units
+    - dependency-graph
+    - resource-catalog
+    - model-agent-runtime-availability
+    - execution-lifecycle
+    - runtime-event-stream
+    - durable-recovery-state
+    - mutable-evidence-store
+    - formal-acceptance-state
+
+legacy_promotion:
+  rule: >
+    Legacy knowledge never becomes current authority by retrieval alone.
+  workflow:
+    - identify-candidate
+    - compatibility-analysis
+    - classify
+    - impact-analysis
+    - decision
+    - adopt-into-current-artifact-or-skill-if-approved
+    - verify
+    - record-provenance
