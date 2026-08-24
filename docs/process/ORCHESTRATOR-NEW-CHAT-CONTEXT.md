@@ -105,7 +105,6 @@ Em um novo chat, a leitura deve seguir esta sequência:
 
 10. docs/architecture/OPENCLAW-GATEWAY-INTEGRATION-WU-052.md
 
-11. docs/process/DEVELOPMENT-CONTINUITY-v0.6.md
 ```
 
 A ordem tem propósito:
