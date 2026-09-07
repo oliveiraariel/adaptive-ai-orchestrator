@@ -91,13 +91,14 @@ class PlanWork:
             WorkUnitState.PLANNED,
             WorkUnitState.READY,
             WorkUnitState.REOPENED,
+            WorkUnitState.REVISION_REQUIRED,
         }:
             return False
 
         return all(dependency.is_satisfied for dependency in dependencies)
 
-    @staticmethod
-    def _validate(request: PlanWorkRequest) -> None:
+    @classmethod
+    def _validate(cls, request: PlanWorkRequest) -> None:
         if request.version < 1:
             raise ValueError("Plan version must be at least 1.")
 
@@ -116,3 +117,45 @@ class PlanWork:
                 raise ValueError(
                     f"Dependency target '{dependency.target_id}' is not in the Work Unit set."
                 )
+
+        cls._ensure_required_dependencies_are_acyclic(
+            work_unit_ids=known_ids,
+            dependencies=request.dependencies,
+        )
+
+    @staticmethod
+    def _ensure_required_dependencies_are_acyclic(
+        *,
+        work_unit_ids: set[str],
+        dependencies: Sequence[Dependency],
+    ) -> None:
+        outgoing: dict[str, list[str]] = {
+            work_unit_id: [] for work_unit_id in work_unit_ids
+        }
+        indegree = {work_unit_id: 0 for work_unit_id in work_unit_ids}
+
+        for dependency in dependencies:
+            if not dependency.required:
+                continue
+            outgoing[dependency.source_id].append(dependency.target_id)
+            indegree[dependency.target_id] += 1
+
+        frontier = [
+            work_unit_id
+            for work_unit_id, degree in indegree.items()
+            if degree == 0
+        ]
+        visited = 0
+
+        while frontier:
+            current = frontier.pop()
+            visited += 1
+            for target in outgoing[current]:
+                indegree[target] -= 1
+                if indegree[target] == 0:
+                    frontier.append(target)
+
+        if visited != len(work_unit_ids):
+            raise ValueError(
+                "Required Work Unit dependency graph must be acyclic."
+            )

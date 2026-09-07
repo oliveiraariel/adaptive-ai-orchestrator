@@ -1,8 +1,10 @@
+import pytest
+
 from application.plan_work import PlanWork, PlanWorkRequest
 from domain.dependency import Dependency
 from domain.plan import PlanStatus
 from domain.project import Project, ProjectId
-from domain.work_unit import WorkUnit, WorkUnitId, WorkUnitState
+from domain.work_unit import WorkUnit, WorkUnitId
 
 
 def make_project() -> Project:
@@ -123,10 +125,29 @@ def test_running_work_unit_is_not_ready() -> None:
     assert result.blocked_work_unit_ids == ("wu-001",)
 
 
+def test_revision_required_work_unit_is_ready_for_reexecution() -> None:
+    project = make_project()
+    work_unit = make_work_unit("wu-revision")
+    work_unit.mark_ready()
+    work_unit.start()
+    work_unit.start_evaluation()
+    work_unit.require_revision()
+
+    result = PlanWork().execute(
+        PlanWorkRequest(
+            project=project,
+            work_units=[work_unit],
+            dependencies=[],
+        )
+    )
+
+    assert result.ready_work_unit_ids == ("wu-revision",)
+
+
 def test_unknown_dependency_work_unit_is_rejected() -> None:
     project = make_project()
 
-    try:
+    with pytest.raises(ValueError, match="wu-missing"):
         PlanWork().execute(
             PlanWorkRequest(
                 project=project,
@@ -139,7 +160,45 @@ def test_unknown_dependency_work_unit_is_rejected() -> None:
                 ],
             )
         )
-    except ValueError as exc:
-        assert "wu-missing" in str(exc)
-    else:
-        raise AssertionError("Expected unknown dependency to be rejected.")
+
+
+def test_required_dependency_cycle_is_rejected_before_execution() -> None:
+    project = make_project()
+    work_units = [
+        make_work_unit("wu-a"),
+        make_work_unit("wu-b"),
+        make_work_unit("wu-c"),
+    ]
+    dependencies = [
+        Dependency(source_id="wu-a", target_id="wu-b"),
+        Dependency(source_id="wu-b", target_id="wu-c"),
+        Dependency(source_id="wu-c", target_id="wu-a"),
+    ]
+
+    with pytest.raises(ValueError, match="acyclic"):
+        PlanWork().execute(
+            PlanWorkRequest(
+                project=project,
+                work_units=work_units,
+                dependencies=dependencies,
+            )
+        )
+
+
+def test_optional_dependency_cycle_does_not_deadlock_required_frontier() -> None:
+    project = make_project()
+    work_units = [make_work_unit("wu-a"), make_work_unit("wu-b")]
+    dependencies = [
+        Dependency(source_id="wu-a", target_id="wu-b", required=False),
+        Dependency(source_id="wu-b", target_id="wu-a", required=False),
+    ]
+
+    result = PlanWork().execute(
+        PlanWorkRequest(
+            project=project,
+            work_units=work_units,
+            dependencies=dependencies,
+        )
+    )
+
+    assert result.ready_work_unit_ids == ("wu-a", "wu-b")

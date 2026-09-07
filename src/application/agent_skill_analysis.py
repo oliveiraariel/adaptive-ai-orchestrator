@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Sequence
 
 from domain.agent_profile import AgentProfile
 from domain.skill_profile import SkillProfile
@@ -13,6 +12,7 @@ class AgentSkillCandidate:
     skill_ids: tuple[str, ...]
     matched_capabilities: tuple[str, ...]
     confidence: float
+    eligible_model_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -35,23 +35,27 @@ class AgentSkillAnalysis:
         required_capabilities = set(work_unit.required_capabilities)
         if not required_capabilities:
             return AgentSkillAnalysisResult(candidates=())
+
         candidates: list[AgentSkillCandidate] = []
 
         for agent in self._agent_catalog.all():
-            matched_capabilities = tuple(
-                capability
-                for capability in work_unit.required_capabilities
-                if agent.supports_capability(capability)
-            )
-
-            if not required_capabilities.issubset(set(matched_capabilities)):
-                continue
-
             compatible_skills = self._find_compatible_skills(
                 agent=agent,
                 required_capabilities=required_capabilities,
             )
 
+            provided_capabilities = set(agent.capabilities)
+            for skill in compatible_skills:
+                provided_capabilities.update(skill.capabilities)
+
+            if not required_capabilities.issubset(provided_capabilities):
+                continue
+
+            matched_capabilities = tuple(
+                capability
+                for capability in work_unit.required_capabilities
+                if capability in provided_capabilities
+            )
             skill_ids = tuple(skill.id.value for skill in compatible_skills)
 
             candidates.append(
@@ -64,6 +68,7 @@ class AgentSkillAnalysis:
                         matched=len(matched_capabilities),
                         skills_found=len(skill_ids),
                     ),
+                    eligible_model_ids=agent.eligible_models,
                 )
             )
 

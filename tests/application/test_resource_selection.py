@@ -19,11 +19,12 @@ def make_work_unit() -> WorkUnit:
     )
 
 
-def make_agent() -> AgentProfile:
+def make_agent(eligible_models: tuple[str, ...] = ()) -> AgentProfile:
     return AgentProfile(
         id=AgentId("agent-001"),
         role="engineering-agent",
         capabilities=("testing",),
+        eligible_models=eligible_models,
     )
 
 
@@ -49,6 +50,7 @@ def make_model(model_id: str, provider: str) -> ModelProfile:
 
 def make_selection(
     model_ids: tuple[str, ...] = (),
+    agent_eligible_models: tuple[str, ...] = (),
 ) -> tuple[
     InMemoryAgentCatalog,
     InMemorySkillCatalog,
@@ -59,7 +61,7 @@ def make_selection(
     skills = InMemorySkillCatalog()
     models = InMemoryModelCatalog()
 
-    agents.add(make_agent())
+    agents.add(make_agent(agent_eligible_models))
     skills.add(make_skill(model_ids))
 
     selection = ResourceSelection(
@@ -114,6 +116,19 @@ def test_skill_model_compatibility_can_filter_models() -> None:
     assert result.configuration.model == "model-b"
 
 
+def test_agent_model_eligibility_is_enforced() -> None:
+    _, _, models, selection = make_selection(
+        agent_eligible_models=("model-b",),
+    )
+    models.add(make_model("model-a", "provider-a"))
+    models.add(make_model("model-b", "provider-b"))
+
+    result = selection.execute(ResourceSelectionRequest(make_work_unit()))
+
+    assert result.configuration is not None
+    assert result.configuration.model == "model-b"
+
+
 def test_agent_skill_analysis_and_resource_selection_share_same_skill_catalog() -> None:
     agents, skills, models, selection = make_selection(("model-001",))
     agents.add(
@@ -139,3 +154,74 @@ def test_agent_skill_analysis_and_resource_selection_share_same_skill_catalog() 
 
     assert result.configuration is not None
     assert result.configuration.agent in {"agent-001", "agent-002"}
+
+
+def test_runtime_is_selected_from_intersection_of_skill_constraints() -> None:
+    agents = InMemoryAgentCatalog()
+    skills = InMemorySkillCatalog()
+    models = InMemoryModelCatalog()
+    agents.add(make_agent())
+    skills.add(
+        SkillProfile(
+            id=SkillId("skill-a"),
+            purpose="first testing discipline",
+            capabilities=("testing",),
+            compatible_agents=("agent-001",),
+            compatible_runtimes=("openclaw", "codex"),
+        )
+    )
+    skills.add(
+        SkillProfile(
+            id=SkillId("skill-b"),
+            purpose="second testing discipline",
+            capabilities=("testing",),
+            compatible_agents=("agent-001",),
+            compatible_runtimes=("codex", "other"),
+        )
+    )
+    models.add(make_model("model-001", "provider-001"))
+    selection = ResourceSelection(
+        agent_skill_analysis=AgentSkillAnalysis(agents, skills),
+        skill_catalog=skills,
+        model_catalog=models,
+    )
+
+    result = selection.execute(ResourceSelectionRequest(make_work_unit()))
+
+    assert result.configuration is not None
+    assert result.configuration.runtime == "codex"
+
+
+def test_incompatible_runtime_constraints_reject_configuration() -> None:
+    agents = InMemoryAgentCatalog()
+    skills = InMemorySkillCatalog()
+    models = InMemoryModelCatalog()
+    agents.add(make_agent())
+    skills.add(
+        SkillProfile(
+            id=SkillId("skill-a"),
+            purpose="first testing discipline",
+            capabilities=("testing",),
+            compatible_agents=("agent-001",),
+            compatible_runtimes=("openclaw",),
+        )
+    )
+    skills.add(
+        SkillProfile(
+            id=SkillId("skill-b"),
+            purpose="second testing discipline",
+            capabilities=("testing",),
+            compatible_agents=("agent-001",),
+            compatible_runtimes=("codex",),
+        )
+    )
+    models.add(make_model("model-001", "provider-001"))
+    selection = ResourceSelection(
+        agent_skill_analysis=AgentSkillAnalysis(agents, skills),
+        skill_catalog=skills,
+        model_catalog=models,
+    )
+
+    result = selection.execute(ResourceSelectionRequest(make_work_unit()))
+
+    assert result.configuration is None

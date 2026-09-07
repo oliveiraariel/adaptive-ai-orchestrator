@@ -15,6 +15,14 @@ class WorkUnitState(str, Enum):
     REOPENED = "REOPENED"
 
 
+class WorkUnitKind(str, Enum):
+    EXECUTION = "EXECUTION"
+    DECISION = "DECISION"
+    RESEARCH = "RESEARCH"
+    PROTOTYPE = "PROTOTYPE"
+    HUMAN_ACTION = "HUMAN_ACTION"
+
+
 class WorkUnitStateError(ValueError):
     """Raised when a Work Unit invariant or transition is violated."""
 
@@ -43,6 +51,7 @@ class WorkUnit:
     criticality: int = 0
     state: WorkUnitState = WorkUnitState.PLANNED
     execution_reference: str | None = None
+    kind: WorkUnitKind = WorkUnitKind.EXECUTION
 
     def __post_init__(self) -> None:
         if not self.objective or not self.objective.strip():

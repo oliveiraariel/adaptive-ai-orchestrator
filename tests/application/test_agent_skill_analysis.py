@@ -77,6 +77,27 @@ def test_agent_missing_required_capability_is_excluded() -> None:
     assert result.candidates == ()
 
 
+def test_compatible_skill_can_supply_capability_missing_from_agent_profile() -> None:
+    agents, skills, analysis = make_analysis()
+
+    agents.add(make_agent("agent-001", ("python",)))
+    skills.add(
+        make_skill(
+            "tdd",
+            ("testing",),
+            compatible_agents=("agent-001",),
+        )
+    )
+
+    result = analysis.execute(make_work_unit())
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.agent_id == "agent-001"
+    assert candidate.skill_ids == ("tdd",)
+    assert candidate.matched_capabilities == ("python", "testing")
+
+
 def test_incompatible_skill_is_not_selected() -> None:
     agents, skills, analysis = make_analysis()
 
