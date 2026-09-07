@@ -38,6 +38,27 @@ def test_accepted_execution_completes_work_advances_dependencies_and_releases_cl
     assert registry.get("wu-a") is None
 
 
+def test_accepted_execution_records_optional_dependency_satisfaction_too() -> None:
+    work_unit, registry, claim = make_running_work()
+    optional = Dependency(
+        source_id="wu-a",
+        target_id="wu-observer",
+        required=False,
+    )
+
+    result = FinalizeExecution(registry).execute(
+        FinalizeExecutionRequest(
+            work_unit=work_unit,
+            claim=claim,
+            verdict=EvaluationVerdict.ACCEPTED,
+            dependencies=(optional,),
+        )
+    )
+
+    assert optional.status is DependencyStatus.SATISFIED
+    assert result.satisfied_dependency_ids == ("wu-a->wu-observer",)
+
+
 def test_returned_execution_requires_revision_and_does_not_advance_dependency() -> None:
     work_unit, registry, claim = make_running_work()
     dependency = Dependency(source_id="wu-a", target_id="wu-b")
