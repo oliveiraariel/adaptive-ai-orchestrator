@@ -8,7 +8,7 @@ from application.agent_runtime import (
 from domain.execution_policy import PolicyDecision
 from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
-from domain.work_unit import WorkUnit, WorkUnitState
+from domain.work_unit import WorkUnit, WorkUnitKind, WorkUnitState
 
 
 class DelegateWorkError(RuntimeError):
@@ -39,6 +39,7 @@ class DelegateWork:
 
         self._ensure_ready_for_execution(request.work_unit)
         self._ensure_task_matches(request)
+        self._ensure_agent_delegable_kind(request.work_unit)
         self._ensure_policy_allows_delegation(request)
 
         execution = self._runtime.submit(request.task_package)
@@ -51,6 +52,7 @@ class DelegateWork:
                 "Runtime did not accept the delegated execution."
             )
 
+        request.work_unit.execution_reference = execution.id
         request.work_unit.start()
 
         return DelegateWorkResult(execution=execution)
@@ -86,6 +88,13 @@ class DelegateWork:
         if request.task_package.objective != request.work_unit.objective:
             raise DelegateWorkError(
                 "TaskPackage objective does not match the Work Unit objective."
+            )
+
+    @staticmethod
+    def _ensure_agent_delegable_kind(work_unit: WorkUnit) -> None:
+        if work_unit.kind is WorkUnitKind.HUMAN_ACTION:
+            raise DelegateWorkError(
+                "HUMAN_ACTION Work Units cannot be delegated to an agent runtime."
             )
 
     @staticmethod
