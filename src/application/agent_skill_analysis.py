@@ -12,6 +12,7 @@ class AgentSkillCandidate:
     skill_ids: tuple[str, ...]
     matched_capabilities: tuple[str, ...]
     confidence: float
+    eligible_model_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class AgentSkillAnalysis:
                         matched=len(matched_capabilities),
                         skills_found=len(skill_ids),
                     ),
+                    eligible_model_ids=agent.eligible_models,
                 )
             )
 
