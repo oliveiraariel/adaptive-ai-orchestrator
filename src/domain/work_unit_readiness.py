@@ -26,6 +26,7 @@ class WorkUnitReadinessEvaluator:
             WorkUnitState.PLANNED,
             WorkUnitState.READY,
             WorkUnitState.REOPENED,
+            WorkUnitState.REVISION_REQUIRED,
         }
     )
 
