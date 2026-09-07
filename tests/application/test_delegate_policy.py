@@ -9,7 +9,7 @@ from application.delegate_work import DelegateWork, DelegateWorkError, DelegateW
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
-from domain.work_unit import WorkUnit, WorkUnitId, WorkUnitState
+from domain.work_unit import WorkUnit, WorkUnitId, WorkUnitKind, WorkUnitState
 
 
 class RecordingRuntime:
@@ -43,10 +43,11 @@ def make_configuration() -> ResourceConfiguration:
     )
 
 
-def make_work_unit() -> WorkUnit:
+def make_work_unit(*, kind: WorkUnitKind = WorkUnitKind.EXECUTION) -> WorkUnit:
     work_unit = WorkUnit(
         id=WorkUnitId("wu-policy"),
         objective="Perform governed work",
+        kind=kind,
     )
     work_unit.mark_ready()
     return work_unit
@@ -100,6 +101,7 @@ def test_human_approval_is_checked_before_runtime_submission() -> None:
     assert result.execution.status is AgentRuntimeStatus.SUBMITTED
     assert len(runtime.submitted) == 1
     assert work_unit.state is WorkUnitState.RUNNING
+    assert work_unit.execution_reference == result.execution.id
 
 
 def test_human_execution_required_never_reaches_agent_runtime() -> None:
@@ -145,3 +147,24 @@ def test_forbidden_policy_never_reaches_agent_runtime() -> None:
         )
 
     assert runtime.submitted == []
+
+
+def test_human_action_kind_cannot_bypass_policy_by_direct_delegation() -> None:
+    runtime = RecordingRuntime()
+    configuration = make_configuration()
+    work_unit = make_work_unit(kind=WorkUnitKind.HUMAN_ACTION)
+    task = make_task(configuration, ExecutionPolicy())
+
+    with pytest.raises(DelegateWorkError, match="HUMAN_ACTION"):
+        DelegateWork(runtime).execute(
+            DelegateWorkRequest(
+                work_unit=work_unit,
+                configuration=configuration,
+                task_package=task,
+                human_approved=True,
+            )
+        )
+
+    assert runtime.submitted == []
+    assert work_unit.execution_reference is None
+    assert work_unit.state is WorkUnitState.READY
