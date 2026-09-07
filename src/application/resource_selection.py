@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from application.agent_skill_analysis import AgentSkillAnalysis
 from domain.model_profile import ModelProfile
 from domain.resource_configuration import ResourceConfiguration
-from domain.skill_profile import SkillProfile, SkillId
+from domain.skill_profile import SkillId, SkillProfile
 from domain.work_unit import WorkUnit
 from infrastructure.catalogs import ModelCatalog, SkillCatalog
 
@@ -41,6 +41,7 @@ class ResourceSelection:
             skills = self._load_skills(candidate.skill_ids)
             compatible_model = self._select_model(
                 agent_id=candidate.agent_id,
+                agent_eligible_model_ids=candidate.eligible_model_ids,
                 skills=skills,
             )
 
@@ -48,6 +49,8 @@ class ResourceSelection:
                 continue
 
             runtime = self._select_runtime(skills)
+            if self._has_runtime_constraints(skills) and runtime is None:
+                continue
 
             return ResourceSelectionResult(
                 configuration=ResourceConfiguration(
@@ -78,6 +81,7 @@ class ResourceSelection:
         self,
         *,
         agent_id: str,
+        agent_eligible_model_ids: tuple[str, ...],
         skills: tuple[SkillProfile, ...],
     ) -> ModelProfile | None:
         compatible = [
@@ -86,6 +90,7 @@ class ResourceSelection:
             if self._model_is_compatible(
                 model=model,
                 agent_id=agent_id,
+                agent_eligible_model_ids=agent_eligible_model_ids,
                 skills=skills,
             )
         ]
@@ -98,8 +103,15 @@ class ResourceSelection:
         *,
         model: ModelProfile,
         agent_id: str,
+        agent_eligible_model_ids: tuple[str, ...],
         skills: tuple[SkillProfile, ...],
     ) -> bool:
+        if (
+            agent_eligible_model_ids
+            and model.id.value not in agent_eligible_model_ids
+        ):
+            return False
+
         return all(
             skill.accepts_model(model.id.value)
             and (not skill.compatible_agents or agent_id in skill.compatible_agents)
@@ -107,16 +119,24 @@ class ResourceSelection:
         )
 
     @staticmethod
+    def _has_runtime_constraints(skills: tuple[SkillProfile, ...]) -> bool:
+        return any(skill.compatible_runtimes for skill in skills)
+
+    @staticmethod
     def _select_runtime(
         skills: tuple[SkillProfile, ...],
     ) -> str | None:
-        runtime_candidates = {
-            runtime
+        constrained = [
+            set(skill.compatible_runtimes)
             for skill in skills
-            for runtime in skill.compatible_runtimes
-        }
+            if skill.compatible_runtimes
+        ]
 
-        if len(runtime_candidates) == 1:
-            return next(iter(runtime_candidates))
+        if not constrained:
+            return None
 
-        return None
+        compatible = set.intersection(*constrained)
+        if not compatible:
+            return None
+
+        return sorted(compatible)[0]
