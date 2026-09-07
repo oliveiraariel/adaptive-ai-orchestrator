@@ -5,6 +5,7 @@ from application.agent_runtime import (
     AgentRuntimeStatus,
     ExecutionReference,
 )
+from domain.execution_policy import PolicyDecision
 from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
 from domain.work_unit import WorkUnit, WorkUnitState
@@ -19,6 +20,7 @@ class DelegateWorkRequest:
     work_unit: WorkUnit
     configuration: ResourceConfiguration
     task_package: TaskPackage
+    human_approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class DelegateWork:
 
         self._ensure_ready_for_execution(request.work_unit)
         self._ensure_task_matches(request)
+        self._ensure_policy_allows_delegation(request)
 
         execution = self._runtime.submit(request.task_package)
 
@@ -84,3 +87,27 @@ class DelegateWork:
             raise DelegateWorkError(
                 "TaskPackage objective does not match the Work Unit objective."
             )
+
+    @staticmethod
+    def _ensure_policy_allows_delegation(request: DelegateWorkRequest) -> None:
+        decision = request.task_package.execution_policy.decide(
+            human_approved=request.human_approved,
+            requested_side_effects=request.task_package.requested_side_effects,
+            requested_tools=request.configuration.tools,
+        )
+
+        if decision is PolicyDecision.ALLOW:
+            return
+
+        if decision is PolicyDecision.REQUIRE_HUMAN_APPROVAL:
+            raise DelegateWorkError(
+                "Delegation requires explicit human approval before execution."
+            )
+
+        if decision is PolicyDecision.REQUIRE_HUMAN_EXECUTION:
+            raise DelegateWorkError(
+                "This Work Unit requires human execution and cannot be delegated "
+                "to an agent."
+            )
+
+        raise DelegateWorkError("Execution policy denied agent delegation.")
