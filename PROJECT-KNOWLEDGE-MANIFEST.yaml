@@ -80,6 +80,7 @@ artifact_groups:
       - docs/architecture/ORCHESTRATOR-INDEPENDENT-EVALUATION.md
       - docs/architecture/ORCHESTRATOR-REPLANNING.md
       - docs/architecture/ORCHESTRATOR-CONTINUITY-AND-LEARNING.md
+      - docs/architecture/ARIEL-AGENT-SKILLS-INTEGRATION.md
 
   development_discipline:
     authority: normative-process
