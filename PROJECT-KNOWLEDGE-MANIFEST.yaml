@@ -74,7 +74,10 @@ artifact_groups:
       - docs/architecture/ORCHESTRATOR-AGENT-AND-SKILL-ANALYSIS.md
       - docs/architecture/ORCHESTRATOR-RESOURCE-MODEL-SELECTION.md
       - docs/architecture/ORCHESTRATOR-DELEGATION-AND-COORDINATION.md
+      - docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md
+      - docs/architecture/ORCHESTRATOR-AUTHORITY-AND-POLICY.md
       - docs/architecture/ORCHESTRATOR-RESULT-EVALUATION.md
+      - docs/architecture/ORCHESTRATOR-INDEPENDENT-EVALUATION.md
       - docs/architecture/ORCHESTRATOR-REPLANNING.md
       - docs/architecture/ORCHESTRATOR-CONTINUITY-AND-LEARNING.md
 
