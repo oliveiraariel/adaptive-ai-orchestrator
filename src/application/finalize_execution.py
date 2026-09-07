@@ -52,8 +52,6 @@ class FinalizeExecution:
             for dependency in request.dependencies:
                 if dependency.source_id != work_unit.id.value:
                     continue
-                if not dependency.required:
-                    continue
                 dependency.satisfy()
                 satisfied.append(
                     f"{dependency.source_id}->{dependency.target_id}"
