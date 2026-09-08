@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -41,7 +40,8 @@ def _load_text(path: Path) -> str:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
         return raw
-    return "\n".join(_walk_strings(parsed))
+    flattened = "\n".join(_walk_strings(parsed))
+    return f"{raw}\n{flattened}"
 
 
 def _normalized(text: str) -> str:
@@ -51,8 +51,8 @@ def _normalized(text: str) -> str:
 def _parallelism_values(text: str) -> list[int]:
     values: list[int] = []
     patterns = (
-        r"max[_\s-]*parallelism[_\s-]*observed\s*[:=]\s*`?(\d+)",
-        r"maximum[_\s-]*parallelism[_\s-]*observed\s*[:=]\s*`?(\d+)",
+        r"max[_\s-]*parallelism[_\s-]*observed\s*[\":= ]+`?(\d+)",
+        r"maximum[_\s-]*parallelism[_\s-]*observed\s*[\":= ]+`?(\d+)",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
@@ -66,9 +66,8 @@ def validate_evidence(text: str, minimum_parallelism: int = 3) -> dict[str, Any]
     max_parallelism = max(parallelism_values, default=0)
 
     status_completed = bool(
-        re.search(r"(?:project\s+)?status\s*[:=]\s*`?completed\b", normalized)
+        re.search(r"(?:project\s+)?status\s*[\":= ]+`?completed\b", normalized)
         or re.search(r'"status"\s*:\s*"completed"', text, flags=re.IGNORECASE)
-        or re.search(r"\bcompleted\s+work\s+units\b", normalized)
     )
     fan_in_present = FAN_IN_MARKER in text
     parallelism_ok = max_parallelism >= minimum_parallelism
