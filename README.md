@@ -85,13 +85,13 @@ Agent & Skill Analysis
    ↓
 Parallel-safe Delegation
    ↓
-Worker Sessions
+Independent Worker Sessions
    ↓
-Result Evaluation / Fan-in
+First Completion → Evaluate → Refill Frontier
    ↓
-Dependency Advancement
+Fan-in / Dependency Advancement
    ↓
-Replanning
+Bounded Replanning
    ↓
 Continuity & Evidence
    ↺
@@ -116,11 +116,13 @@ when real prerequisites and workspace safety allow them.
 
 A stable API/interface contract can therefore unlock backend and frontend work at the same time rather than forcing the whole backend to finish first. Parallel results can converge into explicit integration/testing/review Work Units.
 
+The scheduler is **continuously replenished**: when one worker finishes and its accepted result unlocks new work, Adaptive can fill the free slot immediately while unrelated workers from earlier dispatches continue running. Project execution is not forced through barrier-style batches.
+
 The worker count is **not fixed**. A frontier can use 2, 3, 4, 6 or more logical workers up to the configured/policy limit, but the planner is instructed to avoid token-expensive micro-fragmentation and to use only useful independent workers.
 
-Workers are independent runtime sessions, not automatically persisted OpenClaw agent profiles. When several workers share one checkout, write-capable Work Units run concurrently only when their declared repository-relative write scopes do not overlap. This version does not claim automatic Git-worktree/container isolation.
+Workers are independent runtime sessions, not automatically persisted OpenClaw agent profiles. When several workers share one checkout, filesystem writers require literal repository-relative write scopes. Missing/unsafe/overlapping scopes are rejected or serialized, including conflicts against workers already active from earlier dispatch generations. This version does not claim automatic Git-worktree/container isolation.
 
-See [`docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`](docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md) for the normative execution contract.
+See [`docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`](docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md) and [`specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md`](specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md) for the current project-execution contract.
 
 ## Local development
 
@@ -199,12 +201,12 @@ Project mode provides:
 - graph validation and required-edge cycle rejection;
 - minimum compatible skill-set resolution per Work Unit;
 - dynamic ready-frontier worker creation;
-- synchronized parallel waves;
-- conservative shared-checkout write-scope conflict control;
+- continuous free-slot replenishment after accepted completions;
+- conservative shared-checkout write-scope validation/conflict control;
 - dependency-result fan-in context;
-- bounded retry and human-action boundaries;
+- bounded retry with distinct attempt identities and human-action boundaries;
 - bounded additive replanning when accepted workers discover necessary missing work;
-- structured project-level execution records.
+- structured project-level execution records and dispatch generations.
 
 A deterministic `--plan-file` can bypass AI planning for tests and E2E validation while exercising the same execution loop.
 
@@ -239,13 +241,15 @@ adaptive-orchestrator-bridge
         ↓
 run OR orchestrate
         ↓
-Adaptive core / project execution layer
+Adaptive core / continuous project scheduler
         ↓
 OpenClaw Gateway workers
         ↓
-Adaptive synchronization / result
+Adaptive evaluation / frontier refill / fan-in
+        ↓
+structured result
 ```
 
-The bridge is responsible only for invocation and result transport. Planning, policy, claims, worker count, concurrency, fan-in, evaluation and replanning remain owned by Adaptive.
+The bridge is responsible only for invocation and result transport. Planning, policy, claims, worker count, concurrency, continuous scheduling, fan-in, evaluation and replanning remain owned by Adaptive.
 
 See [`docs/OPENCLAW-INBOUND-BRIDGE.md`](docs/OPENCLAW-INBOUND-BRIDGE.md) for the bridge contract, security model, and validation procedure.
