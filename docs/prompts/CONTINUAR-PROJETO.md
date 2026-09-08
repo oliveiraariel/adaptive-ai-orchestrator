@@ -22,11 +22,19 @@ Selecione somente as skills necessárias por Work Unit e evite criar workers
 adicionais sem benefício real. O número de workers deve seguir a frontier útil,
 não uma meta fixa de paralelismo.
 
+A execução deve permanecer contínua: quando um worker terminar e seu resultado
+for aceito, atualize imediatamente as dependências e recalcule a ready frontier.
+Se isso desbloquear nova Work Unit e existir slot livre compatível, despache o
+novo worker sem esperar outros workers independentes ainda ativos.
+
 Quando resultados paralelos convergirem, faça fan-in explícito por integração,
 testes, síntese ou revisão antes de liberar dependências posteriores.
+Propague para downstream apenas resultados aceitos e contexto necessário.
 
-Em checkout compartilhado, não execute writes paralelos com escopos sobrepostos,
-amplos ou desconhecidos. Preserve a serialização necessária para segurança.
+Em checkout compartilhado, toda Work Unit com `filesystem.write` deve declarar
+`write_paths` literais, precisos e relativos ao repositório. Não execute writes
+paralelos com escopos sobrepostos, amplos, desconhecidos, absolutos, com traversal
+ou glob. Compare novos writers também com writers que já estejam ativos.
 
 Respeite a governança, arquitetura, requisitos, convenções, gates e limites de
 autoridade já existentes no projeto.
@@ -43,8 +51,10 @@ Pare somente diante de:
 - publicação/deploy não autorizado;
 - conclusão do escopo atual.
 
-Ao completar cada wave significativa, avalie resultados, avance apenas
-Work Units aceitas, preserve evidência e recompute a próxima frontier.
+Após cada resultado relevante, avalie/finalize a Work Unit, preserve evidência,
+avance somente dependências satisfeitas e recalcule a frontier. Use dispatch
+generations como registro operacional; não trate uma generation como barreira que
+obriga workers independentes a terminarem juntos.
 ```
 
 ## Como chamar este prompt no OpenClaw
