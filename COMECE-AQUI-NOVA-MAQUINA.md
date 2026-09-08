@@ -4,6 +4,43 @@ Você **não precisa lembrar nenhum dos comandos usados para montar o ambiente m
 
 A fonte de verdade é este repositório.
 
+## O único que você precisa lembrar
+
+Meu ambiente **Adaptive + OpenClaw** está documentado no repositório:
+
+`oliveiraariel/adaptive-ai-orchestrator`
+
+Se eu estiver em uma máquina nova, **não preciso lembrar dos comandos de instalação**.
+
+Posso simplesmente:
+
+1. entrar no meu GitHub;
+2. abrir `oliveiraariel/adaptive-ai-orchestrator`;
+3. abrir `COMECE-AQUI-NOVA-MAQUINA.md`;
+4. seguir a instrução exibida aqui.
+
+Se estiver usando uma IA, basta dizer:
+
+> Abra meu repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md` e `bootstrap/RECOVERY-PROMPT.md` e reconstrua meu ambiente seguindo o bootstrap versionado. Não improvise uma configuração paralela e não exponha credenciais.
+
+Depois de instalado, preciso lembrar apenas de três conceitos:
+
+```text
+Setup  → instalar ou reparar
+Update → atualizar tudo com segurança
+Verify → verificar se tudo continua funcionando
+```
+
+Comandos correspondentes:
+
+```text
+adaptive-openclaw-setup
+adaptive-openclaw-update
+adaptive-openclaw-verify
+```
+
+O bootstrap também cria atalhos gráficos correspondentes no Linux.
+
 ## Opção recomendada: um único comando
 
 Em uma máquina Linux Mint / Ubuntu / Debian compatível, abra um terminal e cole:
