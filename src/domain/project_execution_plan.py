@@ -85,6 +85,39 @@ class PlannedWorkUnit:
                 f"Planned Work Unit '{self.id}' contains a blank list item."
             )
 
+        if "filesystem.write" in self.requested_side_effects and not self.write_paths:
+            raise ProjectExecutionPlanError(
+                f"Planned Work Unit '{self.id}' requests filesystem.write but "
+                "declares no repository-relative write_paths."
+            )
+
+        for path in self.write_paths:
+            self._validate_write_path(path)
+
+    def _validate_write_path(self, path: str) -> None:
+        normalized = path.strip().replace("\\", "/")
+        if normalized.startswith("/") or normalized.startswith("~"):
+            raise ProjectExecutionPlanError(
+                f"Planned Work Unit '{self.id}' write path '{path}' must be "
+                "repository-relative."
+            )
+        if len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha():
+            raise ProjectExecutionPlanError(
+                f"Planned Work Unit '{self.id}' write path '{path}' must not "
+                "contain an absolute drive prefix."
+            )
+        parts = tuple(part for part in normalized.split("/") if part not in {"", "."})
+        if ".." in parts:
+            raise ProjectExecutionPlanError(
+                f"Planned Work Unit '{self.id}' write path '{path}' must not "
+                "escape the repository with '..'."
+            )
+        if any(character in normalized for character in ("*", "?", "[", "]")):
+            raise ProjectExecutionPlanError(
+                f"Planned Work Unit '{self.id}' write path '{path}' must be a "
+                "literal path prefix, not a glob."
+            )
+
 
 @dataclass(frozen=True)
 class ProjectExecutionPlan:
