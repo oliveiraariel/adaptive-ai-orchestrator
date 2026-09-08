@@ -65,11 +65,12 @@ class OpenClawGatewayClient(OpenClawClient):
     def submit(self, task_payload: dict) -> str:
         task_id = str(task_payload["task_id"])
         configuration = task_payload["configuration"]
-        session_key = f"orchestrator:{task_id}"
+        agent_id = str(configuration["agent"])
+        session_key = f"agent:{agent_id}:orchestrator:{task_id}"
 
         params: dict[str, Any] = {
             "message": self._build_message(task_payload),
-            "agentId": str(configuration["agent"]),
+            "agentId": agent_id,
             "sessionKey": session_key,
             "deliver": False,
             "timeout": self._config.agent_timeout_seconds,

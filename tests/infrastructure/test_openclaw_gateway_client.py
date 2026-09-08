@@ -74,7 +74,7 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
             "stopReason": "stop",
         },
         "chat.history": {
-            "sessionKey": "orchestrator:task-001",
+            "sessionKey": "agent:agent-001:orchestrator:task-001",
             "messages": [
                 {
                     "role": "user",
@@ -143,7 +143,7 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
 
         assert (
             holder["requests"][0]["params"]["sessionKey"]
-            == "orchestrator:task-001"
+            == "agent:agent-001:orchestrator:task-001"
         )
 
         assert holder["connect"]["params"]["auth"] == {
@@ -227,7 +227,7 @@ def test_gateway_client_retrieves_assistant_text_from_chat_history() -> None:
             "stopReason": "stop",
         },
         "chat.history": {
-            "sessionKey": "orchestrator:task-002",
+            "sessionKey": "agent:agent-001:orchestrator:task-002",
             "messages": [
                 {
                     "role": "user",
@@ -289,7 +289,7 @@ def test_gateway_client_retrieves_assistant_text_from_chat_history() -> None:
             "chat.history",
         ]
         assert holder["requests"][2]["params"]["sessionKey"] == (
-            "orchestrator:task-002"
+            "agent:agent-001:orchestrator:task-002"
         )
     finally:
         server.shutdown()

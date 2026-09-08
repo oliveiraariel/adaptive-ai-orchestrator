@@ -44,7 +44,7 @@ def start_gateway() -> tuple[str, object, threading.Thread]:
                 "summary": "integration-ok",
             },
             "chat.history": {
-                "sessionKey": "orchestrator:task-gateway-001",
+                "sessionKey": "agent:agent-001:orchestrator:task-gateway-001",
                 "messages": [
                     {
                         "role": "user",
