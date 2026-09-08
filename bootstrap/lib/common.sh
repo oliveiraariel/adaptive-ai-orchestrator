@@ -65,20 +65,32 @@ check_linux_family() {
   esac
 }
 
+apt_run() {
+  if [[ "${EUID:-$(id -u)}" == "0" ]]; then
+    run apt-get "$@"
+  else
+    need_cmd sudo
+    run sudo apt-get "$@"
+  fi
+}
+
 ensure_apt_dependencies() {
   local packages=(git curl ca-certificates python3 python3-venv python3-pip)
-  local missing=()
-  command -v git >/dev/null 2>&1 || missing+=(git)
-  command -v curl >/dev/null 2>&1 || missing+=(curl)
-  command -v python3 >/dev/null 2>&1 || missing+=(python3 python3-venv python3-pip)
-  if ((${#missing[@]} == 0)); then
+  local needs_install=0
+  command -v git >/dev/null 2>&1 || needs_install=1
+  command -v curl >/dev/null 2>&1 || needs_install=1
+  command -v python3 >/dev/null 2>&1 || needs_install=1
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import venv' >/dev/null 2>&1 || needs_install=1
+    python3 -m pip --version >/dev/null 2>&1 || needs_install=1
+  fi
+  if [[ "$needs_install" == "0" ]]; then
     return
   fi
-  need_cmd sudo
   need_cmd apt-get
   log "Installing required system packages"
-  run sudo apt-get update
-  run sudo apt-get install -y "${packages[@]}"
+  apt_run update
+  apt_run install -y "${packages[@]}"
 }
 
 ensure_python_312() {
@@ -86,6 +98,7 @@ ensure_python_312() {
   local pyver
   pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
   version_ge "$pyver" "3.12" || die "Python 3.12+ is required; found $pyver. Upgrade Python, then rerun bootstrap."
+  python3 -c 'import venv' >/dev/null 2>&1 || die "Python venv support is unavailable. Install python3-venv and rerun."
   ok "Python $pyver"
 }
 
@@ -135,10 +148,10 @@ openclaw_version() {
   "$bin" --version 2>/dev/null | grep -Eo '[0-9]{4}\.[0-9]+\.[0-9]+' | head -n1
 }
 
-append_skill_root() {
-  local openclaw_bin="$1" skill_root="$2" current json
-  current="$($openclaw_bin config get skills.load.extraDirs --json 2>/dev/null || printf '[]')"
-  json="$(python3 - "$current" "$skill_root" <<'PY'
+append_json_array_config() {
+  local openclaw_bin="$1" path="$2" item="$3" current json
+  current="$("$openclaw_bin" config get "$path" --json 2>/dev/null || printf '[]')"
+  json="$(python3 - "$current" "$item" <<'PY'
 import json, sys
 raw, wanted = sys.argv[1], sys.argv[2]
 try:
@@ -152,7 +165,43 @@ if wanted not in value:
 print(json.dumps(value, ensure_ascii=False))
 PY
 )"
-  run "$openclaw_bin" config set skills.load.extraDirs "$json" --strict-json
+  run "$openclaw_bin" config set "$path" "$json" --strict-json
+}
+
+append_skill_root() {
+  append_json_array_config "$1" skills.load.extraDirs "$2"
+}
+
+ensure_bridge_allowlisted() {
+  local openclaw_bin="$1" bridge="adaptive-orchestrator-bridge" main_skills default_skills
+  if "$openclaw_bin" skills info "$bridge" --agent main >/dev/null 2>&1; then
+    return 0
+  fi
+  main_skills="$("$openclaw_bin" config get agents.entries.main.skills --json 2>/dev/null || true)"
+  if [[ -n "$main_skills" ]] && python3 - "$main_skills" <<'PY'
+import json, sys
+try:
+    value=json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(value, list) else 1)
+PY
+  then
+    append_json_array_config "$openclaw_bin" agents.entries.main.skills "$bridge"
+    return 0
+  fi
+  default_skills="$("$openclaw_bin" config get agents.defaults.skills --json 2>/dev/null || true)"
+  if [[ -n "$default_skills" ]] && python3 - "$default_skills" <<'PY'
+import json, sys
+try:
+    value=json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(value, list) else 1)
+PY
+  then
+    append_json_array_config "$openclaw_bin" agents.defaults.skills "$bridge"
+  fi
 }
 
 ensure_secret_file() {
