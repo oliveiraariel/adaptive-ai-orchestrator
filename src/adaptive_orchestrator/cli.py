@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from application.continuous_project_orchestration import (
+    RunContinuousProjectOrchestration,
+)
 from application.run_orchestration import (
     RunOrchestration,
     RunOrchestrationError,
@@ -16,7 +19,6 @@ from application.run_project_orchestration import (
     ProjectOrchestrationError,
     ProjectOrchestrationRequest,
     ProjectRunStatus,
-    RunProjectOrchestration,
 )
 from application.runtime_project_planner import (
     ProjectPlanningError,
@@ -53,25 +55,16 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         help="Execute one governed Work Unit through the Adaptive core.",
     )
-    _add_common_execution_arguments(run, include_skill=True)
+    _add_single_work_unit_arguments(run)
 
     orchestrate = commands.add_parser(
         "orchestrate",
         help=(
-            "Plan and execute a synchronized multi-Work-Unit project graph with "
-            "bounded parallel workers."
+            "Plan and continuously execute a synchronized multi-Work-Unit project "
+            "graph with bounded parallel workers."
         ),
     )
-    _add_common_execution_arguments(orchestrate, include_skill=False)
-    orchestrate.add_argument("--planner-agent")
-    orchestrate.add_argument("--skill-registry")
-    orchestrate.add_argument("--plan-file")
-    orchestrate.add_argument("--max-concurrency", type=int, default=4)
-    orchestrate.add_argument("--max-work-units", type=int, default=24)
-    orchestrate.add_argument("--max-waves", type=int, default=24)
-    orchestrate.add_argument("--max-attempts", type=int, default=2)
-    orchestrate.add_argument("--max-replans", type=int, default=2)
-    orchestrate.add_argument("--dependency-context-chars", type=int, default=6000)
+    _add_project_arguments(orchestrate)
 
     doctor = commands.add_parser(
         "doctor",
@@ -85,15 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_common_execution_arguments(
-    parser: argparse.ArgumentParser,
-    *,
-    include_skill: bool,
-) -> None:
+def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--objective", required=True)
     parser.add_argument("--agent", default="main")
-    if include_skill:
-        parser.add_argument("--skill", action="append", default=[])
+    parser.add_argument("--skill", action="append", default=[])
     parser.add_argument("--model")
     parser.add_argument("--provider")
     parser.add_argument("--tool", action="append", default=[])
@@ -104,6 +92,30 @@ def _add_common_execution_arguments(
     parser.add_argument("--expected-output", action="append", default=[])
     parser.add_argument("--accept", action="append", default=[])
     parser.add_argument("--side-effect", action="append", default=[])
+    _add_policy_arguments(parser)
+    _add_gateway_arguments(parser)
+
+
+def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--objective", required=True)
+    parser.add_argument("--agent", default="main")
+    parser.add_argument("--planner-agent")
+    parser.add_argument("--scope", default="")
+    parser.add_argument("--context", action="append", default=[])
+    parser.add_argument("--constraint", action="append", default=[])
+    parser.add_argument("--skill-registry")
+    parser.add_argument("--plan-file")
+    parser.add_argument("--max-concurrency", type=int, default=4)
+    parser.add_argument("--max-work-units", type=int, default=24)
+    parser.add_argument("--max-waves", type=int, default=24)
+    parser.add_argument("--max-attempts", type=int, default=2)
+    parser.add_argument("--max-replans", type=int, default=2)
+    parser.add_argument("--dependency-context-chars", type=int, default=6000)
+    _add_policy_arguments(parser)
+    _add_gateway_arguments(parser)
+
+
+def _add_policy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--allow-side-effect", action="append", default=[])
     parser.add_argument("--deny-tool", action="append", default=[])
     parser.add_argument(
@@ -112,6 +124,9 @@ def _add_common_execution_arguments(
         default=AutonomyClass.AUTONOMOUS.value,
     )
     parser.add_argument("--human-approved", action="store_true")
+
+
+def _add_gateway_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--gateway-url",
         default=os.environ.get("OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789"),
@@ -244,7 +259,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 max_work_units=args.max_work_units,
             )
 
-        result = RunProjectOrchestration(
+        result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
@@ -294,6 +309,17 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
+                "dispatch_generations": [
+                    {
+                        "generation": wave.wave,
+                        "ready_work_unit_ids": list(wave.ready_work_unit_ids),
+                        "selected_work_unit_ids": list(wave.selected_work_unit_ids),
+                        "conflict_deferred_ids": list(wave.conflict_deferred_ids),
+                    }
+                    for wave in result.waves
+                ],
+                # Compatibility alias for callers that consumed v0.4 pre-merge
+                # project-mode output while dispatch generations were named waves.
                 "waves": [
                     {
                         "wave": wave.wave,
