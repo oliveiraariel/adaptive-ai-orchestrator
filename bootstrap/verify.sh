@@ -42,6 +42,7 @@ ADAPTIVE_DIR="$ADAPTIVE_REPO_ROOT"
 SKILLS_DIR="$STACK_ROOT/ariel-agent-skills"
 VENV_PYTHON="$ADAPTIVE_DIR/.venv/bin/python"
 TOKEN_FILE="$(expand_path "$GATEWAY_SECRET_FILE")"
+E2E_EVIDENCE_VALIDATOR="$SCRIPT_DIR/lib/e2e_evidence.py"
 
 static_checks() {
   local scripts=(
@@ -53,14 +54,23 @@ static_checks() {
     "$SCRIPT_DIR/show-dashboard-token.sh"
     "$SCRIPT_DIR/lib/common.sh"
   )
-  local script
+  local script manifest_version
   [[ -f "$BOOTSTRAP_MANIFEST" ]] || die "Missing bootstrap manifest: $BOOTSTRAP_MANIFEST"
   python3 -m json.tool "$BOOTSTRAP_MANIFEST" >/dev/null
+  manifest_version="$(python3 - "$BOOTSTRAP_MANIFEST" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("bootstrap_version", ""))
+PY
+)"
+  [[ "$manifest_version" == "$BOOTSTRAP_VERSION" ]] || die "Bootstrap version mismatch: common.sh=$BOOTSTRAP_VERSION manifest=$manifest_version"
   for script in "${scripts[@]}"; do
     [[ -f "$script" ]] || die "Missing bootstrap script: $script"
     bash -n "$script"
   done
-  ok "Bootstrap manifest and shell syntax"
+  [[ -f "$E2E_EVIDENCE_VALIDATOR" ]] || die "Missing inbound E2E evidence validator: $E2E_EVIDENCE_VALIDATOR"
+  python3 -m py_compile "$E2E_EVIDENCE_VALIDATOR"
+  ok "Bootstrap manifest, version contract, shell syntax, and E2E validator"
 }
 
 static_checks
@@ -201,7 +211,9 @@ if [[ "$RUN_E2E" == "1" ]]; then
   ok "Adaptive → OpenClaw Gateway → main → Adaptive"
 
   MULTI_PLAN="$(mktemp "${TMPDIR:-/tmp}/adaptive-multiagent-plan.XXXXXX.json")"
-  trap 'rm -f "$MULTI_PLAN"' EXIT
+  INBOUND_RAW="$(mktemp "${TMPDIR:-/tmp}/adaptive-inbound-result.XXXXXX.json")"
+  INBOUND_HISTORY="$(mktemp "${TMPDIR:-/tmp}/adaptive-inbound-history.XXXXXX.json")"
+  trap 'rm -f "$MULTI_PLAN" "$INBOUND_RAW" "$INBOUND_HISTORY"' EXIT
   cat >"$MULTI_PLAN" <<'JSON'
 {
   "summary": "Bootstrap deterministic three-worker fan-out and fan-in",
@@ -269,15 +281,36 @@ PY
   ok "Adaptive → 3 parallel OpenClaw worker sessions → fan-in → Adaptive"
 
   log "E2E 3/3 — OpenClaw → bridge multiagent mode → Adaptive → workers"
-  SESSION_KEY="adaptive-bootstrap-multi-$(date +%s)-$RANDOM"
-  PROMPT="/adaptive-orchestrator-bridge Use multi-agent project mode. Invoke Adaptive with --multi-agent, --agent main, --plan-file $MULTI_PLAN, --skill-registry $SKILLS_DIR/registry/skills.json, and --max-concurrency 3. The objective is: Run the deterministic bootstrap multiagent validation plan. This is read-only; do not alter files or configuration. Return the project status, max_parallelism_observed, completed/blocked Work Units, waves, and the fan-in output."
-  INBOUND_RESULT="$("$OPENCLAW_BIN" agent \
+  SESSION_SUFFIX="adaptive-bootstrap-multi-$(date +%s)-$RANDOM"
+  FULL_SESSION_KEY="agent:main:$SESSION_SUFFIX"
+  PROMPT="/skill adaptive-orchestrator-bridge Use multi-agent project mode. Invoke Adaptive with --multi-agent, --agent main, --plan-file $MULTI_PLAN, --skill-registry $SKILLS_DIR/registry/skills.json, and --max-concurrency 3. The objective is: Run the deterministic bootstrap multiagent validation plan. This is read-only; do not alter files or configuration. Return the project status, the numeric max_parallelism_observed value, completed/blocked Work Units, dispatch/fan-in summary, and the fan-in output marker. Do not omit the fan-in marker or the observed parallelism."
+  if ! "$OPENCLAW_BIN" agent \
     --agent main \
-    --session-key "$SESSION_KEY" \
+    --session-key "$SESSION_SUFFIX" \
     --message "$PROMPT" \
-    --json)"
-  if [[ "$INBOUND_RESULT" != *"ADAPTIVE_MULTIAGENT_FANIN_OK"* || "$INBOUND_RESULT" != *"max_parallelism_observed"* ]]; then
-    die "Inbound OpenClaw→Adaptive multiagent E2E did not expose fan-in/parallel evidence"
+    --json >"$INBOUND_RAW"; then
+    die "Inbound OpenClaw agent turn failed before semantic evidence validation"
+  fi
+
+  HISTORY_PARAMS="$(python3 - "$FULL_SESSION_KEY" <<'PY'
+import json, sys
+print(json.dumps({"sessionKey": sys.argv[1], "limit": 100, "maxChars": 200000}))
+PY
+)"
+  if ! "$OPENCLAW_BIN" gateway call chat.history \
+    --params "$HISTORY_PARAMS" \
+    --json >"$INBOUND_HISTORY"; then
+    warn "Could not read chat.history for $FULL_SESSION_KEY; validating the direct CLI result only"
+    : >"$INBOUND_HISTORY"
+  fi
+
+  if ! python3 "$E2E_EVIDENCE_VALIDATOR" \
+    --minimum-parallelism 3 \
+    "$INBOUND_RAW" "$INBOUND_HISTORY"; then
+    warn "Inbound session completed but semantic project evidence was insufficient."
+    warn "Diagnostic session key: $FULL_SESSION_KEY"
+    warn "Inspect with: openclaw gateway call chat.history --params '{\"sessionKey\":\"$FULL_SESSION_KEY\",\"limit\":100,\"maxChars\":200000}' --json"
+    die "Inbound OpenClaw→Adaptive multiagent E2E did not prove COMPLETED + parallelism>=3 + fan-in"
   fi
   ok "OpenClaw → bridge → Adaptive project mode → parallel workers → fan-in → OpenClaw"
 fi
