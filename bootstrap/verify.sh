@@ -17,7 +17,7 @@ Usage: bootstrap/verify.sh [options]
 Options:
   --stack-root PATH  Parent directory containing both repositories.
   --quick            Skip the full pytest suite.
-  --e2e              Run live Adaptive→OpenClaw and OpenClaw→Adaptive→OpenClaw tests.
+  --e2e              Run live single-unit and scalable multiagent integration tests.
   --static           Validate only bootstrap files; no local OpenClaw required.
   -h, --help         Show this help.
 EOF
@@ -188,7 +188,7 @@ if [[ "$RUN_E2E" == "1" ]]; then
   [[ -x "$VENV_PYTHON" ]] || die "Adaptive virtualenv is required for E2E"
   TOKEN="$(read_secret_token "$TOKEN_FILE")" || die "Cannot read Gateway token file"
 
-  log "E2E 1/2 — Adaptive → OpenClaw Gateway"
+  log "E2E 1/3 — Adaptive single Work Unit → OpenClaw Gateway"
   OUTBOUND_MARKER="ADAPTIVE_BOOTSTRAP_OUTBOUND_OK"
   OUTBOUND_RESULT="$(OPENCLAW_GATEWAY_TOKEN="$TOKEN" \
     "$VENV_PYTHON" -m adaptive_orchestrator run \
@@ -200,19 +200,86 @@ if [[ "$RUN_E2E" == "1" ]]; then
   fi
   ok "Adaptive → OpenClaw Gateway → main → Adaptive"
 
-  log "E2E 2/2 — OpenClaw → bridge → Adaptive → OpenClaw"
-  INBOUND_MARKER="ADAPTIVE_BOOTSTRAP_INBOUND_OK"
-  SESSION_KEY="adaptive-bootstrap-$(date +%s)-$RANDOM"
-  PROMPT="/adaptive-orchestrator-bridge Delegate only this objective through the Adaptive AI Orchestrator: Respond exactly with $INBOUND_MARKER. Use agent main. Use $INBOUND_MARKER as the explicit acceptance criterion. Do not alter files or configuration. Return the Adaptive runtime_status, work_unit_state, verdict, output, and execution_id."
+  MULTI_PLAN="$(mktemp "${TMPDIR:-/tmp}/adaptive-multiagent-plan.XXXXXX.json")"
+  trap 'rm -f "$MULTI_PLAN"' EXIT
+  cat >"$MULTI_PLAN" <<'JSON'
+{
+  "summary": "Bootstrap deterministic three-worker fan-out and fan-in",
+  "work_units": [
+    {
+      "id": "worker-a",
+      "objective": "Respond exactly with ADAPTIVE_MULTI_WORKER_A_OK.",
+      "role": "validation-worker-a",
+      "expected_output": ["marker"],
+      "acceptance_criteria": ["ADAPTIVE_MULTI_WORKER_A_OK"]
+    },
+    {
+      "id": "worker-b",
+      "objective": "Respond exactly with ADAPTIVE_MULTI_WORKER_B_OK.",
+      "role": "validation-worker-b",
+      "expected_output": ["marker"],
+      "acceptance_criteria": ["ADAPTIVE_MULTI_WORKER_B_OK"]
+    },
+    {
+      "id": "worker-c",
+      "objective": "Respond exactly with ADAPTIVE_MULTI_WORKER_C_OK.",
+      "role": "validation-worker-c",
+      "expected_output": ["marker"],
+      "acceptance_criteria": ["ADAPTIVE_MULTI_WORKER_C_OK"]
+    },
+    {
+      "id": "fan-in",
+      "objective": "After receiving the accepted dependency results, respond exactly with ADAPTIVE_MULTIAGENT_FANIN_OK.",
+      "role": "fan-in-validator",
+      "expected_output": ["marker"],
+      "acceptance_criteria": ["ADAPTIVE_MULTIAGENT_FANIN_OK"]
+    }
+  ],
+  "dependencies": [
+    {"source_id": "worker-a", "target_id": "fan-in", "required": true},
+    {"source_id": "worker-b", "target_id": "fan-in", "required": true},
+    {"source_id": "worker-c", "target_id": "fan-in", "required": true}
+  ]
+}
+JSON
+
+  log "E2E 2/3 — Adaptive scalable multiagent fan-out/fan-in → OpenClaw"
+  MULTI_RESULT="$(OPENCLAW_GATEWAY_TOKEN="$TOKEN" \
+    "$VENV_PYTHON" -m adaptive_orchestrator orchestrate \
+      --objective "Run the deterministic bootstrap multiagent validation plan." \
+      --agent main \
+      --plan-file "$MULTI_PLAN" \
+      --skill-registry "$SKILLS_DIR/registry/skills.json" \
+      --max-concurrency 3)"
+  if ! python3 - "$MULTI_RESULT" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+outputs = "\n".join(record.get("output", "") for record in payload.get("records", []))
+ok = (
+    payload.get("ok") is True
+    and payload.get("status") == "COMPLETED"
+    and payload.get("max_parallelism_observed", 0) >= 3
+    and "ADAPTIVE_MULTIAGENT_FANIN_OK" in outputs
+)
+raise SystemExit(0 if ok else 1)
+PY
+  then
+    die "Direct Adaptive multiagent E2E did not prove 3-worker parallelism + fan-in"
+  fi
+  ok "Adaptive → 3 parallel OpenClaw worker sessions → fan-in → Adaptive"
+
+  log "E2E 3/3 — OpenClaw → bridge multiagent mode → Adaptive → workers"
+  SESSION_KEY="adaptive-bootstrap-multi-$(date +%s)-$RANDOM"
+  PROMPT="/adaptive-orchestrator-bridge Use multi-agent project mode. Invoke Adaptive with --multi-agent, --agent main, --plan-file $MULTI_PLAN, --skill-registry $SKILLS_DIR/registry/skills.json, and --max-concurrency 3. The objective is: Run the deterministic bootstrap multiagent validation plan. This is read-only; do not alter files or configuration. Return the project status, max_parallelism_observed, completed/blocked Work Units, waves, and the fan-in output."
   INBOUND_RESULT="$("$OPENCLAW_BIN" agent \
     --agent main \
     --session-key "$SESSION_KEY" \
     --message "$PROMPT" \
     --json)"
-  if [[ "$INBOUND_RESULT" != *"$INBOUND_MARKER"* ]]; then
-    die "Inbound OpenClaw→Adaptive E2E did not return $INBOUND_MARKER"
+  if [[ "$INBOUND_RESULT" != *"ADAPTIVE_MULTIAGENT_FANIN_OK"* || "$INBOUND_RESULT" != *"max_parallelism_observed"* ]]; then
+    die "Inbound OpenClaw→Adaptive multiagent E2E did not expose fan-in/parallel evidence"
   fi
-  ok "OpenClaw → bridge → Adaptive → OpenClaw → Adaptive → OpenClaw"
+  ok "OpenClaw → bridge → Adaptive project mode → parallel workers → fan-in → OpenClaw"
 fi
 
 printf '\nENVIRONMENT VERIFICATION: PASS\n'
