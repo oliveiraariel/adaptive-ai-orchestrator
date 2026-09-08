@@ -9,6 +9,22 @@ The **Adaptive AI Orchestrator** is a software system — not a single agent, sk
 
 ---
 
+## 🚀 Nova máquina? Comece aqui
+
+Você **não precisa lembrar a configuração manual** do Adaptive + Ariel Agent Skills + OpenClaw.
+
+Em uma máquina Linux Mint / Ubuntu / Debian compatível, o ponto de entrada oficial é:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
+```
+
+Se não quiser decorar nem esse comando, abra [`COMECE-AQUI-NOVA-MAQUINA.md`](COMECE-AQUI-NOVA-MAQUINA.md). A página foi criada justamente para servir como ponto permanente de recuperação a partir do GitHub.
+
+O bootstrap instala/sincroniza os repositórios, prepara Python, OpenClaw, skills, bridge, Gateway, SecretRefs, verificações E2E e atalhos gráficos. Em uma máquina realmente nova, a única fronteira intencionalmente interativa é a autenticação pessoal do provedor/modelo quando o OpenClaw solicitar.
+
+---
+
 ## Overview
 
 The Adaptive AI Orchestrator is designed to reason about how complex work should be organized and executed with AI.
