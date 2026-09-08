@@ -7,7 +7,7 @@ BOOTSTRAP_MANIFEST="$BOOTSTRAP_DIR/manifest.json"
 BOOTSTRAP_VERSION="1.0.0"
 
 : "${DRY_RUN:=0}"
-: "${ADAPTIVE_STACK_ROOT:=$HOME/Projects/AdaptiveOpenClaw}"
+: "${ADAPTIVE_STACK_ROOT:=$(dirname "$ADAPTIVE_REPO_ROOT")}"
 : "${ADAPTIVE_REPO_URL:=https://github.com/oliveiraariel/adaptive-ai-orchestrator.git}"
 : "${SKILLS_REPO_URL:=https://github.com/oliveiraariel/ariel-agent-skills.git}"
 : "${ADAPTIVE_BRANCH:=main}"
