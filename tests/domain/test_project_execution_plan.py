@@ -52,3 +52,41 @@ def test_optional_cycle_does_not_block_required_dag_validation() -> None:
     )
 
     assert len(plan.dependencies) == 2
+
+
+def test_filesystem_write_requires_explicit_repository_write_scope() -> None:
+    with pytest.raises(ProjectExecutionPlanError, match="declares no"):
+        PlannedWorkUnit(
+            id="writer",
+            objective="Write code",
+            requested_side_effects=("filesystem.write",),
+        )
+
+
+def test_write_scope_rejects_absolute_and_parent_escape_paths() -> None:
+    for unsafe_path in ("/etc/passwd", "../outside", "src/../../outside", "C:/temp"):
+        with pytest.raises(ProjectExecutionPlanError):
+            PlannedWorkUnit(
+                id=f"writer-{unsafe_path}",
+                objective="Write code safely",
+                requested_side_effects=("filesystem.write",),
+                write_paths=(unsafe_path,),
+            )
+
+
+def test_write_scope_rejects_globs_but_accepts_literal_relative_prefix() -> None:
+    with pytest.raises(ProjectExecutionPlanError, match="literal path prefix"):
+        PlannedWorkUnit(
+            id="glob-writer",
+            objective="Write code",
+            requested_side_effects=("filesystem.write",),
+            write_paths=("src/**/*.py",),
+        )
+
+    unit = PlannedWorkUnit(
+        id="safe-writer",
+        objective="Write code",
+        requested_side_effects=("filesystem.write",),
+        write_paths=("src/backend/controllers",),
+    )
+    assert unit.write_paths == ("src/backend/controllers",)
