@@ -77,7 +77,7 @@ Planned stages:
   4. Run Adaptive tests and Ariel skill-registry validation.
   5. Install OpenClaw from its official stable installer if absent.
   6. Run official OpenClaw onboarding if configuration is not ready.
-  7. Add the Ariel skills repository to skills.load.extraDirs.
+  7. Add the Ariel skills repository to skills.load.extraDirs and preserve any agent skill allowlists.
   8. Create/migrate a file-backed Gateway token and SecretRefs.
   9. Enable adaptive-orchestrator-bridge and restart the Gateway.
  10. Verify Gateway RPC, main-agent skill visibility, and bridge discovery.
@@ -162,6 +162,8 @@ fi
 
 log "Stage 7/12 — skill discovery configuration"
 append_skill_root "$OPENCLAW_BIN" "$SKILLS_DIR"
+"$OPENCLAW_BIN" config validate
+ensure_bridge_allowlisted "$OPENCLAW_BIN"
 "$OPENCLAW_BIN" config validate
 
 log "Stage 8/12 — durable Gateway secret"
