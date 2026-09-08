@@ -25,6 +25,21 @@ O bootstrap instala/sincroniza os repositórios, prepara Python, OpenClaw, skill
 
 ---
 
+## 🧭 Iniciar projetos pelo OpenClaw
+
+Os prompts mestres genéricos para iniciar projetos futuros estão em [`docs/prompts/`](docs/prompts/README.md).
+
+Use:
+
+- [`INICIAR-PROJETO-FRONTEND.md`](docs/prompts/INICIAR-PROJETO-FRONTEND.md) para frontend/web UI;
+- [`INICIAR-PROJETO-BACKEND.md`](docs/prompts/INICIAR-PROJETO-BACKEND.md) para backend/engineering;
+- [`CONTINUAR-PROJETO.md`](docs/prompts/CONTINUAR-PROJETO.md) para continuar uma linha de trabalho;
+- [`PARAR-E-FAZER-HANDOFF.md`](docs/prompts/PARAR-E-FAZER-HANDOFF.md) para encerrar preservando continuidade.
+
+Quando um projeto possuir governança e documentação próprias, prefira o prompt operacional específico daquele repositório.
+
+---
+
 ## Overview
 
 The Adaptive AI Orchestrator is designed to reason about how complex work should be organized and executed with AI.
