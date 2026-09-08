@@ -21,7 +21,7 @@ Posso simplesmente:
 
 Se estiver usando uma IA, basta dizer:
 
-> Abra meu repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md` e `bootstrap/RECOVERY-PROMPT.md` e reconstrua meu ambiente seguindo o bootstrap versionado. Não improvise uma configuração paralela e não exponha credenciais.
+> Abra meu repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md`, `bootstrap/README.md`, `bootstrap/TROUBLESHOOTING.md` e `bootstrap/RECOVERY-PROMPT.md` e reconstrua meu ambiente seguindo o bootstrap versionado. Não improvise uma configuração paralela e não exponha credenciais.
 
 Depois de instalado, preciso lembrar apenas de três conceitos:
 
@@ -62,8 +62,11 @@ Ele reconstrói o ambiente com:
 - `adaptive-orchestrator-bridge`;
 - autenticação local do Gateway por SecretRef;
 - serviço do Gateway;
-- verificações e testes E2E;
-- atalhos gráficos de Setup, Update e Verify.
+- launchers de Setup / Update / Verify;
+- persistência de `~/.local/bin` no PATH dos próximos shells;
+- verificações e três testes E2E, incluindo multiagente paralelo e rota inbound pela bridge.
+
+Os launchers são instalados **antes do último E2E**. Assim, se uma falha externa de modelo/runtime bloquear a validação final, o ambiente já possui uma rota estável de reparo.
 
 ## A única etapa que continua sendo sua
 
@@ -88,7 +91,7 @@ O `README.md` principal também mantém esse comando em destaque.
 
 Você pode entregar a ela somente esta instrução:
 
-> Abra o repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md` e `bootstrap/RECOVERY-PROMPT.md`, e me ajude a reconstruir o ambiente seguindo exatamente o bootstrap versionado. Não improvise uma configuração paralela e não exponha credenciais.
+> Abra o repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md`, `bootstrap/README.md`, `bootstrap/TROUBLESHOOTING.md` e `bootstrap/RECOVERY-PROMPT.md`, e me ajude a reconstruir o ambiente seguindo exatamente o bootstrap versionado. Diagnostique a primeira camada que falhar; não reinstale componentes que já estejam funcionando e não exponha credenciais.
 
 A IA deve usar o bootstrap como fonte de verdade, e não tentar reconstruir de memória os passos manuais.
 
@@ -105,15 +108,47 @@ adaptive-openclaw-verify
 Use:
 
 - **Setup** para instalar/reparar;
-- **Update** para atualizar com segurança;
-- **Verify** para comprovar que toda a integração continua operacional.
+- **Update** para atualizar com segurança e executar a verificação completa automaticamente;
+- **Verify** para comprovar a integração sem precisar atualizar antes.
+
+### Se aparecer `comando não encontrado`
+
+Antes de reinstalar qualquer coisa, confira se os launchers já existem:
+
+```bash
+ls -l ~/.local/bin/adaptive-openclaw-*
+```
+
+O bootstrap grava `~/.local/bin` nos arquivos de inicialização do shell, mas um processo instalador não consegue alterar o PATH de um terminal pai que já estava aberto.
+
+Se os arquivos existirem, abra um novo terminal. Para usar imediatamente no mesmo terminal antigo:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Isso é um problema de descoberta pelo shell, não uma instalação ausente.
 
 ## Verificação completa
 
-Quando quiser comprovar inclusive as duas direções da integração:
+Quando quiser comprovar toda a integração:
 
 ```bash
-adaptive-openclaw-verify --e2e
+adaptive-openclaw-verify
 ```
 
-O objetivo é que a reconstrução futura dependa de **um ponto de entrada versionado**, e não da memória do processo que foi feito originalmente.
+A validação comprova:
+
+```text
+E2E 1 — Adaptive → OpenClaw → Adaptive
+E2E 2 — Adaptive → 3 workers paralelos → fan-in → Adaptive
+E2E 3 — OpenClaw → bridge → Adaptive → workers paralelos → fan-in → OpenClaw
+```
+
+O E2E inbound é validado semanticamente. Variações de apresentação como `Max parallelism observed: 3` versus `max_parallelism_observed: 3` não devem mais gerar falso negativo quando o projeto realmente concluiu, o paralelismo exigido ocorreu e o fan-in foi comprovado.
+
+## Se alguma verificação falhar
+
+Abra [`bootstrap/TROUBLESHOOTING.md`](bootstrap/TROUBLESHOOTING.md) antes de modificar a máquina. A ordem é diagnosticar a primeira fronteira que falhou — PATH, Git, Python, configuração, Gateway, skill, outbound, multiagente ou inbound — e corrigir somente essa camada.
+
+O objetivo é que a reconstrução futura dependa de **um ponto de entrada versionado e de diagnósticos reproduzíveis**, e não da memória do processo que foi feito originalmente.
