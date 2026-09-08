@@ -133,6 +133,8 @@ The updater:
 
 - refuses to overwrite dirty Git worktrees;
 - uses fast-forward-only Git integration;
+- refreshes the `adaptive-openclaw-*` launchers from the newly synchronized repository;
+- reapplies the persistent `~/.local/bin` shell PATH registration idempotently;
 - reinstalls the Adaptive editable environment;
 - validates both repositories;
 - uses OpenClaw's supported `openclaw update --yes` path unless `--skip-openclaw` is requested;
@@ -140,6 +142,21 @@ The updater:
 - runs full verification/E2E afterward by default.
 
 A successful `adaptive-openclaw-update` therefore does **not** need an immediate second Verify run. Use Verify separately when you want a fresh check without updating, or after a targeted repair.
+
+#### One-time transition from a pre-self-heal updater
+
+A running shell process keeps executing the script version that was loaded when that command started. If an older updater fast-forwards the repository and downloads a newer updater containing launcher/PATH self-heal logic, that already-running old process cannot retroactively execute the new lines.
+
+For that one migration only, after the repository has been updated, refresh the recovery surface explicitly:
+
+```bash
+bash "$HOME/Área de trabalho/VSCode/Git/adaptive-ai-orchestrator/bootstrap/install-launchers.sh" \
+  --stack-root "$HOME/Área de trabalho/VSCode/Git"
+```
+
+Use the actual repository/stack path on machines installed elsewhere.
+
+After this transition, future `adaptive-openclaw-update` runs perform launcher/PATH self-healing automatically; this is **not** a recurring manual step.
 
 ### Setup / repair again
 
@@ -274,7 +291,7 @@ bash bootstrap/update.sh --dry-run
 
 ## Troubleshooting and recovery
 
-Read [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) before manual repair. It records the failure classification order, PATH diagnosis, Gateway warning interpretation, inbound E2E semantic fallback, and read-only session-history diagnostic.
+Read [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) before manual repair. It records the failure classification order, PATH diagnosis, the one-time legacy-updater transition, Gateway warning interpretation, inbound E2E semantic fallback, and read-only session-history diagnostic.
 
 For an AI-assisted recovery, use [`RECOVERY-PROMPT.md`](RECOVERY-PROMPT.md). The recovery prompt explicitly instructs the assistant to diagnose the first failing boundary rather than reinstalling working layers.
 
