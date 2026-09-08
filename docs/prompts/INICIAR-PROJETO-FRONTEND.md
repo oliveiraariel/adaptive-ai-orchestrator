@@ -10,17 +10,29 @@ Não é necessário usar este prompt para perguntas simples ou análises visuais
 Quero iniciar ou continuar um trabalho profissional de frontend neste projeto.
 
 Use o `adaptive-orchestrator-bridge` como porta de entrada para o
-Adaptive AI Orchestrator.
+Adaptive AI Orchestrator e use o modo multiagente de projeto para este
+trabalho não trivial.
 
-Use `engineering-lifecycle` para determinar o fluxo de engenharia e
-selecionar somente as skills necessárias ao objetivo.
+O Adaptive deve possuir a responsabilidade de:
+- compreender o objetivo e o estado real do projeto;
+- criar ou revisar o Work Graph;
+- identificar dependências reais;
+- calcular a ready frontier;
+- criar workers lógicos conforme a necessidade;
+- selecionar somente as skills necessárias para cada Work Unit;
+- executar em paralelo somente trabalhos independentes e seguros;
+- sincronizar/fazer fan-in dos resultados;
+- avaliar, avançar dependências e replanejar de forma limitada quando necessário.
+
+Use `engineering-lifecycle` como capacidade de engenharia, sem transferir
+para essa skill as responsabilidades de scheduling do Adaptive.
 
 O projeto pode estar em qualquer nível de maturidade: vazio, apenas com
 uma ideia, parcialmente documentado, parcialmente implementado, legado
 ou já bem estruturado.
 
-Antes de alterar qualquer coisa, comece com `project-discovery` quando o
-estado do projeto ainda não estiver suficientemente claro.
+Antes de alterar qualquer coisa, faça `project-discovery` quando o estado
+do projeto ainda não estiver suficientemente claro.
 
 Descubra e diferencie:
 - o que já existe;
@@ -30,6 +42,7 @@ Descubra e diferencie:
 - sistema de estilos, tokens e componentes existentes;
 - documentação, requisitos e decisões já aprovadas;
 - rotas, fluxos, estados e comportamentos existentes;
+- contratos/backend dos quais a interface depende;
 - testes, CI e ferramentas de qualidade;
 - restrições de acessibilidade, responsividade e performance;
 - fatos, inferências e dúvidas realmente bloqueantes.
@@ -70,12 +83,35 @@ Considere conforme o escopo:
 - conteúdo real e variações extremas;
 - integração com backend e contratos já existentes.
 
+PARALELISMO
+Não trate “frontend” como uma fase necessariamente única e sequencial.
+Quando houver trabalho independente, o Adaptive pode abrir múltiplos workers
+frontend em paralelo, por exemplo para superfícies/componentes diferentes,
+verificação de acessibilidade, testes ou auditorias.
+
+Quando este frontend fizer parte de um sistema full-stack, não espere todo o
+backend terminar por hábito. Um contrato/API/interface suficientemente estável
+pode desbloquear frontend e backend em paralelo. Preserve bloqueio apenas quando
+houver uma dependência real ainda não resolvida.
+
+O número de workers deve seguir a ready frontier útil e a economicidade de
+contexto/tokens. Não maximize agentes por si só. Escale para 2, 3, 4, 6 ou mais
+somente quando houver trabalho independente e o limite configurado permitir.
+
+Em checkout compartilhado, Work Units com escrita só podem compartilhar a mesma
+onda quando possuírem escopos de escrita precisos e não sobrepostos. Se o escopo
+for amplo, desconhecido ou conflitante, serialize.
+
 Não use todas as skills por padrão. Selecione a menor combinação capaz de
 produzir evidência suficiente.
 
 AUTORIDADE
 Você pode realizar mudanças não destrutivas dentro do projeto necessárias
 ao objetivo desta sessão.
+
+Se esse objetivo autoriza edição dos arquivos do projeto, permita somente o
+efeito de escrita necessário (`filesystem.write`). Isso não autoriza deploy,
+publicação, mudanças de credenciais, exclusões destrutivas ou alterações externas.
 
 Não está autorizado sem confirmação explícita a:
 - alterar regras de negócio ou escopo do produto;
@@ -88,10 +124,14 @@ Não está autorizado sem confirmação explícita a:
 Faça perguntas somente quando a resposta alterar materialmente o plano.
 Quando possível, apresente sua recomendação junto da pergunta.
 
-Execute em unidades pequenas e verificáveis. Valide e revise o resultado.
+Execute em Work Units pequenas o suficiente para serem verificáveis, mas não
+microfragmente apenas para criar mais agentes. Valide, revise e faça fan-in
+quando resultados paralelos precisarem ser integrados.
 
 Ao concluir ou interromper a sessão, use `project-handoff` e deixe claro:
 - o que foi feito;
+- Work Units concluídas/bloqueadas;
+- paralelismo efetivamente utilizado;
 - evidências e verificações;
 - riscos ou pendências;
 - próximo trabalho executável.
