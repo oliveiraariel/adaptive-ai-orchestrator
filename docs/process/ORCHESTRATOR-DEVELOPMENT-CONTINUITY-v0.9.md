@@ -1,13 +1,13 @@
 # Orchestrator Development Continuity — v0.9
 
 **Projeto:** Adaptive AI Orchestrator  
-**Registro:** estado operacional após o E2E multiagente real no Linux Mint e hardening do bootstrap  
+**Registro:** estado operacional após o E2E multiagente real no Linux Mint, hardening do bootstrap e revalidação final com o verifier corrigido  
 **Fase:** 3 em andamento  
 **Próximo Work Unit:** `WU-055 — Runtime Event Monitoring`
 
 ## 1. Objetivo deste registro
 
-Preservar a continuidade depois que a capacidade v0.4 deixou de ser apenas repository/CI validated e passou também pelo fluxo real instalado OpenClaw ↔ bridge ↔ Adaptive ↔ workers.
+Preservar a continuidade depois que a capacidade v0.4 deixou de ser apenas repository/CI validated, passou também pelo fluxo real instalado OpenClaw ↔ bridge ↔ Adaptive ↔ workers e foi revalidada após o hardening do próprio bootstrap/test harness.
 
 ## 2. Capability comprovada
 
@@ -30,7 +30,7 @@ O E2E direto Adaptive também comprovou três sessões paralelas e fan-in.
 
 ## 3. Evidência local
 
-O update local instalou Adaptive `0.4.0`, executou a suíte e registrou:
+A validação inicial do v0.4 registrou:
 
 ```text
 284 passed
@@ -38,14 +38,41 @@ O update local instalou Adaptive `0.4.0`, executou a suíte e registrou:
 19 capabilities
 ```
 
-O Gateway OpenClaw `2026.9.2 (3928bad)` estava `running`, com `Read probe: ok` e listening em loopback.
+Após o hardening de bootstrap/recovery, o ambiente local foi sincronizado com o `main` e a suíte passou a registrar:
 
-Resultados:
+```text
+289 passed
+16 skills
+19 capabilities
+ENVIRONMENT VERIFICATION: PASS
+STACK UPDATE: PASS
+```
+
+O Gateway OpenClaw `2026.9.2 (3928bad)` permaneceu `running`, com `Read probe: ok` e listening em loopback.
+
+Resultados funcionais instalados:
 
 ```text
 E2E 1 — single Work Unit round trip: PASS
 E2E 2 — 3 parallel workers + fan-in: PASS
 E2E 3 — inbound bridge + project mode + parallel workers + fan-in: PASS
+```
+
+A reexecução final com o verifier corrigido:
+
+```bash
+adaptive-openclaw-verify --quick
+```
+
+produziu evidência semântica válida:
+
+```text
+fan_in_present=true
+max_parallelism_observed=3
+minimum_parallelism=3
+ok=true
+status_completed=true
+ENVIRONMENT VERIFICATION: PASS
 ```
 
 A evidência completa está em `MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`.
@@ -69,6 +96,8 @@ All results were accepted.
 ```
 
 A sessão estava `done`; portanto o erro era de assertion/presentation, não do runtime.
+
+O verifier atual reconhece essa evidência semanticamente e a reexecução final confirmou o reparo.
 
 ## 5. Hardening implementado
 
@@ -96,6 +125,8 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 O setup instala os launchers antes do último E2E para manter uma rota de recuperação mesmo se o gate de runtime final falhar.
+
+O updater atual também atualiza/reinstala os launchers e reaplica o registro de PATH depois do fast-forward dos repositórios. Há uma única exceção de transição: se o comando foi iniciado por uma versão antiga do updater, o processo Bash já em execução continua a lógica antiga mesmo depois de baixar o script novo. Nessa migração específica, pode ser necessário executar `bootstrap/install-launchers.sh` uma vez após a sincronização. Depois disso, futuros updates fazem o self-heal automaticamente.
 
 ## 7. Regra de diagnóstico aprendida
 
@@ -159,4 +190,4 @@ Depois seguem `WU-056`, `WU-057` e production hardening.
 
 v0.8 registra o estado imediatamente após o repository-side gate v0.4 e antes da prova instalada.
 
-v0.9 prevalece para o estado operacional atual porque incorpora o deployment E2E e o hardening derivado da execução real.
+v0.9 prevalece para o estado operacional atual porque incorpora o deployment E2E, o hardening derivado da execução real e a revalidação final do próprio verifier corrigido.

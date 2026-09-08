@@ -175,3 +175,74 @@ WU-055 — Runtime Event Monitoring
 ```
 
 The installed multiagent E2E closes a deployment proof for the v0.4 bounded capability. It does not close durable recovery, operational acceptance, production observability/security/deployment hardening, or stronger managed-worktree isolation for parallel writers.
+
+## 11. Post-hardening revalidation on the corrected bootstrap
+
+After the bootstrap/test-harness fixes were merged, the same Linux Mint environment was fast-forwarded to:
+
+```text
+main: 405e4c9b7c7939f69e4c6876c51de00fa0167c36
+```
+
+The migration update was intentionally run without repeating live E2E during synchronization:
+
+```bash
+adaptive-openclaw-update --skip-openclaw --skip-e2e
+```
+
+That update completed with:
+
+```text
+289 passed
+OK: 16 skills, 19 capabilities, registry and frontmatter contracts validated
+ENVIRONMENT VERIFICATION: PASS
+STACK UPDATE: PASS
+```
+
+Because that first migration command had started under the pre-hardening updater process, the newly fetched self-heal logic could not retroactively execute inside the already-running Bash process. The launchers/PATH recovery surface was therefore refreshed once explicitly from the new repository version:
+
+```bash
+bash "$HOME/Área de trabalho/VSCode/Git/adaptive-ai-orchestrator/bootstrap/install-launchers.sh" \
+  --stack-root "$HOME/Área de trabalho/VSCode/Git"
+```
+
+Result:
+
+```text
+[OK] Desktop shortcuts installed
+[OK] Application launchers installed
+[OK] /home/ariel/.local/bin registered in shell startup PATH
+```
+
+A final lightweight live verification was then executed with the corrected verifier:
+
+```bash
+adaptive-openclaw-verify --quick
+```
+
+It reported:
+
+```text
+[OK] E2E 1 — Adaptive → OpenClaw Gateway → main → Adaptive
+[OK] E2E 2 — Adaptive → 3 parallel OpenClaw worker sessions → fan-in → Adaptive
+{"fan_in_present": true, "max_parallelism_observed": 3, "minimum_parallelism": 3, "ok": true, "status_completed": true}
+[OK] E2E 3 — OpenClaw → bridge → Adaptive project mode → parallel workers → fan-in → OpenClaw
+ENVIRONMENT VERIFICATION: PASS
+```
+
+This second run is important because it proves not only that the runtime had succeeded earlier, but also that the **corrected bootstrap verifier itself now recognizes the real successful inbound multiagent execution without a false negative**.
+
+Final post-hardening decision:
+
+```text
+CURRENT MAIN LOCAL UPDATE:              PASS
+CURRENT MAIN LOCAL TESTS (289):         PASS
+LAUNCHER/PATH PERSISTENCE:              PASS
+CORRECTED SEMANTIC E2E VALIDATOR:       PASS
+E2E 1/3:                                PASS
+E2E 2/3:                                PASS
+E2E 3/3:                                PASS
+ENVIRONMENT VERIFICATION:               PASS
+INSTALLED ECOSYSTEM READY FOR USE:      YES
+PRODUCTION-READY:                        NO
+```

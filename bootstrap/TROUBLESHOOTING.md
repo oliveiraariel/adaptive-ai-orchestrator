@@ -29,6 +29,21 @@ Opening a new terminal should load the persisted PATH entry.
 
 Do **not** reinstall Adaptive, Skills, or OpenClaw merely because the shell cannot resolve a launcher whose file already exists.
 
+### 1.1 One-time transition from an older updater
+
+An updater process reads and executes the script version that existed when that process started. If an older `adaptive-openclaw-update` fast-forwards the repository and downloads a newer updater that contains launcher/PATH self-healing, the already-running old Bash process cannot retroactively begin executing the newly downloaded code.
+
+Therefore, when migrating from a pre-self-heal bootstrap, one explicit launcher refresh may be required **once after the repository has been updated**:
+
+```bash
+bash "$HOME/Área de trabalho/VSCode/Git/adaptive-ai-orchestrator/bootstrap/install-launchers.sh" \
+  --stack-root "$HOME/Área de trabalho/VSCode/Git"
+```
+
+Use the actual stack root if the repositories are installed elsewhere.
+
+After that transition, current `adaptive-openclaw-update` refreshes the launchers and persisted `~/.local/bin` PATH registration automatically on future updates. This is a migration characteristic, not a recurring manual maintenance step.
+
 ## 2. Gateway status shows NVM / service warnings
 
 Warnings about a Gateway service using Node through NVM/version managers are maintenance warnings unless an actual runtime probe fails.
