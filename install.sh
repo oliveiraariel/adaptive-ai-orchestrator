@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BOOTSTRAP_VERSION="1.0.0"
+BOOTSTRAP_VERSION="1.0.1"
 ADAPTIVE_REPO_URL="https://github.com/oliveiraariel/adaptive-ai-orchestrator.git"
 DEFAULT_STACK_ROOT="${ADAPTIVE_STACK_ROOT:-$HOME/Projects/AdaptiveOpenClaw}"
 
