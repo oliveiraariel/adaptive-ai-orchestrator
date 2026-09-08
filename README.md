@@ -64,3 +64,85 @@ Replanning
    ↓
 Continuity & Evidence
    ↺
+```
+
+## Local development
+
+Python 3.12 or newer is required. Use an isolated virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test,gateway]"
+python -m pytest -q
+```
+
+Editable-install metadata is intentionally ignored by Git through `*.egg-info/`.
+
+## CLI entrypoint
+
+Version 0.3 introduces a runtime-neutral inbound entrypoint. The installed command is:
+
+```bash
+adaptive-orchestrator
+```
+
+It is also available without relying on the console-script installation:
+
+```bash
+python -m adaptive_orchestrator
+```
+
+The first high-level command executes one governed Work Unit through the existing Adaptive core seams: readiness, claim ownership, execution policy, delegation, result evaluation, and finalization.
+
+```bash
+adaptive-orchestrator run \
+  --objective "Respond exactly with ADAPTIVE_OK." \
+  --agent main \
+  --accept ADAPTIVE_OK
+```
+
+OpenClaw Gateway credentials are read from the process environment and are never printed by the CLI:
+
+```bash
+export OPENCLAW_GATEWAY_TOKEN='...'
+adaptive-orchestrator doctor
+```
+
+`OPENCLAW_GATEWAY_PASSWORD` is also supported. `OPENCLAW_GATEWAY_URL` defaults to `ws://127.0.0.1:18789` when unset.
+
+The CLI intentionally does **not** force a model/provider override by default. The selected OpenClaw agent may therefore use its configured model policy. Explicit `--model` and `--provider` options remain available for callers whose Gateway policy permits overrides.
+
+## OpenClaw integration direction
+
+The outbound runtime path is:
+
+```text
+Adaptive AI Orchestrator
+        ↓
+OpenClawAdapter
+        ↓
+OpenClawGatewayClient
+        ↓
+OpenClaw Gateway
+        ↓
+OpenClaw agents / models / skills
+```
+
+The inbound path uses a thin bridge rather than turning the Adaptive engine into an OpenClaw skill:
+
+```text
+OpenClaw chat / dashboard
+        ↓
+thin bridge skill or tool
+        ↓
+adaptive-orchestrator CLI
+        ↓
+Adaptive core
+        ↓
+OpenClaw Gateway
+```
+
+The bridge is responsible only for invocation and result transport. Planning, policy, claims, evaluation, and other orchestration semantics remain owned by the Adaptive core.
+
+See `docs/OPENCLAW-INBOUND-BRIDGE.md` for the bridge contract, security model, and validation procedure.
