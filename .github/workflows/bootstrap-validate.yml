@@ -1,0 +1,43 @@
+name: Bootstrap Validation
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+    paths:
+      - 'install.sh'
+      - 'bootstrap/**'
+      - '.github/workflows/bootstrap-validate.yml'
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'bootstrap/**'
+      - '.github/workflows/bootstrap-validate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate manifest JSON
+        run: python3 -m json.tool bootstrap/manifest.json >/dev/null
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          find bootstrap -type f -name '*.sh' -print0 | sort -z | xargs -0 -n1 bash -n
+
+      - name: Validate bootstrap static contract
+        run: bash bootstrap/verify.sh --static
+
+      - name: Validate dry-run plan
+        run: bash bootstrap/setup.sh --dry-run --stack-root "$RUNNER_TEMP/AdaptiveOpenClaw"
