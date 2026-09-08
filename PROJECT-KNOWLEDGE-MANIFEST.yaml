@@ -4,7 +4,8 @@ project:
   name: Adaptive AI Orchestrator
   repository_role: authoritative-project-repository
   current_phase: 3
-  current_status: runtime-compatibility-validated
+  current_status: multiagent-project-execution-v0.4
+  current_release_capability: continuous-bounded-multiagent-project-orchestration
   next_work_unit: WU-055
   next_work_unit_name: Runtime Event Monitoring
 
@@ -12,6 +13,7 @@ authority_model:
   normative_intent_precedence:
     - specifications/orchestrator/PROJECT-DEFINITION.md
     - specifications/orchestrator/ORCHESTRATOR-REQUIREMENTS.md
+    - specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md
     - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
     - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
     - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
@@ -21,6 +23,7 @@ authority_model:
     - tests-and-evidence
   operational_state_precedence:
     - CONTEXT.md
+    - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
     - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
     - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
     - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
@@ -59,6 +62,7 @@ artifact_groups:
     paths:
       - specifications/orchestrator/PROJECT-DEFINITION.md
       - specifications/orchestrator/ORCHESTRATOR-REQUIREMENTS.md
+      - specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md
 
   authoritative_architecture_design:
     authority: normative
@@ -75,6 +79,7 @@ artifact_groups:
       - docs/architecture/ORCHESTRATOR-RESOURCE-MODEL-SELECTION.md
       - docs/architecture/ORCHESTRATOR-DELEGATION-AND-COORDINATION.md
       - docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md
+      - docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md
       - docs/architecture/ORCHESTRATOR-AUTHORITY-AND-POLICY.md
       - docs/architecture/ORCHESTRATOR-RESULT-EVALUATION.md
       - docs/architecture/ORCHESTRATOR-INDEPENDENT-EVALUATION.md
@@ -93,6 +98,7 @@ artifact_groups:
     default_retrieval: true
     paths:
       - CONTEXT.md
+      - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
       - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
       - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
       - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
@@ -116,6 +122,7 @@ artifact_groups:
       - tests/**
       - scripts/validate.py
       - docs/architecture/*-WU-*.md
+      - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
 
   historical_plans_and_snapshots:
     authority: historical
@@ -140,13 +147,18 @@ artifact_groups:
 dynamic_state:
   source_of_truth: adaptive-ai-orchestrator-core
   static_repository_files_are_not_live_state: true
+  current_in_process_capabilities:
+    - dynamic-ready-frontier
+    - continuous-bounded-worker-scheduling
+    - claims-and-execution-identity
+    - accepted-result-dependency-advancement
+    - bounded-replanning
   future_tool_or_api_access_required_for:
-    - live-project-state
-    - active-work-units
-    - dependency-graph
-    - resource-catalog
+    - durable-live-project-state
+    - durable-active-work-units-across-process-restart
+    - durable-dependency-graph
+    - resource-catalog-service
     - model-agent-runtime-availability
-    - execution-lifecycle
     - runtime-event-stream
     - durable-recovery-state
     - mutable-evidence-store
