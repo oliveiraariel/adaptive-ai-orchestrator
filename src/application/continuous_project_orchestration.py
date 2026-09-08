@@ -92,30 +92,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
             while True:
                 unfinished = self._unfinished(work_units)
-                if not unfinished and not active:
-                    break
 
-                ready_ids = self._ready_ids(unfinished, dependencies)
-                human_ready = [
-                    work_unit_id
-                    for work_unit_id in ready_ids
-                    if work_units[work_unit_id].kind is WorkUnitKind.HUMAN_ACTION
-                ]
-                for work_unit_id in human_ready:
-                    work_units[work_unit_id].mark_blocked()
-                    records.append(
-                        WorkUnitExecutionRecord(
-                            work_unit_id=work_unit_id,
-                            role=specs[work_unit_id].role,
-                            wave=dispatch_generation + 1,
-                            attempt=attempts[work_unit_id],
-                            status=WorkUnitState.BLOCKED.value,
-                            skills=skill_sets[work_unit_id],
-                            reason="human-action-work-unit",
-                        )
-                    )
-                ready_ids = [item for item in ready_ids if item not in human_ready]
-
+                # A replan signal is itself pending orchestration work. Process it
+                # before declaring the current graph terminal, because the worker
+                # that requested replanning may have been the last current Work
+                # Unit and the replan may legitimately add the next required unit.
                 if pending_replan and not active:
                     if replan_count >= request.max_replans:
                         pending_replan = False
@@ -146,6 +127,32 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             skill_sets = self._preflight_skill_sets(specs, request.agent)
                         self._validate_graph(request, work_units, dependencies)
                         continue
+                    else:
+                        pending_replan = False
+
+                if not unfinished and not active:
+                    break
+
+                ready_ids = self._ready_ids(unfinished, dependencies)
+                human_ready = [
+                    work_unit_id
+                    for work_unit_id in ready_ids
+                    if work_units[work_unit_id].kind is WorkUnitKind.HUMAN_ACTION
+                ]
+                for work_unit_id in human_ready:
+                    work_units[work_unit_id].mark_blocked()
+                    records.append(
+                        WorkUnitExecutionRecord(
+                            work_unit_id=work_unit_id,
+                            role=specs[work_unit_id].role,
+                            wave=dispatch_generation + 1,
+                            attempt=attempts[work_unit_id],
+                            status=WorkUnitState.BLOCKED.value,
+                            skills=skill_sets[work_unit_id],
+                            reason="human-action-work-unit",
+                        )
+                    )
+                ready_ids = [item for item in ready_ids if item not in human_ready]
 
                 available_slots = request.max_concurrency - len(active)
                 if (
