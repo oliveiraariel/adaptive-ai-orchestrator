@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "bootstrap_version": "1.0.0",
+  "bootstrap_version": "1.0.1",
   "platform": {
     "os": "linux",
     "supported_family": ["linuxmint", "ubuntu", "debian", "debian-like"]

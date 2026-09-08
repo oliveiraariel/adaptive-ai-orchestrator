@@ -27,10 +27,10 @@ Options:
   -h, --help              Show this help.
 
 Security:
-  Gateway authentication is standardized on a generated file-backed token.
+  Gateway authentication is standardized on a file-backed token.
   The token is stored with mode 0600 and referenced through OpenClaw SecretRef.
-  If OPENCLAW_GATEWAY_TOKEN is already exported, that value is migrated instead
-  of generating a new token. Secrets are never printed by this script.
+  An existing OPENCLAW_GATEWAY_TOKEN from the shell or systemd user manager is
+  migrated instead of rotated. Secrets are never printed by this script.
 EOF
 }
 
@@ -79,7 +79,7 @@ Planned stages:
   6. Run official OpenClaw onboarding if configuration is not ready.
   7. Add the Ariel skills repository to skills.load.extraDirs and preserve any agent skill allowlists.
   8. Create/migrate a file-backed Gateway token and SecretRefs.
-  9. Enable adaptive-orchestrator-bridge and restart the Gateway.
+  9. Enable adaptive-orchestrator-bridge, restart Gateway, then clear the legacy systemd token env.
  10. Verify Gateway RPC, main-agent skill visibility, and bridge discovery.
  11. Run outbound and full inbound E2E smoke tests.
  12. Install Setup / Update / Verify desktop launchers.
@@ -174,6 +174,8 @@ ok "Gateway and bridge now use the same file-backed SecretRef token"
 
 log "Stage 9/12 — managed Gateway service"
 restart_or_install_gateway "$OPENCLAW_BIN"
+clear_legacy_gateway_manager_env
+ok "Legacy systemd user Gateway token environment cleared after SecretRef migration"
 
 log "Stage 10/12 — bridge and skill visibility"
 python3 "$SKILLS_DIR/scripts/validate_ecosystem.py"

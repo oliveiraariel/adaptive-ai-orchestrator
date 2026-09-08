@@ -4,7 +4,7 @@ set -Eeuo pipefail
 BOOTSTRAP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ADAPTIVE_REPO_ROOT="$(cd -- "$BOOTSTRAP_DIR/.." && pwd)"
 BOOTSTRAP_MANIFEST="$BOOTSTRAP_DIR/manifest.json"
-BOOTSTRAP_VERSION="1.0.0"
+BOOTSTRAP_VERSION="1.0.1"
 
 : "${DRY_RUN:=0}"
 : "${ADAPTIVE_STACK_ROOT:=$(dirname "$ADAPTIVE_REPO_ROOT")}"
@@ -204,18 +204,34 @@ PY
   fi
 }
 
+legacy_systemd_gateway_token() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  local line
+  line="$(systemctl --user show-environment 2>/dev/null | grep '^OPENCLAW_GATEWAY_TOKEN=' | head -n1 || true)"
+  [[ -n "$line" ]] || return 1
+  printf '%s' "${line#OPENCLAW_GATEWAY_TOKEN=}"
+}
+
 ensure_secret_file() {
-  local file="$1" token="${OPENCLAW_GATEWAY_TOKEN:-}"
+  local file="$1" token="${OPENCLAW_GATEWAY_TOKEN:-}" legacy_token=""
   file="$(expand_path "$file")"
   if [[ -s "$file" && -z "$token" ]]; then
     ok "Reusing existing file-backed Gateway token"
     return 0
   fi
   if [[ -z "$token" ]]; then
+    legacy_token="$(legacy_systemd_gateway_token || true)"
+    if [[ -n "$legacy_token" ]]; then
+      token="$legacy_token"
+      info "Migrating the existing systemd user Gateway token into file-backed SecretRef storage"
+    fi
+  fi
+  if [[ -z "$token" ]]; then
     token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    info "Generating a new local Gateway token"
   fi
   if [[ "$DRY_RUN" == "1" ]]; then
-    info "Would write a generated/provided Gateway token to $file with mode 0600"
+    info "Would write the selected Gateway token to $file with mode 0600"
     return 0
   fi
   umask 077
@@ -259,6 +275,11 @@ restart_or_install_gateway() {
     "$openclaw_bin" gateway start
   fi
   "$openclaw_bin" gateway status --require-rpc
+}
+
+clear_legacy_gateway_manager_env() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user unset-environment OPENCLAW_GATEWAY_TOKEN 2>/dev/null || true
 }
 
 read_secret_token() {
