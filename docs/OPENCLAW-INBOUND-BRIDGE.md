@@ -45,19 +45,21 @@ read-only RuntimeProjectPlanner
   ↓
 validated Work Graph
   ↓
-RunProjectOrchestration
+RunContinuousProjectOrchestration
   ↓
-ready frontier
+ready frontier + active-worker conflict check
   ↓
-parallel-safe synchronized worker wave
+dispatch until concurrency budget is full
   ↓
 OpenClaw Gateway → independent agent-owned sessions
   ↓
-result join + evaluation + finalization
+FIRST completed result
   ↓
-dependency advancement / fan-in
+evaluation + finalization + dependency advancement
   ↓
-next frontier / bounded replan
+refill free slot while unrelated workers remain active
+  ↓
+fan-in / bounded replan when needed
   ↺
 ```
 
@@ -93,13 +95,15 @@ Important project-mode options include:
 
 - `--agent` — physical OpenClaw agent/workspace owner for worker sessions;
 - `--planner-agent` — optional distinct planning agent id;
-- `--max-concurrency` — synchronized worker cap;
-- `--max-work-units`, `--max-waves`, `--max-attempts`, `--max-replans` — bounded execution controls;
+- `--max-concurrency` — global active-worker cap;
+- `--max-work-units`, `--max-waves`, `--max-attempts`, `--max-replans` — bounded execution controls (`max-waves` is retained as the compatibility name for dispatch-generation budget);
 - `--skill-registry` — explicit Ariel Agent Skills registry path when automatic sibling discovery is unavailable;
 - `--plan-file` — deterministic prebuilt plan for tests/E2E;
 - repeatable `--context` and `--constraint`;
 - `--allow-side-effect filesystem.write` when the user's request clearly authorizes repository edits;
 - `--human-approved` when the autonomy class requires real prior approval.
+
+Project mode does not use the single-unit `--side-effect`/`--accept` contract. The planner declares side effects and acceptance criteria per Work Unit, while the outer caller grants only the allowed authority ceiling.
 
 The default side-effect policy is read-only. The planner cannot grant itself authority that the outer caller did not provide.
 
@@ -109,13 +113,15 @@ Each ready Work Unit becomes an independent runtime execution with a unique task
 
 Adaptive does not need to persist a new OpenClaw agent profile for every worker. Worker count is dynamic and follows the useful ready frontier.
 
+When one worker finishes, Adaptive can immediately use the free slot for newly unlocked work. It does not wait for unrelated workers that were dispatched earlier.
+
 The selected `ResourceConfiguration` is included in the worker message so the runtime agent can see the selected skills/tools and execution configuration.
 
 ## Shared checkout safety
 
 The current OpenClaw adapter does not claim Git worktree/container isolation.
 
-When workers share a checkout, Adaptive project mode only co-schedules write-capable Work Units when their declared repository-relative `write_paths` are non-overlapping. Unknown, broad, wildcard, parent/child, or overlapping write scopes are serialized. Read-only work remains freely parallelizable subject to the concurrency budget and policy.
+For `filesystem.write`, Work Units must declare literal repository-relative `write_paths`. Missing scopes, absolute paths, traversal, globs and overlapping ownership are rejected or serialized. Conflict checks include workers already active from earlier dispatch generations, not only candidates selected together. Read-only work remains parallelizable subject to concurrency/resource policy.
 
 ## Credential handling
 
@@ -133,8 +139,6 @@ The bridge must fail closed when the Gateway requires authentication and no usab
 
 The bridge and project orchestrator normally omit explicit model/provider overrides. The configured OpenClaw agent's model policy remains authoritative unless a deployment explicitly grants override capability.
 
-This avoids coupling the orchestration layer to one provider and prevents a bridge from weakening Gateway authorization.
-
 ## Acceptance semantics
 
 For a single Work Unit, a concrete machine-verifiable literal marker may be supplied with `--accept`.
@@ -147,16 +151,20 @@ For project mode, runtime completion is normally the per-worker execution gate, 
 - Side effects must be explicitly allowed by the outer execution policy.
 - Human-only Work Units are not delegated to an agent.
 - Workers cannot recursively invoke the bridge/Adaptive again.
-- Replanning is bounded and additive; workers cannot silently expand their own authority.
+- Replanning is bounded; new dispatches stop while active work drains before graph mutation.
+- New unsatisfied required prerequisites cannot be attached to already-started Work Units.
+- Retry task identities are distinct.
 - Concurrency is bounded and must be useful, not maximized for its own sake.
 
 ## Validation layers
 
-1. **Domain/application tests** validate plan invariants, skill resolution, frontier waves, write-scope conflict control, fan-in, retries and replanning.
+1. **Domain/application tests** validate plan invariants, minimum skill resolution, continuous frontier replenishment, write-scope control, fan-in, retries and replanning.
 2. **CLI contract tests** validate both `run` and `orchestrate` JSON output and secret non-disclosure.
 3. **Gateway protocol tests** validate Adaptive → OpenClaw RPC behavior and worker configuration transport.
-4. **Deterministic multiagent E2E plan** validates multiple real OpenClaw sessions, observed parallelism and synchronization.
+4. **Deterministic multiagent E2E plan** validates multiple real OpenClaw sessions, observed parallelism and fan-in.
 5. **Dashboard smoke test** validates OpenClaw chat → bridge → Adaptive project mode → OpenClaw workers → project result.
+
+CI must install the Gateway test dependency and propagate pytest failures through any diagnostic pipeline. A green workflow that masks pytest failure is not valid evidence.
 
 Only live layers against the actual local Gateway prove that a specific deployed machine is operational end to end.
 
