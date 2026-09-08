@@ -17,11 +17,12 @@ O Adaptive deve possuir a responsabilidade de:
 - compreender o objetivo e o estado real do projeto;
 - criar ou revisar o Work Graph;
 - identificar dependências reais;
-- calcular a ready frontier;
+- calcular e recalcular a ready frontier;
 - criar workers lógicos conforme a necessidade;
-- selecionar somente as skills necessárias para cada Work Unit;
-- executar em paralelo somente trabalhos independentes e seguros;
-- sincronizar/fazer fan-in dos resultados;
+- selecionar somente as skills necessárias por Work Unit;
+- executar em paralelo somente trabalho independente e seguro;
+- preencher continuamente slots liberados sem aguardar workers independentes;
+- fazer fan-in somente de resultados aceitos;
 - avaliar, avançar dependências e replanejar de forma limitada quando necessário.
 
 Use `engineering-lifecycle` como capacidade de engenharia, sem transferir
@@ -84,23 +85,35 @@ Considere conforme o escopo:
 - integração com backend e contratos já existentes.
 
 PARALELISMO
-Não trate “frontend” como uma fase necessariamente única e sequencial.
+Não trate “frontend” como uma fase única e sequencial por padrão.
 Quando houver trabalho independente, o Adaptive pode abrir múltiplos workers
-frontend em paralelo, por exemplo para superfícies/componentes diferentes,
-verificação de acessibilidade, testes ou auditorias.
+frontend em paralelo, por exemplo para superfícies/componentes distintos,
+acessibilidade, testes ou auditorias.
 
 Quando este frontend fizer parte de um sistema full-stack, não espere todo o
 backend terminar por hábito. Um contrato/API/interface suficientemente estável
 pode desbloquear frontend e backend em paralelo. Preserve bloqueio apenas quando
-houver uma dependência real ainda não resolvida.
+houver uma dependência real ainda não resolvida ou o frontend teria de inventar
+contrato, regra de negócio ou decisão arquitetural.
 
 O número de workers deve seguir a ready frontier útil e a economicidade de
 contexto/tokens. Não maximize agentes por si só. Escale para 2, 3, 4, 6 ou mais
 somente quando houver trabalho independente e o limite configurado permitir.
 
-Em checkout compartilhado, Work Units com escrita só podem compartilhar a mesma
-onda quando possuírem escopos de escrita precisos e não sobrepostos. Se o escopo
-for amplo, desconhecido ou conflitante, serialize.
+Quando um worker concluir e seu resultado aceito desbloquear nova Work Unit,
+reavalie a frontier imediatamente. Se houver slot livre e nenhuma colisão de
+recursos/escrita, inicie o novo worker sem aguardar workers independentes que
+ainda estejam em execução.
+
+Quando workers compartilham o mesmo checkout, toda Work Unit que solicita
+`filesystem.write` deve possuir `write_paths` literais, precisos e relativos ao
+repositório. Escopo ausente, absoluto, com traversal/glob, desconhecido ou
+sobreposto deve falhar ou ser serializado. Compare também com writers já ativos
+de dispatches anteriores.
+
+Quando resultados paralelos precisarem convergir, crie fan-in explícito de
+integração, testes, síntese ou revisão em vez de depender de conversa informal
+entre workers.
 
 Não use todas as skills por padrão. Selecione a menor combinação capaz de
 produzir evidência suficiente.
@@ -131,7 +144,8 @@ quando resultados paralelos precisarem ser integrados.
 Ao concluir ou interromper a sessão, use `project-handoff` e deixe claro:
 - o que foi feito;
 - Work Units concluídas/bloqueadas;
-- paralelismo efetivamente utilizado;
+- paralelismo efetivamente utilizado (`max_parallelism_observed` quando disponível);
+- dispatch generations relevantes e fan-in realizado;
 - evidências e verificações;
 - riscos ou pendências;
 - próximo trabalho executável.
