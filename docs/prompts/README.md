@@ -45,17 +45,27 @@ dynamic logical workers + minimum skills
   ↓
 parallel execution when safe
   ↓
-evaluation / fan-in / next frontier / bounded replan
+primeiro resultado concluído
+  ↓
+evaluation/finalization + dependency advancement
+  ↓
+ready frontier recalculada
+  ↓
+slot liberado pode receber novo worker enquanto outros continuam
+  ↓
+fan-in / bounded replan quando necessário
   ↺
 ```
 
 O usuário define **o objetivo e a autoridade**. O Adaptive organiza o trabalho. `engineering-lifecycle` e as demais skills são capacidades selecionadas por Work Unit; elas não substituem o scheduler/orchestrator.
 
-O Adaptive não deve usar uma quantidade fixa de agentes. A frontier útil pode gerar 1, 2, 3, 4, 6 ou mais worker sessions dentro do limite configurado. A economicidade de tokens/contexto deve impedir microfragmentação e skills desnecessárias.
+O Adaptive não usa uma quantidade fixa de agentes. A frontier útil pode gerar 1, 2, 3, 4, 6 ou mais worker sessions dentro do limite configurado. A economicidade de tokens/contexto deve impedir microfragmentação e skills desnecessárias.
 
 Paralelismo não depende de “ser frontend” ou “ser backend”. Backend/backend, frontend/frontend, frontend/backend e outras combinações podem ocorrer quando dependências reais estiverem satisfeitas. Contratos/interfaces estáveis são seams naturais para desbloquear trabalho lateral.
 
-Em checkout compartilhado, writes concorrentes exigem escopos de escrita precisos e não sobrepostos. O prompt não deve afirmar que há Git worktree/container isolation se o runtime não a forneceu.
+A execução de projeto é **continuamente reabastecida**, não baseada em barreiras artificiais de wave: quando um resultado aceito desbloqueia trabalho e existe slot compatível, o novo worker pode ser iniciado sem aguardar workers independentes ainda ativos. Os registros de `dispatch generation` servem para rastreabilidade, não como obrigação de término em grupo.
+
+Em checkout compartilhado, toda Work Unit que solicita `filesystem.write` deve possuir `write_paths` literais, precisos e relativos ao repositório. Writes concorrentes só são elegíveis quando seus escopos não se sobrepõem, inclusive contra writers já ativos. O prompt não deve afirmar que há Git worktree/container isolation se o runtime não a forneceu.
 
 ## Quando criar um prompt específico no próprio projeto
 
