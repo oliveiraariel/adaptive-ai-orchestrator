@@ -25,6 +25,10 @@ Safety:
   OpenClaw uses its supported `openclaw update` command. Capability changes are
   NOT auto-accepted; if OpenClaw asks for capability review, the update stops so
   you can inspect it explicitly.
+
+Recovery:
+  Every successful update refreshes the Adaptive/OpenClaw launchers and the
+  persisted ~/.local/bin shell PATH registration before final verification.
 EOF
 }
 
@@ -49,6 +53,7 @@ SKILLS_DIR="$STACK_ROOT/ariel-agent-skills"
 if [[ "$DRY_RUN" == "1" ]]; then
   info "Would fast-forward $ADAPTIVE_DIR from origin/main"
   info "Would fast-forward $SKILLS_DIR from origin/main"
+  info "Would refresh adaptive-openclaw-* launchers and persist ~/.local/bin in shell startup PATH"
   if [[ "$UPDATE_OPENCLAW" == "1" ]]; then
     OPENCLAW_BIN="$(resolve_openclaw || true)"
     if [[ -n "$OPENCLAW_BIN" ]]; then
@@ -68,6 +73,13 @@ need_cmd git
 
 safe_git_sync "$ADAPTIVE_REPO_URL" "$ADAPTIVE_DIR" "$ADAPTIVE_BRANCH" "Adaptive AI Orchestrator"
 safe_git_sync "$SKILLS_REPO_URL" "$SKILLS_DIR" "$SKILLS_BRANCH" "Ariel Agent Skills"
+
+# Refresh launchers after repository synchronization so updates carry forward
+# bootstrap fixes instead of leaving old wrappers/PATH metadata behind.
+log "Refreshing Adaptive/OpenClaw launchers and shell PATH registration"
+bash "$SCRIPT_DIR/install-launchers.sh" --stack-root "$STACK_ROOT"
+export PATH="$HOME/.local/bin:$PATH"
+ok "Launcher/PATH recovery surface refreshed"
 
 VENV_PYTHON="$ADAPTIVE_DIR/.venv/bin/python"
 if [[ ! -x "$VENV_PYTHON" ]]; then

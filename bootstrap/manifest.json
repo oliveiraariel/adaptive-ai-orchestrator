@@ -40,6 +40,8 @@
       "adaptive-openclaw-verify"
     ],
     "persist_path_in_shell_startup": true,
+    "refresh_on_update": true,
+    "refresh_before_final_verification": true,
     "same_shell_caveat": "A bootstrap subprocess cannot mutate the already-running parent shell PATH; open a new terminal or export ~/.local/bin for that shell."
   },
   "validation": {
