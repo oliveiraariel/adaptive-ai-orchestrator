@@ -8,15 +8,23 @@ DEFAULT_STACK_ROOT="${ADAPTIVE_STACK_ROOT:-$HOME/Projects/AdaptiveOpenClaw}"
 log() { printf '\n[adaptive-bootstrap] %s\n' "$*"; }
 die() { printf '\n[adaptive-bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
 
+apt_run() {
+  if [[ "${EUID:-$(id -u)}" == "0" ]]; then
+    apt-get "$@"
+  else
+    command -v sudo >/dev/null 2>&1 || die "sudo is required to install Git on this host."
+    sudo apt-get "$@"
+  fi
+}
+
 ensure_git() {
   if command -v git >/dev/null 2>&1; then
     return
   fi
   command -v apt-get >/dev/null 2>&1 || die "Git is missing and apt-get is unavailable. Install Git, then rerun."
-  command -v sudo >/dev/null 2>&1 || die "Git is missing and sudo is unavailable. Install Git, then rerun."
   log "Installing Git"
-  sudo apt-get update
-  sudo apt-get install -y git ca-certificates
+  apt_run update
+  apt_run install -y git ca-certificates
 }
 
 STACK_ROOT="$DEFAULT_STACK_ROOT"
