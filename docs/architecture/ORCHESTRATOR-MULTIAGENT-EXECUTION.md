@@ -1,7 +1,7 @@
 # ORCHESTRATOR — MULTIAGENT EXECUTION
 
 **Projeto:** Adaptive AI Orchestrator  
-**Status:** Arquitetura normativa incremental  
+**Status:** Arquitetura normativa incremental com execução high-level operacional na v0.4  
 **Origem:** maturação da capacidade Delegation & Coordination após auditoria comparativa do ecossistema Matt Pocock
 
 ## 1. Propósito
@@ -11,6 +11,14 @@ Esta especificação torna operacional a execução multiagente já prevista pel
 O problema central é:
 
 > **Como avançar um grafo de Work Units com concorrência segura, delegação limitada, autoridade explícita e avaliação antes de liberar dependências?**
+
+### Estado de implementação v0.4
+
+Os invariantes deste documento deixam de existir apenas como mecanismos de baixo nível isolados. A v0.4 acrescenta `RuntimeProjectPlanner` + `RunProjectOrchestration`, que transformam um objetivo amplo em `ProjectExecutionPlan`, executam frontiers em ondas sincronizadas paralelas, propagam resultados aceitos para fan-in e podem expandir o grafo por replanning aditivo limitado.
+
+O fluxo executável é documentado em `ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`.
+
+A implementação cria **worker sessions lógicos efêmeros** por Work Unit. Ela não cria perfis persistentes de agentes OpenClaw e não presume isolamento por Git worktree/container. Em checkout compartilhado, writes concorrentes exigem escopos de escrita declarados e não sobrepostos.
 
 ## 2. Princípios
 
@@ -41,7 +49,10 @@ Estar na frontier não implica execução imediata. O Orchestrator deve respeita
 - disponibilidade de recursos;
 - política de autoridade;
 - claims existentes;
-- criticidade e prioridade.
+- criticidade e prioridade;
+- conflito de write/resource scope quando workers compartilham workspace.
+
+A v0.4 permite frontiers com 2, 3, 4, 6 ou mais workers até o limite configurado, mas não usa worker count como objetivo. A frontier útil e segura determina o paralelismo real.
 
 ### ME-003 — Claim é separado de estado da Work Unit
 
@@ -100,6 +111,7 @@ code workers      → integration
 research agents   → synthesis
 security reviewers→ aggregate findings
 design agents     → compare alternatives
+backend + frontend→ cross-layer integration/test
 ```
 
 Git branches/worktrees, sandboxes, containers ou runtime-managed workspaces são estratégias de adapter.
@@ -140,6 +152,8 @@ Regras:
 
 O objetivo é impedir explosão recursiva, ciclos e delegação de autoridade sem limite.
 
+No project mode v0.4, workers não subdelegam novos Adaptive runs. Necessidade real de novo trabalho retorna ao orchestrator por sinal de replanning, preservando centralização da autoridade.
+
 ## 5. Context transfer
 
 A transferência de contexto possui estratégia própria:
@@ -154,6 +168,8 @@ FRESH
 **Context pointers** referenciam artefatos autoritativos existentes em vez de duplicá-los. O adapter resolve o mecanismo físico.
 
 Contexto sensível só pode atravessar fronteiras quando a política declara que redaction foi aplicada ou quando outra política superior autoriza mecanismo seguro equivalente.
+
+No project executor v0.4, resultados aceitos de dependências são propagados ao consumidor por contexto limitado; artefatos extensos continuam preferindo pointers para evitar custo desnecessário.
 
 ## 6. Execution Coordinator
 
@@ -180,6 +196,8 @@ Ele não deve:
 - criar Git worktrees;
 - decidir sozinho se um resultado é correto;
 - liberar dependências sem avaliação.
+
+A camada `RunProjectOrchestration` fica acima do coordinator: prepara a wave, chama o coordinator, aguarda/junta resultados, finaliza cada Work Unit e recalcula a próxima frontier.
 
 ## 7. Finalization
 
@@ -216,7 +234,7 @@ Possíveis extensões futuras:
 - background execution;
 - child-agent native APIs.
 
-Essas extensões não são pré-condição para o modelo semântico atual.
+Essas extensões não são pré-condição para o modelo semântico atual. O OpenClaw adapter atual obtém paralelismo através de múltiplas execuções/sessões independentes do mesmo contrato mínimo.
 
 ## 9. Failure behavior
 
@@ -226,13 +244,17 @@ O Orchestrator deve diferenciar:
 not ready
 policy blocked
 concurrency deferred
+workspace-conflict deferred
 claim conflict
 runtime dispatch failure
-execution failure
+execution/result failure
 result rejection
+human-action blocked
 ```
 
 Esses estados não são equivalentes e não devem ser achatados em um único `FAILED`.
+
+Retries e replans são limitados. Um erro persistente vira blocker em vez de loop infinito.
 
 ## 10. Relação com Matt Pocock skills
 
@@ -260,4 +282,15 @@ A capacidade só é considerada válida quando testes demonstram:
 - resultado rejeitado não libera dependência;
 - resultado aceito libera dependência;
 - frontier subsequente consegue avançar;
-- recursão acima do limite falha deterministicamente.
+- recursão acima do limite falha deterministicamente;
+- um contrato pode liberar backend e frontend na mesma frontier;
+- seis Work Units independentes podem ocupar seis workers quando o cap permite;
+- resultados paralelos convergem em fan-in downstream;
+- writes com paths sobrepostos são serializados;
+- writes com paths disjuntos podem ser paralelos;
+- skill resolution não carrega skills desnecessárias;
+- HUMAN_ACTION não é delegado;
+- replanning aditivo é limitado e revalidado;
+- project-mode CLI produz evidência estruturada de waves e parallelism.
+
+A passagem desses testes valida a lógica do repositório. Uma instalação específica ainda exige live E2E no Gateway real para provar paralelismo operacional naquela máquina.
