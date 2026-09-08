@@ -8,17 +8,29 @@ Use este prompt para iniciar trabalho relevante de **backend, API, engenharia de
 Quero iniciar ou continuar um trabalho profissional de backend/engenharia neste projeto.
 
 Use o `adaptive-orchestrator-bridge` como porta de entrada para o
-Adaptive AI Orchestrator.
+Adaptive AI Orchestrator e use o modo multiagente de projeto para este
+trabalho não trivial.
 
-Use `engineering-lifecycle` para determinar o fluxo de engenharia e
-selecionar somente as skills necessárias ao objetivo.
+O Adaptive deve possuir a responsabilidade de:
+- compreender o objetivo e o estado real do projeto;
+- criar ou revisar o Work Graph;
+- identificar dependências reais;
+- calcular a ready frontier;
+- criar workers lógicos conforme a necessidade;
+- selecionar somente as skills necessárias por Work Unit;
+- executar em paralelo somente trabalho independente e seguro;
+- sincronizar/fazer fan-in dos resultados;
+- avaliar, avançar dependências e replanejar de forma limitada quando necessário.
+
+Use `engineering-lifecycle` como capacidade de engenharia, sem transferir
+para essa skill as responsabilidades de scheduling do Adaptive.
 
 O projeto pode estar em qualquer nível de maturidade: vazio, apenas com
 uma ideia, parcialmente documentado, parcialmente implementado, legado
 ou já bem estruturado.
 
-Antes de alterar qualquer coisa, comece com `project-discovery` quando o
-estado do projeto ainda não estiver suficientemente claro.
+Antes de alterar qualquer coisa, faça `project-discovery` quando o estado
+do projeto ainda não estiver suficientemente claro.
 
 Descubra e diferencie:
 - requisitos e regras já existentes;
@@ -53,7 +65,7 @@ como `technical-research`, `domain-modeling`, `software-specification`,
 `software-architecture` e `work-decomposition`.
 
 Somente avance para `implementation` quando existir definição suficiente
-para uma unidade de trabalho verificável.
+para uma Work Unit verificável.
 
 Na implementação, use conforme necessário:
 - implementation;
@@ -75,6 +87,33 @@ Considere `security-review` especialmente quando houver:
 - fronteiras de confiança;
 - deployment ou exposição em rede.
 
+PARALELISMO
+Não trate “backend” como uma única fila sequencial.
+
+Depois que contratos/decisões compartilhadas estiverem suficientemente
+estáveis, o Adaptive pode executar em paralelo:
+- dois ou mais módulos backend independentes;
+- backend + testes/review/security;
+- backend + frontend consumidor do mesmo contrato;
+- outros trabalhos sem dependência bloqueante real.
+
+Não espere todo o backend terminar para liberar frontend por hábito. Se uma
+API/interface/schema já estiver estável o suficiente para o consumidor, use essa
+fronteira como seam de paralelismo. Mantenha bloqueio quando o consumidor ainda
+precisaria inventar contrato, regra de negócio ou decisão arquitetural.
+
+O número de workers deve seguir a ready frontier útil e a economicidade de
+contexto/tokens. Não maximize agentes por si só. Escale para 2, 3, 4, 6 ou mais
+somente quando houver trabalho independente e o limite configurado permitir.
+
+Quando workers compartilham o mesmo checkout, Work Units com escrita só podem
+compartilhar a mesma onda quando possuírem escopos de escrita precisos e não
+sobrepostos. Escopo amplo, desconhecido ou conflitante deve ser serializado.
+
+Quando resultados paralelos precisarem convergir, crie fan-in explícito de
+integração, testes, síntese ou revisão em vez de depender de conversa informal
+entre workers.
+
 Não invente requisitos para preencher lacunas e não use todas as skills
 por padrão. Selecione a menor combinação capaz de produzir evidência
 suficiente.
@@ -82,6 +121,10 @@ suficiente.
 AUTORIDADE
 Você pode realizar mudanças não destrutivas dentro do projeto necessárias
 ao objetivo desta sessão.
+
+Se esse objetivo autoriza edição dos arquivos do projeto, permita somente o
+efeito de escrita necessário (`filesystem.write`). Isso não autoriza deploy,
+publicação, mudanças de credenciais, exclusões destrutivas ou operações externas.
 
 Não está autorizado sem confirmação explícita a:
 - alterar regra de negócio ou escopo material;
@@ -101,11 +144,14 @@ Pare e solicite decisão humana quando houver:
 - credencial ausente;
 - publicação/deploy não autorizado.
 
-Execute em unidades pequenas e verificáveis. Teste, revise e preserve
-evidência suficiente para continuidade.
+Execute em Work Units pequenas o suficiente para serem verificáveis, mas não
+microfragmente apenas para criar mais agentes. Teste, revise, preserve evidência
+e faça fan-in quando resultados paralelos precisarem ser integrados.
 
 Ao concluir ou interromper a sessão, use `project-handoff` e deixe claro:
 - o que foi feito;
+- Work Units concluídas/bloqueadas;
+- paralelismo efetivamente utilizado;
 - evidências e verificações;
 - riscos ou pendências;
 - próximo trabalho executável.
