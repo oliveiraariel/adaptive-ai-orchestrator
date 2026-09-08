@@ -2,7 +2,7 @@
 
 **Project:** Adaptive AI Orchestrator  
 **Status:** executable architecture — v0.4  
-**Scope:** high-level Work Graph planning, synchronized lateral workers, fan-out/fan-in and bounded replanning
+**Scope:** high-level Work Graph planning, continuously replenished lateral workers, fan-out/fan-in and bounded replanning
 
 ## 1. Purpose
 
@@ -21,20 +21,18 @@ Work Graph + real blocking edges
    ↓
 Ready Frontier
    ↓
-Parallel-safe wave selection
+Conflict-safe dispatch up to concurrency budget
    ↓
-Dynamic logical worker sessions
+Independent logical worker sessions
    ↓
-Result join
+FIRST completed result
    ↓
 Evaluation + Finalization
    ↓
 Dependency advancement / fan-in
    ↓
-Frontier recomputation
-   ↓
-Bounded additive replanning when required
-   ↺
+Immediately recompute frontier and refill free slots
+   ↺ while unrelated workers continue
 ```
 
 This layer composes the existing Adaptive domain/application seams; it does not replace `ExecutionCoordinator`, claims, execution policy, `AgentRuntime`, `EvaluateResult`, or `FinalizeExecution`.
@@ -45,7 +43,7 @@ A **worker** in this execution mode is an ephemeral logical execution/session cr
 
 Multiple Work Units may use the same configured physical OpenClaw agent id while receiving distinct:
 
-- task ids;
+- task ids and retry identities;
 - agent-owned session keys;
 - logical roles;
 - selected skill sets;
@@ -68,11 +66,11 @@ Every `ProjectExecutionPlan` must provide:
 - required capabilities and optional requested skills;
 - expected output and acceptance criteria;
 - requested side effects;
-- precise write paths for write-capable parallel work;
+- precise repository-relative write paths for filesystem writers;
 - priority/criticality scheduling hints;
 - explicit required/optional dependency edges.
 
-Required edges must be acyclic and all endpoints must exist.
+Required edges must be acyclic and all endpoints must exist. Planned filesystem writes without a declared write scope are rejected. Absolute paths, parent traversal and glob write scopes are rejected before execution.
 
 The planner is instructed to add a blocking edge **only for a real prerequisite**. Layer names are not barriers by themselves.
 
@@ -104,24 +102,42 @@ backend frontend   contract tests
  integration / end-to-end verification
 ```
 
-The frontend does not need to wait for the entire backend when a sufficiently stable contract provides the information it needs. Conversely, the orchestrator must retain a blocking dependency when the frontend would otherwise have to invent an unresolved contract or business rule.
+The frontend does not need to wait for the entire backend when a sufficiently stable contract provides the information it needs. Conversely, the orchestrator retains a blocking dependency when the frontend would otherwise have to invent an unresolved contract or business rule.
 
-## 5. Synchronized parallel waves
+## 5. Continuous frontier scheduling
 
-`RunProjectOrchestration` uses **synchronized waves**:
+`RunContinuousProjectOrchestration` is the operational project scheduler used by `adaptive-orchestrator orchestrate`.
+
+It does **not** impose a barrier between batches of workers. Its loop is:
 
 1. recompute the current ready frontier;
 2. order candidates by priority/criticality;
-3. choose a conflict-free subset up to `max_concurrency`;
-4. prepare bounded TaskPackages and minimal skill sets;
-5. dispatch all selected Work Units before waiting for any one result;
-6. retrieve worker results concurrently;
-7. evaluate and finalize every returned result;
-8. satisfy accepted dependency edges;
-9. join accepted outputs into downstream context;
-10. recompute the frontier.
+3. compare candidates with all currently active workers for write/resource conflicts;
+4. dispatch as many conflict-free Work Units as available concurrency slots permit;
+5. wait only until at least one active execution completes;
+6. evaluate and finalize each completed result immediately;
+7. satisfy dependencies only for accepted results;
+8. propagate bounded accepted outputs to dependent Work Units;
+9. recompute the frontier immediately;
+10. fill newly free slots while unrelated workers remain active.
 
-This creates real lateral runtime sessions while keeping the Adaptive engine authoritative over synchronization.
+Example with `max_concurrency=2`:
+
+```text
+t0  worker A ────────────────┐
+    worker B ─────────────────────────────┐
+                              │            │
+t1  A accepted → unlocks C    │            │
+    worker C starts ────────┐ │            │
+                            │ │            │
+t2  C completes             └─┘            │
+                                             │
+t3  B completes                            └─┘
+```
+
+C is allowed to start at `t1`; it does not wait for B merely because A and B were dispatched together. This is the required lateral-session behavior.
+
+For compatibility, result records historically named `waves` are retained, but in continuous mode they represent **dispatch generations**, not synchronization barriers. CLI output also exposes the clearer `dispatch_generations` field.
 
 ## 6. Concurrency bounds and token economy
 
@@ -131,13 +147,13 @@ Defaults are intentionally bounded:
 
 - `max_concurrency = 4`;
 - `max_work_units = 24`;
-- `max_waves = 24`;
+- `max_waves = 24` (compatibility name for maximum dispatch generations);
 - `max_attempts_per_work_unit = 2`;
 - `max_replans = 2`.
 
 The CLI accepts other bounded values; concurrency is validated in the range 1–32.
 
-The planner is instructed to avoid token-expensive micro-fragmentation. The worker count follows the useful ready frontier, not a fixed pool. Two useful workers should not become six merely because the limit permits six.
+The planner is instructed to avoid token-expensive micro-fragmentation. The worker count follows the useful ready frontier, not a fixed pool. Two useful workers should not become six merely because the limit permits six. Conversely, six genuinely independent useful Work Units may use six slots when policy and budget allow it.
 
 `SkillResolver` further reduces context by selecting the smallest compatible deterministic skill set that covers each Work Unit's capabilities, including only required skill dependencies.
 
@@ -147,11 +163,13 @@ Adaptive v0.4 does **not** claim automatic Git worktree/container isolation.
 
 When multiple workers share a checkout:
 
-- read-only Work Units may share a wave;
-- a read-only Work Unit may share a wave with a writer when no other resource rule blocks it;
-- two write-capable Work Units may share a wave only when both declare precise `write_paths` and those path prefixes do not overlap;
-- unknown, global, wildcard, parent/child, or otherwise overlapping write ownership is serialized;
-- `parallel_safe=false` serializes that Work Unit against other selected work.
+- read-only Work Units may execute concurrently;
+- a read-only Work Unit may execute alongside a writer when no other resource rule blocks it;
+- two write-capable Work Units may execute concurrently only when their literal repository-relative write-path prefixes are disjoint;
+- a candidate is checked not only against workers chosen in the same dispatch generation but also against **workers already active from earlier generations**;
+- parent/child or equal path ownership overlaps and is serialized;
+- `parallel_safe=false` prevents concurrent sharing;
+- unsafe absolute, traversal, wildcard or missing filesystem-write scopes are rejected by the plan contract.
 
 This is conservative by design. Future runtime adapters may add worktree/sandbox allocation as a stronger isolation strategy without changing the domain semantics.
 
@@ -209,6 +227,8 @@ The current `EvaluateResult` observable gate can verify explicit evidence/litera
 
 The planner is explicitly told not to fabricate natural-language string criteria as proof of semantic correctness.
 
+A dependency becomes satisfied only after the upstream result reaches an accepted verdict. Runtime completion by itself cannot unlock downstream work.
+
 ## 11. Bounded replanning
 
 A worker must not silently expand its own scope.
@@ -219,20 +239,24 @@ When genuinely necessary missing work is discovered, the worker may return:
 ADAPTIVE_REPLAN_REQUIRED: <reason>
 ```
 
-Only an **accepted** Work Unit can trigger replanning. The runtime planner receives the current plan and compact execution state and may return a revised full plan.
+Only an **accepted** Work Unit can request replanning. Once such a request appears, the continuous scheduler stops launching additional workers, allows already-active work to drain, then performs bounded replanning against a stable execution state.
 
-The executor admits only additive changes:
+This conservative drain-before-replan rule avoids mutating dependencies underneath in-flight Work Units and keeps planner activity inside the project concurrency budget.
+
+The executor admits only controlled additive evolution:
 
 - existing Work Unit ids/semantics remain authoritative;
 - only new Work Unit ids are instantiated;
 - only new dependency edges are added;
 - dependencies from already completed sources are immediately satisfied;
-- total Work Units and replan count remain bounded;
+- a new unsatisfied required edge cannot be attached to a Work Unit that already started or completed;
+- every replan invocation counts against `max_replans`, even if it adds no Work Unit;
+- total Work Units remain bounded;
 - the merged graph is revalidated before execution resumes.
 
 Optional polish should not trigger replanning.
 
-## 12. Failure and retry behavior
+## 12. Failure, retry and idempotency behavior
 
 The project runner distinguishes:
 
@@ -246,6 +270,8 @@ The project runner distinguishes:
 - bounded-plan exhaustion.
 
 Revision-required Work Units can re-enter the ready frontier up to the configured attempt limit. Exhausted work is blocked rather than retried indefinitely.
+
+Every retry receives a distinct task identity. This prevents a third or later retry from accidentally reusing an OpenClaw idempotency key or session identity created by an earlier `REVISION_REQUIRED` attempt.
 
 ## 13. CLI
 
@@ -277,6 +303,8 @@ adaptive-orchestrator orchestrate \
   --max-concurrency 3
 ```
 
+Project mode intentionally does not accept single-Work-Unit-only flags such as a forced worker model/provider or a caller-supplied project-level acceptance marker. Per-Work-Unit capabilities, tools, side effects and acceptance criteria belong to the validated plan.
+
 ## 14. OpenClaw bridge
 
 The OpenClaw bridge remains thin. It uses its private selector:
@@ -285,28 +313,32 @@ The OpenClaw bridge remains thin. It uses its private selector:
 --multi-agent
 ```
 
-to route project work to `adaptive-orchestrator orchestrate` instead of the legacy one-Work-Unit `run` command.
+to route project work to `adaptive-orchestrator orchestrate` instead of the one-Work-Unit `run` command.
 
-The bridge must not recreate planning or worker scheduling in its prompt.
+The bridge must not recreate planning, worker counts, frontier scheduling, claims, evaluation or replanning in its prompt.
 
 ## 15. Verification requirements
 
-This capability is not considered validated merely because the planner can describe parallel work. Tests must demonstrate:
+This capability is not considered validated merely because the planner can describe parallel work. Automated tests must demonstrate:
 
 - strict plan parsing and DAG validation;
+- repository-relative write-scope validation;
 - minimum skill-set resolution;
 - one prerequisite unlocking multiple simultaneous workers;
 - backend + frontend parallel frontier;
 - at least six independent workers when the concurrency cap permits;
+- a newly unblocked worker filling a free slot **before an unrelated active worker finishes**;
 - fan-in downstream context from multiple accepted workers;
-- overlapping write scopes serialized;
+- overlapping active write scopes serialized;
 - disjoint write scopes parallelized;
 - unauthorized side effects blocked before runtime;
 - human Work Units not delegated;
 - failed work bounded by retry limits;
+- retry task identities unique beyond the second attempt;
 - accepted replan signal adding necessary work and resuming the frontier;
 - CLI project-mode structured output;
-- selected skill configuration reaching the OpenClaw worker message.
+- selected skill configuration reaching the OpenClaw worker message;
+- CI installing Gateway dependencies and propagating pytest failure through diagnostic pipelines.
 
 A real deployed machine additionally requires a live multi-session E2E through its actual OpenClaw Gateway.
 
@@ -321,4 +353,4 @@ Adaptive v0.4 does not claim:
 - permission to bypass project governance or human authority;
 - that more workers always improve quality or cost.
 
-The implemented guarantee is a bounded, policy-governed, dependency-aware, scalable orchestration loop over independent runtime worker sessions.
+The implemented guarantee is a bounded, policy-governed, dependency-aware, continuously replenished scalable orchestration loop over independent runtime worker sessions.
