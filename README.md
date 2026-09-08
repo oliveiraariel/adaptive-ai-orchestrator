@@ -79,6 +79,20 @@ python -m pytest -q
 
 Editable-install metadata is intentionally ignored by Git through `*.egg-info/`.
 
+## Reproducible machine bootstrap
+
+A new Debian/Ubuntu/Linux Mint machine can reconstruct the Adaptive + Ariel Agent Skills + OpenClaw environment with one command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
+```
+
+The bootstrap installs/synchronizes the repositories and Python environment, installs OpenClaw when needed, configures the skill root and the `adaptive-orchestrator-bridge`, migrates Gateway authentication to a file-backed SecretRef, validates the managed Gateway, runs both integration directions end-to-end, and installs Linux Setup / Update / Verify launchers.
+
+A fresh computer still requires the user's own interactive model-provider authentication when OpenClaw onboarding requests it; credentials are never stored in Git.
+
+See [`bootstrap/README.md`](bootstrap/README.md) for the full recovery, update, verification, security, and dry-run contract.
+
 ## CLI entrypoint
 
 Version 0.3 introduces a runtime-neutral inbound entrypoint. The installed command is:
