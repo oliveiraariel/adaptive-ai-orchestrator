@@ -2,7 +2,7 @@
 
 **Purpose:** root entry point for humans and AI agents resuming or inspecting the project.
 
-**Status:** Phase 3 in progress — continuous bounded multiagent project execution v0.4 is repository-validated **and passed the installed Linux/OpenClaw multiagent E2E**; next official Work Unit: `WU-055 — Runtime Event Monitoring`.
+**Status:** Phase 3 in progress — continuous bounded multiagent project execution v0.4 is repository-validated **and passed the installed Linux/OpenClaw multiagent E2E, including post-hardening revalidation with the corrected verifier**; next official Work Unit: `WU-055 — Runtime Event Monitoring`.
 
 ## 1. Project Identity
 
@@ -66,12 +66,14 @@ Validated:
 - Dynamic Ready Frontier, continuous slot replenishment, accepted-result dependency advancement, bounded retries/replanning and fan-in are implemented for the v0.4 scope.
 - Parallel backend/backend, frontend/frontend and backend/frontend execution is allowed when the Work Graph, policy and write/runtime safety permit it.
 - Automated evidence includes six independent Work Units with `max_concurrency=6` and a test proving a newly unlocked Work Unit starts before an unrelated long-running worker finishes.
-- Repository gate evidence: **284 tests passed**; Orchestrator Validation and Bootstrap Validation passed.
+- Original repository gate evidence: **284 tests passed**; Orchestrator Validation and Bootstrap Validation passed.
+- Post-hardening current-main validation on 2026-09-08: **289 tests passed**, 16 skills / 19 capabilities validated, `ENVIRONMENT VERIFICATION: PASS`, `STACK UPDATE: PASS`.
 - Ariel Agent Skills multiagent integration validation passed on merged `main`.
 - Installed Linux Mint/OpenClaw E2E 1: Adaptive → OpenClaw → Adaptive — **PASS**.
 - Installed E2E 2: Adaptive → three parallel OpenClaw worker sessions → fan-in → Adaptive — **PASS**.
 - Installed E2E 3: OpenClaw → bridge → Adaptive project mode → three parallel workers → fan-in → OpenClaw — **PASS**.
 - The original E2E 3 harness false-negative was traced to presentation formatting (`Max parallelism observed` versus `max_parallelism_observed`) and led to semantic evidence validation plus regression hardening.
+- Final post-hardening `adaptive-openclaw-verify --quick` passed all three live E2Es using the corrected semantic validator, which reported `fan_in_present=true`, `max_parallelism_observed=3`, `ok=true`, and `status_completed=true`.
 
 Bootstrap/recovery hardening now includes:
 
@@ -82,6 +84,8 @@ Bootstrap/recovery hardening now includes:
 - `chat.history` fallback evidence;
 - persisted `~/.local/bin` launcher PATH;
 - recovery launchers installed before final E2E;
+- current updater self-heals launchers and shell PATH registration after repository synchronization;
+- documented one-time migration behavior when a pre-hardening updater process downloads but cannot retroactively execute newer updater logic;
 - first-failing-boundary diagnostic discipline.
 
 Open roadmap:
