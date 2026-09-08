@@ -140,7 +140,7 @@ else
     failures=$((failures + 1))
   fi
 
-  skill_dirs="$($OPENCLAW_BIN config get skills.load.extraDirs --json 2>/dev/null || printf '[]')"
+  skill_dirs="$("$OPENCLAW_BIN" config get skills.load.extraDirs --json 2>/dev/null || printf '[]')"
   if python3 - "$skill_dirs" "$SKILLS_DIR" <<'PY'
 import json, sys
 try:
@@ -156,7 +156,7 @@ PY
     failures=$((failures + 1))
   fi
 
-  auth_ref="$($OPENCLAW_BIN config get gateway.auth.token --json 2>/dev/null || true)"
+  auth_ref="$("$OPENCLAW_BIN" config get gateway.auth.token --json 2>/dev/null || true)"
   if [[ "$auth_ref" == *"$GATEWAY_SECRET_PROVIDER"* ]]; then
     ok "Gateway auth uses file-backed SecretRef"
   else
