@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -33,6 +34,33 @@ def test_accepts_humanized_assistant_evidence() -> None:
     result = MODULE.validate_evidence(text)
     assert result["ok"] is True
     assert result["max_parallelism_observed"] == 3
+
+
+def test_cli_accepts_nested_openclaw_history(tmp_path: Path) -> None:
+    history = {
+        "payload": {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Adaptive multi-agent validation completed successfully.\n"
+                                "Project status: COMPLETED\n"
+                                "Max parallelism observed: 3\n"
+                                "Fan-in: ADAPTIVE_MULTIAGENT_FANIN_OK\n"
+                                "All results were accepted."
+                            ),
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    path = tmp_path / "history.json"
+    path.write_text(json.dumps(history), encoding="utf-8")
+    assert MODULE.main([str(path)]) == 0
 
 
 def test_rejects_missing_parallel_evidence() -> None:
