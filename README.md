@@ -77,25 +77,50 @@ Context Analysis
    ↓
 Structural Analysis
    ↓
-Planning
+Planning / Work Graph
    ↓
-Work Units
+Ready Frontier
    ↓
 Agent & Skill Analysis
    ↓
-Resource / Model Selection
+Parallel-safe Delegation
    ↓
-Delegation
+Worker Sessions
    ↓
-Execution
+Result Evaluation / Fan-in
    ↓
-Result Evaluation
+Dependency Advancement
    ↓
 Replanning
    ↓
 Continuity & Evidence
    ↺
 ```
+
+## Scalable multiagent project execution — v0.4
+
+Version 0.4 adds the executable higher-level project loop above the earlier one-Work-Unit inbound slice.
+
+A broad objective can now be converted into a validated acyclic Work Graph. Adaptive recomputes the ready frontier and dynamically creates independent logical worker sessions for useful ready Work Units, up to a bounded concurrency limit.
+
+This supports lateral combinations such as:
+
+```text
+backend + backend
+frontend + frontend
+backend + frontend
+implementation + testing/review
+```
+
+when real prerequisites and workspace safety allow them.
+
+A stable API/interface contract can therefore unlock backend and frontend work at the same time rather than forcing the whole backend to finish first. Parallel results can converge into explicit integration/testing/review Work Units.
+
+The worker count is **not fixed**. A frontier can use 2, 3, 4, 6 or more logical workers up to the configured/policy limit, but the planner is instructed to avoid token-expensive micro-fragmentation and to use only useful independent workers.
+
+Workers are independent runtime sessions, not automatically persisted OpenClaw agent profiles. When several workers share one checkout, write-capable Work Units run concurrently only when their declared repository-relative write scopes do not overlap. This version does not claim automatic Git-worktree/container isolation.
+
+See [`docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`](docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md) for the normative execution contract.
 
 ## Local development
 
@@ -118,7 +143,7 @@ A new Debian/Ubuntu/Linux Mint machine can reconstruct the Adaptive + Ariel Agen
 curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
 ```
 
-The bootstrap installs/synchronizes the repositories and Python environment, installs OpenClaw when needed, configures the skill root and the `adaptive-orchestrator-bridge`, migrates Gateway authentication to a file-backed SecretRef, validates the managed Gateway, runs both integration directions end-to-end, and installs Linux Setup / Update / Verify launchers.
+The bootstrap installs/synchronizes the repositories and Python environment, installs OpenClaw when needed, configures the skill root and the `adaptive-orchestrator-bridge`, migrates Gateway authentication to a file-backed SecretRef, validates the managed Gateway, runs integration checks, and installs Linux Setup / Update / Verify launchers.
 
 A fresh computer still requires the user's own interactive model-provider authentication when OpenClaw onboarding requests it; credentials are never stored in Git.
 
@@ -126,7 +151,7 @@ See [`bootstrap/README.md`](bootstrap/README.md) for the full recovery, update, 
 
 ## CLI entrypoint
 
-Version 0.3 introduces a runtime-neutral inbound entrypoint. The installed command is:
+The installed command is:
 
 ```bash
 adaptive-orchestrator
@@ -138,7 +163,7 @@ It is also available without relying on the console-script installation:
 python -m adaptive_orchestrator
 ```
 
-The first high-level command executes one governed Work Unit through the existing Adaptive core seams: readiness, claim ownership, execution policy, delegation, result evaluation, and finalization.
+### Bounded single Work Unit
 
 ```bash
 adaptive-orchestrator run \
@@ -147,16 +172,47 @@ adaptive-orchestrator run \
   --accept ADAPTIVE_OK
 ```
 
-OpenClaw Gateway credentials are read from the process environment and are never printed by the CLI:
+This path remains useful for one governed task and preserves the original readiness, claim, execution-policy, delegation, evaluation and finalization seams.
+
+### Multiagent project mode
 
 ```bash
-export OPENCLAW_GATEWAY_TOKEN='...'
-adaptive-orchestrator doctor
+adaptive-orchestrator orchestrate \
+  --objective "Execute the authorized project objective." \
+  --agent main \
+  --max-concurrency 4
 ```
 
-`OPENCLAW_GATEWAY_PASSWORD` is also supported. `OPENCLAW_GATEWAY_URL` defaults to `ws://127.0.0.1:18789` when unset.
+For repository edits, explicitly grant only the required effect:
 
-The CLI intentionally does **not** force a model/provider override by default. The selected OpenClaw agent may therefore use its configured model policy. Explicit `--model` and `--provider` options remain available for callers whose Gateway policy permits overrides.
+```bash
+adaptive-orchestrator orchestrate \
+  --objective "Implement the requested project changes." \
+  --agent main \
+  --allow-side-effect filesystem.write \
+  --max-concurrency 4
+```
+
+Project mode provides:
+
+- read-only AI-backed planning into strict structured data;
+- graph validation and required-edge cycle rejection;
+- minimum compatible skill-set resolution per Work Unit;
+- dynamic ready-frontier worker creation;
+- synchronized parallel waves;
+- conservative shared-checkout write-scope conflict control;
+- dependency-result fan-in context;
+- bounded retry and human-action boundaries;
+- bounded additive replanning when accepted workers discover necessary missing work;
+- structured project-level execution records.
+
+A deterministic `--plan-file` can bypass AI planning for tests and E2E validation while exercising the same execution loop.
+
+## Gateway credentials
+
+OpenClaw Gateway credentials are read from the process environment/host secret injection and are never printed by the CLI. `OPENCLAW_GATEWAY_URL` defaults to `ws://127.0.0.1:18789` when unset.
+
+The CLI normally leaves model/provider selection to the configured OpenClaw agent policy rather than forcing overrides.
 
 ## OpenClaw integration direction
 
@@ -171,7 +227,7 @@ OpenClawGatewayClient
         ↓
 OpenClaw Gateway
         ↓
-OpenClaw agents / models / skills
+independent agent-owned worker sessions
 ```
 
 The inbound path uses a thin bridge rather than turning the Adaptive engine into an OpenClaw skill:
@@ -179,15 +235,17 @@ The inbound path uses a thin bridge rather than turning the Adaptive engine into
 ```text
 OpenClaw chat / dashboard
         ↓
-thin bridge skill or tool
+adaptive-orchestrator-bridge
         ↓
-adaptive-orchestrator CLI
+run OR orchestrate
         ↓
-Adaptive core
+Adaptive core / project execution layer
         ↓
-OpenClaw Gateway
+OpenClaw Gateway workers
+        ↓
+Adaptive synchronization / result
 ```
 
-The bridge is responsible only for invocation and result transport. Planning, policy, claims, evaluation, and other orchestration semantics remain owned by the Adaptive core.
+The bridge is responsible only for invocation and result transport. Planning, policy, claims, worker count, concurrency, fan-in, evaluation and replanning remain owned by Adaptive.
 
-See `docs/OPENCLAW-INBOUND-BRIDGE.md` for the bridge contract, security model, and validation procedure.
+See [`docs/OPENCLAW-INBOUND-BRIDGE.md`](docs/OPENCLAW-INBOUND-BRIDGE.md) for the bridge contract, security model, and validation procedure.
