@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "bootstrap_version": "1.0.0",
+  "platform": {
+    "os": "linux",
+    "supported_family": ["linuxmint", "ubuntu", "debian", "debian-like"]
+  },
+  "repositories": {
+    "adaptive": {
+      "url": "https://github.com/oliveiraariel/adaptive-ai-orchestrator.git",
+      "branch": "main",
+      "directory": "adaptive-ai-orchestrator"
+    },
+    "skills": {
+      "url": "https://github.com/oliveiraariel/ariel-agent-skills.git",
+      "branch": "main",
+      "directory": "ariel-agent-skills"
+    }
+  },
+  "runtime": {
+    "python_minimum": "3.12",
+    "openclaw_minimum": "2026.9.2",
+    "openclaw_install_channel": "stable",
+    "openclaw_gateway_url": "ws://127.0.0.1:18789",
+    "primary_agent": "main"
+  },
+  "security": {
+    "gateway_auth_mode": "token",
+    "secret_provider_alias": "adaptive_gateway_file",
+    "secret_file": "~/.openclaw/secrets/adaptive-gateway-token.txt",
+    "secret_file_mode": "0600",
+    "skill": "adaptive-orchestrator-bridge",
+    "skill_primary_env": "OPENCLAW_GATEWAY_TOKEN"
+  },
+  "validation": {
+    "adaptive_unit_tests": true,
+    "skills_registry_validation": true,
+    "gateway_rpc_probe": true,
+    "outbound_marker": "ADAPTIVE_BOOTSTRAP_OUTBOUND_OK",
+    "inbound_marker": "ADAPTIVE_BOOTSTRAP_INBOUND_OK"
+  }
+}
