@@ -22,7 +22,7 @@ Options:
   --dry-run               Print the setup plan without changing the machine.
   --skip-openclaw-install Do not install OpenClaw when missing.
   --skip-onboard          Do not launch OpenClaw's interactive onboarding.
-  --skip-desktop          Do not install desktop/application-menu launchers.
+  --skip-desktop          Do not install terminal/desktop application launchers.
   --skip-e2e              Skip the live outbound + inbound model smoke tests.
   -h, --help              Show this help.
 
@@ -61,13 +61,13 @@ TOKEN_FILE="$(expand_path "$GATEWAY_SECRET_FILE")"
 if [[ "$DRY_RUN" == "1" ]]; then
   cat <<EOF
 [DRY-RUN] Adaptive/OpenClaw bootstrap $BOOTSTRAP_VERSION
-  stack root:      $STACK_ROOT
-  adaptive repo:   $ADAPTIVE_DIR
-  skills repo:     $SKILLS_DIR
-  gateway secret:  $TOKEN_FILE (0600; value never printed)
+  stack root:       $STACK_ROOT
+  adaptive repo:    $ADAPTIVE_DIR
+  skills repo:      $SKILLS_DIR
+  gateway secret:   $TOKEN_FILE (0600; value never printed)
   OpenClaw install: $INSTALL_OPENCLAW
   onboarding:       $RUN_ONBOARD
-  desktop launchers:$INSTALL_DESKTOP
+  launchers:        $INSTALL_DESKTOP
   live E2E:         $RUN_E2E
 
 Planned stages:
@@ -81,8 +81,8 @@ Planned stages:
   8. Create/migrate a file-backed Gateway token and SecretRefs.
   9. Enable adaptive-orchestrator-bridge, restart Gateway, then clear the legacy systemd token env.
  10. Verify Gateway RPC, main-agent skill visibility, and bridge discovery.
- 11. Run outbound and full inbound E2E smoke tests.
- 12. Install Setup / Update / Verify desktop launchers.
+ 11. Install Setup / Update / Verify terminal and desktop launchers and persist ~/.local/bin in shell startup PATH.
+ 12. Run outbound and full inbound E2E smoke tests.
 EOF
   exit 0
 fi
@@ -183,18 +183,19 @@ python3 "$SKILLS_DIR/scripts/validate_ecosystem.py"
 "$OPENCLAW_BIN" skills info adaptive-orchestrator-bridge --agent main
 ok "adaptive-orchestrator-bridge is visible to agent main"
 
-log "Stage 11/12 — live end-to-end validation"
+log "Stage 11/12 — terminal/desktop recovery launchers"
+if [[ "$INSTALL_DESKTOP" == "1" ]]; then
+  bash "$SCRIPT_DIR/install-launchers.sh" --stack-root "$STACK_ROOT"
+  export PATH="$HOME/.local/bin:$PATH"
+else
+  info "Terminal/desktop launchers skipped by request"
+fi
+
+log "Stage 12/12 — live end-to-end validation"
 if [[ "$RUN_E2E" == "1" ]]; then
   bash "$SCRIPT_DIR/verify.sh" --stack-root "$STACK_ROOT" --quick --e2e
 else
   info "Live E2E smoke tests skipped by request"
-fi
-
-log "Stage 12/12 — desktop/application launchers"
-if [[ "$INSTALL_DESKTOP" == "1" ]]; then
-  bash "$SCRIPT_DIR/install-launchers.sh" --stack-root "$STACK_ROOT"
-else
-  info "Desktop launchers skipped by request"
 fi
 
 cat <<EOF
@@ -212,10 +213,19 @@ Adaptive:
 Ariel Agent Skills:
   $SKILLS_DIR
 
-Useful commands:
+Useful commands after setup:
+  adaptive-openclaw-verify
+  adaptive-openclaw-update
+  adaptive-openclaw-setup
+
+Script fallbacks (work even if an already-open parent shell has not reloaded PATH):
   bash "$SCRIPT_DIR/verify.sh" --e2e
   bash "$SCRIPT_DIR/update.sh"
   bash "$SCRIPT_DIR/show-dashboard-token.sh"
+
+If this same terminal says an adaptive-openclaw-* command is not found, open a
+new terminal. For immediate use in the existing shell, run:
+  export PATH="$HOME/.local/bin:\$PATH"
 
 OpenClaw dashboard:
   $OPENCLAW_BIN dashboard

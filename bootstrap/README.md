@@ -46,8 +46,11 @@ The bootstrap:
 15. validates the OpenClaw config;
 16. restarts or installs the managed Gateway service, then removes the legacy systemd user token environment after the SecretRef migration succeeds;
 17. validates Gateway RPC, `main`, the bridge skill, and the skills catalog;
-18. runs live outbound and inbound end-to-end smoke tests;
-19. installs Setup / Update / Verify launchers in the Linux application menu and, when available, on the desktop.
+18. installs Setup / Update / Verify command launchers before the live E2E, persists `~/.local/bin` in the user's shell startup PATH, and installs application-menu/desktop launchers when available;
+19. runs live outbound, direct multiagent, and inbound bridge end-to-end tests;
+20. validates inbound E2E semantically from the direct CLI result plus OpenClaw session history so harmless AI wording changes do not create false negatives.
+
+Installing recovery launchers **before** the final live E2E is intentional: even if a provider/runtime problem blocks the last gate, the machine already has a stable Setup / Update / Verify recovery path.
 
 ## The only unavoidable interactive step
 
@@ -103,12 +106,24 @@ Do not paste that value into ChatGPT, GitHub issues, screenshots, or documentati
 ### Verify everything
 
 ```bash
+adaptive-openclaw-verify
+```
+
+Script fallback:
+
+```bash
 bash bootstrap/verify.sh --e2e
 ```
 
-Checks Git repositories, Python, Adaptive tests, the skills registry, OpenClaw config, Gateway RPC, SecretRef wiring, file permissions, bridge visibility, and both integration directions.
+Checks Git repositories, Python, Adaptive tests, the skills registry, OpenClaw config, Gateway RPC, SecretRef wiring, file permissions, bridge visibility, and all three integration paths.
 
 ### Update everything
+
+```bash
+adaptive-openclaw-update
+```
+
+Script fallback:
 
 ```bash
 bash bootstrap/update.sh
@@ -120,11 +135,19 @@ The updater:
 - uses fast-forward-only Git integration;
 - reinstalls the Adaptive editable environment;
 - validates both repositories;
-- uses OpenClaw's supported `openclaw update --yes` path;
+- uses OpenClaw's supported `openclaw update --yes` path unless `--skip-openclaw` is requested;
 - does **not** auto-accept new OpenClaw capability requests;
-- runs full verification afterward.
+- runs full verification/E2E afterward by default.
+
+A successful `adaptive-openclaw-update` therefore does **not** need an immediate second Verify run. Use Verify separately when you want a fresh check without updating, or after a targeted repair.
 
 ### Setup / repair again
+
+```bash
+adaptive-openclaw-setup
+```
+
+Script fallback:
 
 ```bash
 bash bootstrap/setup.sh
@@ -132,9 +155,33 @@ bash bootstrap/setup.sh
 
 The setup is designed to be rerunnable. Existing file-backed tokens, repositories, and environments are reused when safe.
 
+## Terminal launcher PATH contract
+
+The command launchers are installed in:
+
+```text
+~/.local/bin
+```
+
+Current bootstrap versions idempotently add that directory to `~/.profile` and to the active shell's common startup file (`~/.bashrc` for Bash or `~/.zshrc` for Zsh).
+
+A child installer process cannot modify the environment of a terminal that was already open before setup. Therefore, immediately after a first install, if the **same old terminal** still reports `command not found`, either open a new terminal or run once in that shell:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Before reinstalling anything, verify whether the launchers already exist:
+
+```bash
+ls -l ~/.local/bin/adaptive-openclaw-*
+```
+
+If they exist, the problem is shell discovery/PATH, not a missing Adaptive/OpenClaw installation.
+
 ## Desktop launchers
 
-After setup, these commands are also installed in `~/.local/bin`:
+These commands are installed in `~/.local/bin`:
 
 ```text
 adaptive-openclaw-setup
@@ -146,7 +193,9 @@ Linux application-menu launchers are created with matching names.
 
 ## Live E2E contract
 
-Verification tests both directions:
+Verification has three explicit gates.
+
+### E2E 1 — bounded outbound
 
 ```text
 Adaptive CLI
@@ -155,19 +204,59 @@ Adaptive CLI
   → Adaptive evaluation
 ```
 
-and:
+### E2E 2 — real scalable multiagent execution
+
+```text
+Adaptive project mode
+  → 3 parallel OpenClaw worker sessions
+  → accepted worker results
+  → fan-in
+  → Adaptive
+```
+
+The test requires `max_parallelism_observed >= 3` and the fan-in marker.
+
+### E2E 3 — inbound bridge path
 
 ```text
 OpenClaw agent
-  → adaptive-orchestrator-bridge
-  → Adaptive CLI/core
-  → OpenClaw Gateway
-  → main agent
-  → Adaptive evaluation
+  → /skill adaptive-orchestrator-bridge
+  → Adaptive CLI/core project mode
+  → OpenClaw Gateway workers
+  → parallel execution
+  → fan-in
   → OpenClaw response
 ```
 
-The bridge's recursion guard prevents the nested OpenClaw agent from invoking the bridge again.
+The bridge's recursion guard prevents nested worker recursion.
+
+The E2E 3 verifier does **not** require one exact AI sentence. It validates semantic evidence from both the direct OpenClaw CLI result and `chat.history` using `bootstrap/lib/e2e_evidence.py`:
+
+```text
+project status = COMPLETED
+max parallelism observed >= 3
+fan-in marker = ADAPTIVE_MULTIAGENT_FANIN_OK
+```
+
+Thus `Max parallelism observed: 3` and `max_parallelism_observed: 3` are equivalent evidence.
+
+If semantic validation fails, the verifier prints the diagnostic session key so history can be inspected read-only without repeating the expensive E2E immediately.
+
+## Operational warnings versus real failures
+
+Do not confuse service-maintenance warnings with an execution failure. In particular, a Gateway warning about Node being supplied through NVM/version managers does not invalidate a running Gateway when:
+
+```text
+Runtime: running
+Read probe: ok
+Listening: 127.0.0.1:<port>
+```
+
+and `openclaw gateway status --require-rpc` succeeds.
+
+Similarly, `Capability: read-only` on a status probe is not by itself evidence that Adaptive worker execution is unavailable. The live E2E is the execution proof.
+
+Do not run `openclaw gateway install --force` merely to silence those warnings. Handle System Node/service migration as a separate maintenance task.
 
 ## Dry run
 
@@ -183,10 +272,14 @@ Preview updates:
 bash bootstrap/update.sh --dry-run
 ```
 
+## Troubleshooting and recovery
+
+Read [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) before manual repair. It records the failure classification order, PATH diagnosis, Gateway warning interpretation, inbound E2E semantic fallback, and read-only session-history diagnostic.
+
+For an AI-assisted recovery, use [`RECOVERY-PROMPT.md`](RECOVERY-PROMPT.md). The recovery prompt explicitly instructs the assistant to diagnose the first failing boundary rather than reinstalling working layers.
+
 ## Source of truth
 
-`bootstrap/manifest.json` records the canonical repositories, minimum runtime versions, security model, and E2E markers.
+`bootstrap/manifest.json` records the canonical repositories, minimum runtime versions, security model, launcher/PATH contract, and E2E validation contract.
 
 If future OpenClaw releases change CLI/config contracts, update this bootstrap in Git and let CI validate its static shell/manifest contract before using it on a new machine.
-
-For an AI-assisted recovery when automation fails, use `bootstrap/RECOVERY-PROMPT.md`.

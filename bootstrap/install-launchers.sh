@@ -26,6 +26,35 @@ BIN_DIR="$HOME/.local/bin"
 APP_DIR="$HOME/.local/share/applications"
 mkdir -p "$BIN_DIR" "$APP_DIR"
 
+ensure_path_block() {
+  local file="$1"
+  local marker="# >>> adaptive-openclaw launcher PATH >>>"
+  [[ -n "$file" ]] || return 0
+  touch "$file"
+  if grep -Fq "$marker" "$file" 2>/dev/null; then
+    return 0
+  fi
+  cat >>"$file" <<'EOF'
+
+# >>> adaptive-openclaw launcher PATH >>>
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+# <<< adaptive-openclaw launcher PATH <<<
+EOF
+}
+
+ensure_launcher_path() {
+  export PATH="$BIN_DIR:$PATH"
+  ensure_path_block "$HOME/.profile"
+  case "${SHELL:-}" in
+    */bash) ensure_path_block "$HOME/.bashrc" ;;
+    */zsh) ensure_path_block "$HOME/.zshrc" ;;
+    *) ;;
+  esac
+}
+
 write_wrapper() {
   local name="$1" script="$2"
   local target="$BIN_DIR/$name"
@@ -52,6 +81,8 @@ StartupNotify=true
 EOF
   chmod 755 "$APP_DIR/$filename"
 }
+
+ensure_launcher_path
 
 write_wrapper adaptive-openclaw-setup "$SCRIPT_DIR/setup.sh"
 write_wrapper adaptive-openclaw-update "$SCRIPT_DIR/update.sh"
@@ -89,4 +120,9 @@ if [[ -n "$DESKTOP_DIR" && -d "$DESKTOP_DIR" ]]; then
 fi
 
 ok "Application launchers installed"
+ok "$BIN_DIR registered in shell startup PATH"
 info "Commands: adaptive-openclaw-setup | adaptive-openclaw-update | adaptive-openclaw-verify"
+if [[ ":${PATH}:" != *":$BIN_DIR:"* ]]; then
+  warn "$BIN_DIR is not visible in this process PATH"
+fi
+info "A parent shell that was already open before setup cannot be modified in-place. Open a new terminal, or run: export PATH=\"$HOME/.local/bin:\$PATH\""

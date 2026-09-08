@@ -32,11 +32,25 @@
     "skill": "adaptive-orchestrator-bridge",
     "skill_primary_env": "OPENCLAW_GATEWAY_TOKEN"
   },
+  "launchers": {
+    "bin_directory": "~/.local/bin",
+    "commands": [
+      "adaptive-openclaw-setup",
+      "adaptive-openclaw-update",
+      "adaptive-openclaw-verify"
+    ],
+    "persist_path_in_shell_startup": true,
+    "same_shell_caveat": "A bootstrap subprocess cannot mutate the already-running parent shell PATH; open a new terminal or export ~/.local/bin for that shell."
+  },
   "validation": {
     "adaptive_unit_tests": true,
     "skills_registry_validation": true,
     "gateway_rpc_probe": true,
     "outbound_marker": "ADAPTIVE_BOOTSTRAP_OUTBOUND_OK",
-    "inbound_marker": "ADAPTIVE_BOOTSTRAP_INBOUND_OK"
+    "multiagent_fan_in_marker": "ADAPTIVE_MULTIAGENT_FANIN_OK",
+    "minimum_parallelism_observed": 3,
+    "inbound_skill_entrypoint": "/skill adaptive-orchestrator-bridge",
+    "inbound_semantic_history_fallback": true,
+    "inbound_formatting_is_not_authoritative": true
   }
 }
