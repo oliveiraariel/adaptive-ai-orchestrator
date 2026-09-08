@@ -40,11 +40,11 @@ The bootstrap:
 9. installs OpenClaw through the official stable installer when absent;
 10. launches OpenClaw onboarding only when the local configuration is not ready;
 11. adds `ariel-agent-skills` to `skills.load.extraDirs` without deleting existing roots;
-12. creates a cryptographically random Gateway token when no bootstrap token exists;
+12. reuses an existing file-backed Gateway token, migrates an existing `OPENCLAW_GATEWAY_TOKEN` from the shell or systemd user environment when present, or generates a cryptographically random token when neither exists;
 13. stores that token in a mode-`0600` file;
 14. configures OpenClaw `SecretRef` objects so the Gateway and `adaptive-orchestrator-bridge` share that secret without writing it into prompts or command arguments;
 15. validates the OpenClaw config;
-16. restarts or installs the managed Gateway service;
+16. restarts or installs the managed Gateway service, then removes the legacy systemd user token environment after the SecretRef migration succeeds;
 17. validates Gateway RPC, `main`, the bridge skill, and the skills catalog;
 18. runs live outbound and inbound end-to-end smoke tests;
 19. installs Setup / Update / Verify launchers in the Linux application menu and, when available, on the desktop.
@@ -87,6 +87,8 @@ skills.entries.adaptive-orchestrator-bridge.apiKey
 ```
 
 The bridge declares `OPENCLAW_GATEWAY_TOKEN` as its primary environment variable, so OpenClaw resolves the SecretRef and injects the token only for the skill execution. The token is not committed to either repository.
+
+A machine previously configured with `systemctl --user set-environment OPENCLAW_GATEWAY_TOKEN=...` is migrated without rotating the token: the value is copied directly into the protected SecretRef file without being printed, the Gateway is restarted successfully, and only then is the legacy systemd user environment variable cleared.
 
 If the Control UI explicitly asks for the token, reveal it locally with:
 
