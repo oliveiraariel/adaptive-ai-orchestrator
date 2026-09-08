@@ -1,18 +1,25 @@
 # Prompt curto — parar e fazer handoff
 
-Use este prompt quando quiser encerrar uma sessão de trabalho de forma controlada, preservando continuidade sem iniciar nova Work Unit/wave.
+Use este prompt quando quiser encerrar uma sessão de trabalho de forma controlada, preservando continuidade sem iniciar novas Work Units.
 
 ## Prompt
 
 ```text
 Encerre esta sessão de forma controlada.
 
-Se houver uma wave multiagente já em execução, aguarde os workers dessa wave
-terminarem ou atingirem um blocker/timeout controlado, recolha seus resultados e
-faça a avaliação/finalização correspondente.
+A partir deste pedido de parada, não reabasteça slots livres e não despache novas
+Work Units. Se houver workers já ativos, permita que terminem ou atinjam um
+blocker/timeout controlado, recolha seus resultados e faça a avaliação/finalização
+correspondente. Não abandone worker ativo silenciosamente.
 
-Não despache uma nova wave e não inicie novas Work Units depois desse ponto.
-Não abandone worker ativo silenciosamente.
+Não trate dispatch generation como uma wave/barreira: workers ativos podem ter
+sido iniciados em generations diferentes. A regra de parada é simples: nenhum
+novo dispatch após este ponto; apenas drenagem controlada das execuções já ativas.
+
+Se um worker ativo devolver `ADAPTIVE_REPLAN_REQUIRED`, registre o sinal como
+pendência no handoff, mas não inicie um novo ciclo de planejamento/execução depois
+desta solicitação de encerramento, salvo se isso for indispensável apenas para
+restaurar consistência do estado.
 
 Use `project-handoff` para consolidar a continuidade desta sessão.
 
@@ -20,8 +27,9 @@ Entregue:
 - objetivo desta sessão;
 - estado atual do projeto e do Work Graph;
 - Work Units concluídas, bloqueadas, revision-required ou ainda não iniciadas;
-- waves executadas e paralelismo observado quando relevante;
+- dispatch generations relevantes e `max_parallelism_observed`, quando disponível;
 - workers/resultados que participaram do último fan-out/fan-in;
+- sinais de replan ainda não executados;
 - arquivos, commits, PRs, issues ou artefatos modificados;
 - testes, verificações e revisões executados;
 - decisões tomadas e respectivas fontes;
