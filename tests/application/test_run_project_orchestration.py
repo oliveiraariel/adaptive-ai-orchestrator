@@ -7,10 +7,12 @@ from application.agent_runtime import (
     AgentRuntimeStatus,
     ExecutionReference,
 )
+from application.continuous_project_orchestration import (
+    RunContinuousProjectOrchestration,
+)
 from application.run_project_orchestration import (
     ProjectOrchestrationRequest,
     ProjectRunStatus,
-    RunProjectOrchestration,
 )
 from application.runtime_project_planner import ProjectPlanningRequest
 from domain.execution_policy import ExecutionPolicy
@@ -51,15 +53,23 @@ class ConcurrentRuntime:
         self,
         outputs: dict[str, str] | None = None,
         fail_once: set[str] | None = None,
+        failures_before_success: dict[str, int] | None = None,
+        delays: dict[str, float] | None = None,
     ) -> None:
         self.outputs = outputs or {}
         self.fail_once = set(fail_once or ())
-        self.failed_once: set[str] = set()
+        self.failures_before_success = dict(failures_before_success or {})
+        for work_unit_id in self.fail_once:
+            self.failures_before_success.setdefault(work_unit_id, 1)
+        self.delays = dict(delays or {})
+        self.failed_counts: dict[str, int] = {}
         self.tasks: list[TaskPackage] = []
         self._tasks_by_execution: dict[str, TaskPackage] = {}
         self._lock = threading.Lock()
         self.active_retrievals = 0
         self.max_active_retrievals = 0
+        self.started_at: dict[str, float] = {}
+        self.finished_at: dict[str, float] = {}
 
     def submit(self, task: TaskPackage) -> ExecutionReference:
         execution_id = f"execution:{task.task_id}"
@@ -80,17 +90,21 @@ class ConcurrentRuntime:
         task = self._tasks_by_execution[execution.id]
         work_unit_id = task.work_unit_id
         with self._lock:
-            if work_unit_id in self.fail_once and work_unit_id not in self.failed_once:
-                self.failed_once.add(work_unit_id)
-                raise RuntimeError(f"transient:{work_unit_id}")
+            self.started_at.setdefault(work_unit_id, time.monotonic())
+            failures = self.failed_counts.get(work_unit_id, 0)
+            failure_limit = self.failures_before_success.get(work_unit_id, 0)
+            if failures < failure_limit:
+                self.failed_counts[work_unit_id] = failures + 1
+                raise RuntimeError(f"transient:{work_unit_id}:{failures + 1}")
             self.active_retrievals += 1
             self.max_active_retrievals = max(
                 self.max_active_retrievals,
                 self.active_retrievals,
             )
-        time.sleep(0.02)
+        time.sleep(self.delays.get(work_unit_id, 0.02))
         with self._lock:
             self.active_retrievals -= 1
+            self.finished_at[work_unit_id] = time.monotonic()
         completed = replace(execution, status=AgentRuntimeStatus.COMPLETED)
         return AgentRuntimeResult(
             execution=completed,
@@ -135,9 +149,10 @@ def run(
     policy: ExecutionPolicy | None = None,
     planner: StaticPlanner | None = None,
     max_attempts: int = 2,
+    max_replans: int = 2,
 ):
     actual_planner = planner or StaticPlanner(plan)
-    result = RunProjectOrchestration(
+    result = RunContinuousProjectOrchestration(
         runtime=runtime,
         claim_registry=InMemoryClaimRegistry(),
         planner=actual_planner,
@@ -148,6 +163,7 @@ def run(
             max_concurrency=max_concurrency,
             execution_policy=policy or ExecutionPolicy(),
             max_attempts_per_work_unit=max_attempts,
+            max_replans=max_replans,
             plan=plan,
         )
     )
@@ -182,7 +198,7 @@ def test_contract_unlocks_parallel_backend_frontend_then_fan_in() -> None:
     result, _ = run(plan, runtime, max_concurrency=4)
 
     assert result.status is ProjectRunStatus.COMPLETED
-    assert [wave.selected_work_unit_ids for wave in result.waves] == [
+    assert [generation.selected_work_unit_ids for generation in result.waves] == [
         ("contract",),
         ("backend", "frontend"),
         ("integration",),
@@ -196,6 +212,36 @@ def test_contract_unlocks_parallel_backend_frontend_then_fan_in() -> None:
     context = "\n".join(integration_task.context)
     assert "BACKEND_READY" in context
     assert "FRONTEND_READY" in context
+
+
+def test_freed_slot_is_replenished_before_unrelated_worker_finishes() -> None:
+    plan = ProjectExecutionPlan(
+        summary="continuous lateral frontier",
+        work_units=(
+            wu("fast-contract", priority=30),
+            wu("long-backend", role="backend", priority=20),
+            wu("frontend-after-contract", role="frontend", priority=10),
+        ),
+        dependencies=(
+            PlannedDependency("fast-contract", "frontend-after-contract"),
+        ),
+    )
+    runtime = ConcurrentRuntime(
+        delays={
+            "fast-contract": 0.01,
+            "long-backend": 0.15,
+            "frontend-after-contract": 0.01,
+        }
+    )
+
+    result, _ = run(plan, runtime, max_concurrency=2)
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert result.max_parallelism_observed == 2
+    assert (
+        runtime.started_at["frontend-after-contract"]
+        < runtime.finished_at["long-backend"]
+    )
 
 
 def test_six_independent_units_scale_to_six_parallel_workers() -> None:
@@ -300,6 +346,23 @@ def test_transient_result_failure_retries_then_completes() -> None:
     assert result.status is ProjectRunStatus.COMPLETED
     assert len([task for task in runtime.tasks if task.work_unit_id == "flaky"]) == 2
     assert any(record.status == "REVISION_REQUIRED" for record in result.records)
+
+
+def test_retry_execution_ids_remain_unique_beyond_second_attempt() -> None:
+    plan = ProjectExecutionPlan(
+        summary="unique retry idempotency",
+        work_units=(wu("twice-flaky"),),
+    )
+    runtime = ConcurrentRuntime(failures_before_success={"twice-flaky": 2})
+
+    result, _ = run(plan, runtime, max_attempts=3)
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    task_ids = [
+        task.task_id for task in runtime.tasks if task.work_unit_id == "twice-flaky"
+    ]
+    assert len(task_ids) == 3
+    assert len(set(task_ids)) == 3
 
 
 def test_human_action_is_not_delegated_to_runtime() -> None:
