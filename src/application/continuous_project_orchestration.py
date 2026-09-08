@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from application.agent_runtime import AgentRuntimeResult
 from application.execution_coordinator import (
+    DispatchFrontierRequest,
     DispatchOutcome,
     DispatchStatus,
     ExecutionCoordinator,
-    DispatchFrontierRequest,
     WorkAssignment,
 )
 from application.run_project_orchestration import (
@@ -23,25 +23,25 @@ from application.run_project_orchestration import (
     WorkUnitExecutionRecord,
 )
 from application.runtime_project_planner import ProjectPlanningRequest
+from domain.dependency import Dependency
 from domain.evaluation import EvaluationVerdict
 from domain.project_execution_plan import PlannedWorkUnit
-from domain.work_unit import WorkUnitKind, WorkUnitState
+from domain.work_unit import WorkUnit, WorkUnitKind, WorkUnitState
 
 
 class RunContinuousProjectOrchestration(RunProjectOrchestration):
-    """Execute the ready frontier continuously instead of behind wave barriers.
+    """Continuously execute the safe ready frontier with bounded concurrency.
 
     The scheduler keeps up to ``max_concurrency`` independent runtime sessions
     active. As soon as one result is available it is evaluated and finalized;
-    newly-unblocked work can then consume the free slot while unrelated workers
-    continue running. ``ParallelWaveRecord`` is retained as a compatibility name,
-    but each record now represents one *dispatch generation*, not a barrier that
-    waits for every worker in that generation to finish.
+    newly-unblocked work can consume the free slot while unrelated workers keep
+    running. ``ParallelWaveRecord`` is retained as a compatibility data type, but
+    each record represents one dispatch generation rather than a barrier.
 
-    Replanning is intentionally conservative: once a worker asks for a bounded
-    replan, no new workers are launched until already-active work drains. This
-    avoids exceeding the project concurrency budget with the planner itself and
-    prevents graph mutation underneath in-flight work.
+    Replanning is intentionally conservative: once a worker requests bounded
+    replanning, no new workers are launched until already-active work drains.
+    This avoids exceeding the project concurrency budget with the planner itself
+    and prevents graph mutation underneath in-flight work.
     """
 
     def execute(
@@ -83,7 +83,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         dispatch_generation = 0
         pending_replan = False
 
-        active: dict[Future[AgentRuntimeResult], DispatchOutcome] = {}
+        active: dict[
+            Future[AgentRuntimeResult],
+            tuple[DispatchOutcome, int],
+        ] = {}
         active_by_id: dict[str, DispatchOutcome] = {}
 
         with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
@@ -130,19 +133,19 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             outputs=outputs,
                             request=request,
                         )
+                        replan_count += 1
                         self._validate_replanned_edges(
                             old_edges=old_edges,
                             dependencies=dependencies,
                             work_units=work_units,
                         )
                         pending_replan = False
+                        for work_unit_id in new_ids:
+                            attempts[work_unit_id] = 0
                         if new_ids:
-                            replan_count += 1
-                            for work_unit_id in new_ids:
-                                attempts[work_unit_id] = 0
                             skill_sets = self._preflight_skill_sets(specs, request.agent)
-                            self._validate_graph(request, work_units, dependencies)
-                            continue
+                        self._validate_graph(request, work_units, dependencies)
+                        continue
 
                 available_slots = request.max_concurrency - len(active)
                 if (
@@ -159,9 +162,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                     if selected_ids:
                         dispatch_generation += 1
+                        generation = dispatch_generation
                         dispatch_records.append(
                             ParallelWaveRecord(
-                                wave=dispatch_generation,
+                                wave=generation,
                                 ready_work_unit_ids=tuple(ready_ids),
                                 selected_work_unit_ids=tuple(selected_ids),
                                 conflict_deferred_ids=tuple(conflict_deferred_ids),
@@ -170,7 +174,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         assignments = tuple(
                             self._build_continuous_assignment(
                                 orchestration_id=orchestration_id,
-                                wave=dispatch_generation,
+                                wave=generation,
                                 attempt=attempts[work_unit_id] + 1,
                                 spec=specs[work_unit_id],
                                 work_unit=work_units[work_unit_id],
@@ -190,8 +194,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 assignments=assignments,
                                 dependencies=dependencies,
                                 claimant_id=(
-                                    f"project:{orchestration_id}:dispatch:"
-                                    f"{dispatch_generation}"
+                                    f"project:{orchestration_id}:dispatch:{generation}"
                                 ),
                                 concurrency_limit=request.max_concurrency,
                                 active_execution_count=len(active),
@@ -209,12 +212,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     self._runtime.retrieve_result,
                                     outcome.execution,
                                 )
-                                active[future] = outcome
+                                active[future] = (outcome, generation)
                                 active_by_id[outcome.work_unit_id] = outcome
                                 continue
                             self._record_dispatch_failure(
                                 outcome=outcome,
-                                wave=dispatch_generation,
+                                wave=generation,
                                 specs=specs,
                                 work_units=work_units,
                                 skill_sets=skill_sets,
@@ -234,7 +237,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         return_when=FIRST_COMPLETED,
                     )
                     for future in completed:
-                        outcome = active.pop(future)
+                        outcome, generation = active.pop(future)
                         active_by_id.pop(outcome.work_unit_id, None)
                         work_unit_id = outcome.work_unit_id
                         try:
@@ -243,7 +246,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             self._handle_runtime_result_error(
                                 outcome=outcome,
                                 error=exc,
-                                generation=dispatch_generation,
+                                generation=generation,
                                 specs=specs,
                                 work_units=work_units,
                                 skill_sets=skill_sets,
@@ -257,7 +260,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         record, replan_signal = self._finalize_result(
                             outcome=outcome,
                             runtime_result=runtime_result,
-                            wave=dispatch_generation,
+                            wave=generation,
                             spec=specs[work_unit_id],
                             work_unit=work_units[work_unit_id],
                             skills=skill_sets[work_unit_id],
@@ -401,7 +404,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         error: Exception,
         generation: int,
         specs: dict[str, PlannedWorkUnit],
-        work_units: dict[str, object],
+        work_units: dict[str, WorkUnit],
         skill_sets: dict[str, tuple[str, ...]],
         attempts: dict[str, int],
         records: list[WorkUnitExecutionRecord],
@@ -438,8 +441,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
     def _validate_replanned_edges(
         *,
         old_edges: set[tuple[str, str, bool]],
-        dependencies: Sequence[object],
-        work_units: dict[str, object],
+        dependencies: Sequence[Dependency],
+        work_units: dict[str, WorkUnit],
     ) -> None:
         for dependency in dependencies:
             edge = (
