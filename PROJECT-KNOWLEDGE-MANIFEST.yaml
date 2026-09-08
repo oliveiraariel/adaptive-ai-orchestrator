@@ -24,8 +24,8 @@ authority_model:
   operational_state_precedence:
     - CONTEXT.md
     - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
-    - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
-    - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+    - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md
+    - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md
     - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
     - docs/process/PHASE-3-GATE-REPORT.md
     - work-unit-evidence
@@ -54,6 +54,8 @@ retrieval:
     - specifications/MASTER-SPECIFICATION-v0.2.md
     - specifications/MASTER-SPECIFICATION-v0.3.md
     - docs/process/history/skill/**
+    - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
+    - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
 
 artifact_groups:
   authoritative_specification:
@@ -99,8 +101,8 @@ artifact_groups:
     paths:
       - CONTEXT.md
       - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
-      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
-      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md
+      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md
       - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
       - docs/process/PHASE-3-GATE-REPORT.md
       - docs/process/OPENCLAW-GATEWAY-RESEARCH-WU-051.md
@@ -133,6 +135,8 @@ artifact_groups:
       - docs/process/PHASE-2-FINAL-REVIEW.md
       - docs/process/DEVELOPMENT-CONTINUITY-v0.5.md
       - docs/process/DEVELOPMENT-CONTINUITY-v0.6.md
+      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
+      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
 
   legacy_professional_software_engineering_skill:
     authority: legacy-non-authoritative
@@ -163,6 +167,7 @@ dynamic_state:
     - durable-recovery-state
     - mutable-evidence-store
     - formal-acceptance-state
+    - automatic-managed-worktree-isolation-for-parallel-writers
 
 legacy_promotion:
   rule: >
