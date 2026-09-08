@@ -373,6 +373,7 @@ class OpenClawGatewayClient(OpenClawClient):
                 "decisions": task_payload["decisions"],
                 "dependencies": task_payload["dependencies"],
                 "constraints": task_payload["constraints"],
+                "configuration": task_payload["configuration"],
                 "expected_output": task_payload["expected_output"],
                 "acceptance_criteria": task_payload["acceptance_criteria"],
             },

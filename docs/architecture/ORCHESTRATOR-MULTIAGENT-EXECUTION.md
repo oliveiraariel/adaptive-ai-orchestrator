@@ -1,16 +1,18 @@
 # ORCHESTRATOR — MULTIAGENT EXECUTION
 
 **Projeto:** Adaptive AI Orchestrator  
-**Status:** Arquitetura normativa incremental  
-**Origem:** maturação da capacidade Delegation & Coordination após auditoria comparativa do ecossistema Matt Pocock
+**Status:** Arquitetura normativa implementada incrementalmente  
+**Versão operacional relevante:** v0.4
 
 ## 1. Propósito
 
-Esta especificação torna operacional a execução multiagente já prevista pela arquitetura do Adaptive AI Orchestrator sem acoplar o núcleo a Git worktrees, Claude background agents, OpenClaw ou qualquer outro harness.
+Esta especificação torna operacional a execução multiagente prevista pela arquitetura do Adaptive AI Orchestrator sem acoplar o núcleo a Git worktrees, Claude background agents, OpenClaw ou qualquer outro harness.
 
 O problema central é:
 
-> **Como avançar um grafo de Work Units com concorrência segura, delegação limitada, autoridade explícita e avaliação antes de liberar dependências?**
+> **Como avançar um grafo de Work Units com concorrência segura, delegação limitada, autoridade explícita e avaliação antes de liberar dependências, preenchendo continuamente a capacidade disponível?**
+
+O fluxo executável high-level é detalhado em `ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`.
 
 ## 2. Princípios
 
@@ -25,23 +27,26 @@ Readiness Evaluation
    ↓
 Ready Frontier
    ↓
-Policy + Budget + Claim
+Policy + Budget + Claim + Conflict Safety
    ↓
 Dispatch
 ```
 
-A frontier deve ser recalculável após mudanças de estado, conclusão, revisão, replanejamento ou satisfação de dependências.
+A frontier deve ser recalculável após conclusão aceita, revisão, bloqueio, replanejamento ou satisfação de dependências.
 
 ### ME-002 — Paralelismo é limitado por política e orçamento
 
-Estar na frontier não implica execução imediata. O Orchestrator deve respeitar, conforme aplicável:
+Estar na frontier não implica execução imediata. O Orchestrator deve respeitar:
 
-- limite de concorrência;
+- limite global de concorrência;
 - execuções já ativas;
 - disponibilidade de recursos;
 - política de autoridade;
 - claims existentes;
-- criticidade e prioridade.
+- criticidade e prioridade;
+- segurança de escrita/workspace.
+
+`max_concurrency` é teto, não meta.
 
 ### ME-003 — Claim é separado de estado da Work Unit
 
@@ -65,6 +70,7 @@ A ordem segura é:
 readiness
 → policy
 → concurrency budget
+→ conflict safety
 → acquire claim
 → runtime submit
 → bind execution
@@ -89,20 +95,32 @@ Dependências só avançam depois de resultado aceito ou aceito com condições 
 
 ### ME-006 — Fan-out/fan-in é semântico
 
-Fan-out significa múltiplas Work Units independentes em execução concorrente. Fan-in significa reunir resultados em um ponto de integração ou decisão.
+Fan-out significa múltiplas Work Units independentes em execução concorrente. Fan-in significa reunir resultados aceitos em um ponto de integração, síntese, teste ou decisão.
+
+```text
+code workers       → integration
+research agents    → synthesis
+security reviewers → aggregate findings
+design agents      → compare alternatives
+```
 
 O núcleo não presume que fan-in seja `git merge`.
 
-Exemplos:
+### ME-007 — Concorrência é contínua, não uma barreira de lote
+
+A v0.4 operacional deve poder repor um slot assim que uma execução relevante termina e sua avaliação permite novo trabalho.
+
+Com dois workers A/B ativos:
 
 ```text
-code workers      → integration
-research agents   → synthesis
-security reviewers→ aggregate findings
-design agents     → compare alternatives
+A termina e é aceito
+→ C torna-se READY
+→ existe um slot livre
+→ C pode iniciar
+→ B continua executando
 ```
 
-Git branches/worktrees, sandboxes, containers ou runtime-managed workspaces são estratégias de adapter.
+O Orchestrator não deve aguardar B apenas porque A e B foram despachados na mesma geração anterior.
 
 ## 3. Work Unit kinds
 
@@ -138,7 +156,7 @@ Regras:
 4. subdelegação não amplia autoridade automaticamente;
 5. um runtime pode não suportar subagentes; nesse caso a capacidade é indisponível, não simulada por invenção.
 
-O objetivo é impedir explosão recursiva, ciclos e delegação de autoridade sem limite.
+No bridge OpenClaw atual, workers recebem também constraint de não reentrada: uma tarefa já sob Adaptive não deve invocar `adaptive-orchestrator-bridge` novamente.
 
 ## 5. Context transfer
 
@@ -153,13 +171,11 @@ FRESH
 
 **Context pointers** referenciam artefatos autoritativos existentes em vez de duplicá-los. O adapter resolve o mecanismo físico.
 
-Contexto sensível só pode atravessar fronteiras quando a política declara que redaction foi aplicada ou quando outra política superior autoriza mecanismo seguro equivalente.
+No project mode v0.4, outputs aceitos de dependências podem ser transferidos com orçamento de caracteres. Artefatos grandes devem preferir ponteiros em vez de cópia integral.
 
 ## 6. Execution Coordinator
 
-O `ExecutionCoordinator` é responsável pelo dispatch seguro da frontier preparada.
-
-Responsabilidades:
+O `ExecutionCoordinator` continua responsável pelo dispatch seguro de uma frontier preparada:
 
 ```text
 validate request
@@ -181,9 +197,53 @@ Ele não deve:
 - decidir sozinho se um resultado é correto;
 - liberar dependências sem avaliação.
 
-## 7. Finalization
+A camada superior `RunContinuousProjectOrchestration` é responsável por manter o conjunto de execuções ativas, esperar o primeiro resultado disponível, finalizá-lo e recomputar/reabastecer a frontier.
 
-`FinalizeExecution` aplica o veredito já produzido pela camada de avaliação.
+## 7. Scheduler contínuo
+
+A execução de projeto segue:
+
+```text
+plan validado
+→ ready frontier
+→ selecionar candidatos compatíveis com workers já ativos
+→ despachar até max_concurrency
+→ FIRST_COMPLETED
+→ avaliar/finalizar concluídos
+→ liberar dependências aceitas
+→ recomputar frontier
+→ preencher slots livres
+↺
+```
+
+Os registros historicamente chamados `waves` são mantidos por compatibilidade, mas no scheduler contínuo representam **dispatch generations**, não barreiras.
+
+A seleção de uma nova geração deve comparar conflito de recursos/escrita contra:
+
+- todos os workers ainda ativos;
+- todos os novos candidatos já escolhidos para aquela geração.
+
+## 8. Segurança de workspace compartilhado
+
+A v0.4 não afirma isolamento automático por worktree/container.
+
+Para `filesystem.write`, cada Work Unit deve declarar `write_paths` literais e relativos ao repositório.
+
+Devem falhar antes da execução:
+
+- write sem escopo declarado;
+- path absoluto;
+- `..` traversal;
+- glob/wildcard;
+- drive prefix absoluto.
+
+Dois writers podem sobrepor execução somente quando seus prefixos são disjuntos. Igualdade ou relação parent/child é conflito e deve ser serializada.
+
+Um runtime futuro pode substituir esta estratégia por sandbox/worktree isolation comprovado, preservando as mesmas semânticas de ownership e autoridade.
+
+## 9. Finalization
+
+`FinalizeExecution` aplica o veredito produzido pela camada de avaliação.
 
 | Verdict | Work Unit | Dependencies | Claim |
 |---|---|---|---|
@@ -193,9 +253,34 @@ Ele não deve:
 | REJECTED | REVISION_REQUIRED | unchanged | release |
 | BLOCKED | BLOCKED | unchanged | release |
 
-As condições de `ACCEPTED_WITH_CONDITIONS` continuam rastreáveis na Evaluation/ResultPackage; completar a Work Unit não deve apagá-las.
+As condições de `ACCEPTED_WITH_CONDITIONS` continuam rastreáveis na Evaluation/ResultPackage.
 
-## 8. Runtime boundary
+## 10. Retry e identidade
+
+Cada nova tentativa deve receber identidade distinta de task/execution. A identidade não pode depender apenas do estado `REVISION_REQUIRED`, pois terceiro e posteriores retries poderiam reutilizar a mesma chave de idempotência.
+
+O scheduler contínuo inclui o número explícito da tentativa na identidade delegada.
+
+## 11. Replanning durante concorrência
+
+O grafo não deve ser mutado de forma insegura sob Work Units em execução.
+
+Quando um resultado aceito sinaliza `ADAPTIVE_REPLAN_REQUIRED`:
+
+```text
+parar novos dispatches
+→ deixar workers já ativos concluírem
+→ consolidar estado
+→ executar bounded replan
+→ validar novas unidades/edges
+→ retomar frontier
+```
+
+Cada invocação de replan consome orçamento, mesmo quando não adiciona Work Unit.
+
+Um replan não pode adicionar requisito obrigatório ainda não satisfeito a uma Work Unit já `RUNNING`, `EVALUATING` ou `COMPLETED` sem fluxo explícito de recovery/reopen.
+
+## 12. Runtime boundary
 
 O contrato runtime continua mínimo:
 
@@ -210,15 +295,15 @@ Capacidades adicionais de harness devem ser descobertas e adaptadas, não presum
 
 Possíveis extensões futuras:
 
-- event stream;
+- event stream nativo;
 - durable leases;
 - sandbox/workspace allocation;
 - background execution;
 - child-agent native APIs.
 
-Essas extensões não são pré-condição para o modelo semântico atual.
+A v0.4 alcança concorrência lateral sobre o contrato atual usando múltiplas execuções/sessões independentes e espera concorrente de resultados.
 
-## 9. Failure behavior
+## 13. Failure behavior
 
 O Orchestrator deve diferenciar:
 
@@ -226,30 +311,48 @@ O Orchestrator deve diferenciar:
 not ready
 policy blocked
 concurrency deferred
+workspace conflict deferred
 claim conflict
 runtime dispatch failure
-execution failure
-result rejection
+execution/result retrieval failure
+evaluation return/rejection
+human action
+replan budget exhaustion
 ```
 
 Esses estados não são equivalentes e não devem ser achatados em um único `FAILED`.
 
-## 10. Relação com Matt Pocock skills
+## 14. Economicidade
 
-Mecanismos estudados contribuíram como evidência de operação:
+O worker count deve ser determinado pela quantidade de trabalho simultaneamente útil e seguro.
 
-- `wayfinder`: frontier, claims, trabalho decisório e fog of war;
-- `to-tickets`: dependency graph e tracer bullets;
-- `implement-spec`: fan-out/fan-in, worker isolation, frontier recomputation;
-- `research`: background specialization;
-- `handoff`: context transfer;
-- `wizard`: human-only boundary.
+Exemplos:
 
-A arquitetura Adaptive adota os invariantes generalizáveis, não as implementações Git/Claude/tracker específicas.
+```text
+2 independentes úteis → 2 workers
+4 independentes úteis → até 4 workers
+6 independentes úteis + budget 6 → até 6 workers
+1 unidade real → 1 worker
+```
 
-## 11. Verificação mínima
+A fragmentação só é justificável quando o ganho de paralelismo/especialização supera custo de contexto, coordenação, avaliação e retrabalho.
 
-A capacidade só é considerada válida quando testes demonstram:
+## 15. Relação com Ariel Agent Skills
+
+As skills fornecem capacidade de execução; não possuem o scheduler.
+
+Mecanismos relevantes:
+
+- `engineering-lifecycle`: expõe fluxo lateral sem impor sequência artificial;
+- `work-decomposition`: cria DAG, write scopes, fan-in e frontiers;
+- `implementation`, `testing`, `code-review`, `security-review`, `web-frontend-design`: capacidades por Work Unit;
+- `adaptive-orchestrator-bridge`: apenas invoca `run` ou `orchestrate` e transporta resultado.
+
+O Adaptive continua dono de claims, concorrência, authority policy, result evaluation e replanning.
+
+## 16. Verificação mínima
+
+A capacidade só é considerada válida no nível de código/CI quando testes demonstram:
 
 - dependências bloqueiam corretamente;
 - ciclos obrigatórios são rejeitados;
@@ -259,5 +362,15 @@ A capacidade só é considerada válida quando testes demonstram:
 - policy bloqueia antes do runtime;
 - resultado rejeitado não libera dependência;
 - resultado aceito libera dependência;
-- frontier subsequente consegue avançar;
-- recursão acima do limite falha deterministicamente.
+- frontend/backend podem compartilhar frontier;
+- pelo menos seis workers independentes podem coexistir em cenário controlado;
+- slot liberado é preenchido antes do fim de worker independente ainda ativo;
+- fan-in recebe outputs aceitos;
+- writers sobrepostos são serializados contra workers já ativos;
+- write scopes inseguros falham;
+- retries têm identidade distinta e limite;
+- bounded replanning preserva consistência;
+- recursão/reentrada indevida é bloqueada;
+- CI propaga falhas reais de pytest.
+
+A validação de uma **instalação OpenClaw específica** exige adicionalmente E2E real multi-session no Gateway local daquela máquina.

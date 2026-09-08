@@ -22,29 +22,50 @@ PARAR E PRESERVAR CONTEXTO
 
 Não é necessário colar todos os prompts juntos.
 
-## Princípio operacional
+## Princípio operacional v0.4+
+
+Trabalho de projeto não trivial deve entrar pelo modo multiagente do bridge:
 
 ```text
 Usuário
   ↓
 OpenClaw
   ↓
-adaptive-orchestrator-bridge
+adaptive-orchestrator-bridge --multi-agent
   ↓
-Adaptive AI Orchestrator
+Adaptive AI Orchestrator / orchestrate
   ↓
-engineering-lifecycle
+Project discovery + planning
   ↓
-project-discovery, quando necessário
+validated Work Graph
   ↓
-skills especializadas necessárias
+ready frontier
   ↓
-execução / validação / handoff
+dynamic logical workers + minimum skills
+  ↓
+parallel execution when safe
+  ↓
+primeiro resultado concluído
+  ↓
+evaluation/finalization + dependency advancement
+  ↓
+ready frontier recalculada
+  ↓
+slot liberado pode receber novo worker enquanto outros continuam
+  ↓
+fan-in / bounded replan quando necessário
+  ↺
 ```
 
-O usuário define **o objetivo**. O Adaptive organiza o trabalho. O `engineering-lifecycle` ajuda a determinar o menor fluxo de engenharia suficiente. As skills especializadas são selecionadas conforme a necessidade real.
+O usuário define **o objetivo e a autoridade**. O Adaptive organiza o trabalho. `engineering-lifecycle` e as demais skills são capacidades selecionadas por Work Unit; elas não substituem o scheduler/orchestrator.
 
-Não tente usar todas as skills manualmente em toda tarefa.
+O Adaptive não usa uma quantidade fixa de agentes. A frontier útil pode gerar 1, 2, 3, 4, 6 ou mais worker sessions dentro do limite configurado. A economicidade de tokens/contexto deve impedir microfragmentação e skills desnecessárias.
+
+Paralelismo não depende de “ser frontend” ou “ser backend”. Backend/backend, frontend/frontend, frontend/backend e outras combinações podem ocorrer quando dependências reais estiverem satisfeitas. Contratos/interfaces estáveis são seams naturais para desbloquear trabalho lateral.
+
+A execução de projeto é **continuamente reabastecida**, não baseada em barreiras artificiais de wave: quando um resultado aceito desbloqueia trabalho e existe slot compatível, o novo worker pode ser iniciado sem aguardar workers independentes ainda ativos. Os registros de `dispatch generation` servem para rastreabilidade, não como obrigação de término em grupo.
+
+Em checkout compartilhado, toda Work Unit que solicita `filesystem.write` deve possuir `write_paths` literais, precisos e relativos ao repositório. Writes concorrentes só são elegíveis quando seus escopos não se sobrepõem, inclusive contra writers já ativos. O prompt não deve afirmar que há Git worktree/container isolation se o runtime não a forneceu.
 
 ## Quando criar um prompt específico no próprio projeto
 
@@ -71,13 +92,12 @@ Esse arquivo específico pode referenciar:
 - gates de desenvolvimento;
 - limites de autoridade;
 - regras de deploy/release;
-- handoffs e fontes de continuidade.
+- handoffs e fontes de continuidade;
+- regras específicas para paralelismo e integração.
 
 A partir daí, o prompt específico do projeto deve prevalecer sobre estes templates genéricos sempre que houver diferença de contexto ou governança.
 
 ## Como iniciar sem decorar o conteúdo
-
-No OpenClaw, você pode dizer apenas:
 
 ### Frontend
 
@@ -97,6 +117,6 @@ No OpenClaw, você pode dizer apenas:
 
 ## Limite importante
 
-Estes prompts não transformam automaticamente todo chat em trabalho orquestrado. Eles instruem explicitamente o OpenClaw a entrar pelo `adaptive-orchestrator-bridge` e delegar ao Adaptive.
+Estes prompts não transformam automaticamente todo chat em trabalho orquestrado. Eles instruem explicitamente o OpenClaw a usar a bridge e o Adaptive para trabalho sério de projeto.
 
-Perguntas simples, explicações conceituais e tarefas triviais podem continuar sendo respondidas diretamente quando não houver motivo para usar o orchestrator.
+Perguntas simples, explicações conceituais e tarefas triviais podem continuar sendo respondidas diretamente quando não houver motivo para iniciar uma orquestração de projeto.

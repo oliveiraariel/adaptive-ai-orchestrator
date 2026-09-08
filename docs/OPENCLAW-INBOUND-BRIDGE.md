@@ -2,18 +2,20 @@
 
 ## Purpose
 
-The Adaptive AI Orchestrator remains an orchestration engine, not an OpenClaw skill. OpenClaw-facing integrations must therefore use a thin inbound bridge that invokes the engine through its public CLI and returns structured results.
+The Adaptive AI Orchestrator remains an orchestration engine, not an OpenClaw skill. OpenClaw-facing integrations therefore use a thin inbound bridge that invokes the engine through its public CLI and returns structured results.
 
-The bridge must not duplicate planning, policy, claims, evaluation, frontier, or replanning logic.
+The bridge must not duplicate planning, policy, claims, evaluation, frontier, concurrency, fan-in, or replanning logic.
 
-## Architecture
+## Two inbound execution modes
+
+### Bounded single Work Unit
 
 ```text
 User
   ↓
 OpenClaw Dashboard / Chat
   ↓
-OpenClaw bridge skill/tool
+adaptive-orchestrator-bridge
   ↓
 adaptive-orchestrator run
   ↓
@@ -21,87 +23,149 @@ RunOrchestration
   ↓
 ExecutionCoordinator + policy + claims
   ↓
-OpenClawAdapter
-  ↓
-OpenClawGatewayClient
-  ↓
-OpenClaw Gateway
-  ↓
-agent
-  ↓
-result
+OpenClaw Gateway / worker session
   ↓
 EvaluateResult + FinalizeExecution
   ↓
-JSON result returned to bridge
+JSON result
 ```
 
-## CLI contract
+### High-level multiagent project execution
 
-The bridge invokes either:
+```text
+User
+  ↓
+OpenClaw Dashboard / Chat
+  ↓
+adaptive-orchestrator-bridge --multi-agent
+  ↓
+adaptive-orchestrator orchestrate
+  ↓
+read-only RuntimeProjectPlanner
+  ↓
+validated Work Graph
+  ↓
+RunContinuousProjectOrchestration
+  ↓
+ready frontier + active-worker conflict check
+  ↓
+dispatch until concurrency budget is full
+  ↓
+OpenClaw Gateway → independent agent-owned sessions
+  ↓
+FIRST completed result
+  ↓
+evaluation + finalization + dependency advancement
+  ↓
+refill free slot while unrelated workers remain active
+  ↓
+fan-in / bounded replan when needed
+  ↺
+```
+
+The bridge's `--multi-agent` option is a bridge-private selector. The helper removes it and invokes the public `orchestrate` CLI command.
+
+## CLI contract — single Work Unit
 
 ```bash
-adaptive-orchestrator run ...
+adaptive-orchestrator run \
+  --objective "Analyze this bounded task." \
+  --agent main
 ```
 
-or, when using the repository-local editable environment:
+Important options include:
+
+- `--agent`;
+- repeatable `--skill`;
+- repeatable `--accept`;
+- repeatable `--constraint` and `--context`;
+- `--side-effect` and matching `--allow-side-effect`;
+- `--human-approved` when the declared autonomy policy requires approval.
+
+## CLI contract — multiagent project
 
 ```bash
-.venv/bin/python -m adaptive_orchestrator run ...
+adaptive-orchestrator orchestrate \
+  --objective "Execute the authorized project objective." \
+  --agent main \
+  --max-concurrency 4
 ```
 
-Required input:
+Important project-mode options include:
 
-- `--objective`
+- `--agent` — physical OpenClaw agent/workspace owner for worker sessions;
+- `--planner-agent` — optional distinct planning agent id;
+- `--max-concurrency` — global active-worker cap;
+- `--max-work-units`, `--max-waves`, `--max-attempts`, `--max-replans` — bounded execution controls (`max-waves` is retained as the compatibility name for dispatch-generation budget);
+- `--skill-registry` — explicit Ariel Agent Skills registry path when automatic sibling discovery is unavailable;
+- `--plan-file` — deterministic prebuilt plan for tests/E2E;
+- repeatable `--context` and `--constraint`;
+- `--allow-side-effect filesystem.write` when the user's request clearly authorizes repository edits;
+- `--human-approved` when the autonomy class requires real prior approval.
 
-Important optional inputs:
+Project mode does not use the single-unit `--side-effect`/`--accept` contract. The planner declares side effects and acceptance criteria per Work Unit, while the outer caller grants only the allowed authority ceiling.
 
-- `--agent` (defaults to `main`)
-- `--skill` (repeatable)
-- `--accept` (repeatable)
-- `--constraint` (repeatable)
-- `--context` (repeatable)
-- `--side-effect` and matching `--allow-side-effect`
-- `--human-approved` when the declared autonomy policy requires approval
+The default side-effect policy is read-only. The planner cannot grant itself authority that the outer caller did not provide.
 
-The CLI prints exactly one JSON object on successful completion. Errors are emitted as JSON to stderr and return a non-zero exit status.
+## Worker sessions and skills
+
+Each ready Work Unit becomes an independent runtime execution with a unique task/session identity. Several Work Units may use the same configured OpenClaw agent id while behaving as separate logical specialists through their role, scope, selected skills, and bounded context.
+
+Adaptive does not need to persist a new OpenClaw agent profile for every worker. Worker count is dynamic and follows the useful ready frontier.
+
+When one worker finishes, Adaptive can immediately use the free slot for newly unlocked work. It does not wait for unrelated workers that were dispatched earlier.
+
+The selected `ResourceConfiguration` is included in the worker message so the runtime agent can see the selected skills/tools and execution configuration.
+
+## Shared checkout safety
+
+The current OpenClaw adapter does not claim Git worktree/container isolation.
+
+For `filesystem.write`, Work Units must declare literal repository-relative `write_paths`. Missing scopes, absolute paths, traversal, globs and overlapping ownership are rejected or serialized. Conflict checks include workers already active from earlier dispatch generations, not only candidates selected together. Read-only work remains parallelizable subject to concurrency/resource policy.
 
 ## Credential handling
 
 The CLI reads Gateway credentials only from environment variables:
 
-- `OPENCLAW_GATEWAY_TOKEN`
-- `OPENCLAW_GATEWAY_PASSWORD`
-- `OPENCLAW_GATEWAY_URL` (optional)
+- `OPENCLAW_GATEWAY_TOKEN`;
+- `OPENCLAW_GATEWAY_PASSWORD`;
+- `OPENCLAW_GATEWAY_URL` (optional).
 
-Credentials must never be supplied in the objective, acceptance criteria, command output, repository files, or bridge transcript.
+Credentials must never be supplied in the objective, acceptance criteria, command output, repository files, Work Unit context, or bridge transcript.
 
 The bridge must fail closed when the Gateway requires authentication and no usable credential is available. It must not attempt to scrape, echo, log, or persist a shared secret.
 
 ## Model and provider policy
 
-The bridge should normally omit explicit model/provider overrides. The OpenClaw agent's configured model policy is therefore authoritative unless a deployment explicitly grants model/provider override capability.
-
-This avoids coupling the inbound bridge to OpenClaw policy and prevents the bridge from weakening Gateway authorization.
+The bridge and project orchestrator normally omit explicit model/provider overrides. The configured OpenClaw agent's model policy remains authoritative unless a deployment explicitly grants override capability.
 
 ## Acceptance semantics
 
-When no explicit `--accept` criterion is supplied, the runner uses `runtime-completed`. This proves successful runtime completion only; it is not a semantic guarantee that the user's objective was correct.
+For a single Work Unit, a concrete machine-verifiable literal marker may be supplied with `--accept`.
 
-When the caller has a concrete machine-verifiable acceptance marker, pass it explicitly with `--accept`.
+For project mode, runtime completion is normally the per-worker execution gate, while semantic confidence is established through explicit testing, review, security, integration, or other verification Work Units in the graph. Runtime completion by itself is not semantic proof.
 
 ## Safety
 
-The default execution policy authorizes no side effects. A side effect must be both requested and explicitly allowed. Human-approval-required work must also carry `--human-approved` after real approval has been obtained.
-
-The bridge must not infer approval from the existence of a chat message.
+- Planning is read-only.
+- Side effects must be explicitly allowed by the outer execution policy.
+- Human-only Work Units are not delegated to an agent.
+- Workers cannot recursively invoke the bridge/Adaptive again.
+- Replanning is bounded; new dispatches stop while active work drains before graph mutation.
+- New unsatisfied required prerequisites cannot be attached to already-started Work Units.
+- Retry task identities are distinct.
+- Concurrency is bounded and must be useful, not maximized for its own sake.
 
 ## Validation layers
 
-1. **Unit/application tests** validate the governed `RunOrchestration` path.
-2. **CLI contract tests** validate JSON output and secret non-disclosure.
-3. **Gateway protocol tests** validate Adaptive → OpenClaw RPC behavior.
-4. **Live smoke test** validates the deployed machine's real Gateway, agent ownership, authentication, and result retrieval.
-5. **Dashboard smoke test** validates OpenClaw chat → bridge → Adaptive → OpenClaw → result.
+1. **Domain/application tests** validate plan invariants, minimum skill resolution, continuous frontier replenishment, write-scope control, fan-in, retries and replanning.
+2. **CLI contract tests** validate both `run` and `orchestrate` JSON output and secret non-disclosure.
+3. **Gateway protocol tests** validate Adaptive → OpenClaw RPC behavior and worker configuration transport.
+4. **Deterministic multiagent E2E plan** validates multiple real OpenClaw sessions, observed parallelism and fan-in.
+5. **Dashboard smoke test** validates OpenClaw chat → bridge → Adaptive project mode → OpenClaw workers → project result.
 
-Only layers 4 and 5 prove a specific local OpenClaw installation is operational end-to-end.
+CI must install the Gateway test dependency and propagate pytest failures through any diagnostic pipeline. A green workflow that masks pytest failure is not valid evidence.
+
+Only live layers against the actual local Gateway prove that a specific deployed machine is operational end to end.
+
+See `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md` for the full high-level execution contract.
