@@ -2,7 +2,7 @@
 
 **Projeto:** Adaptive AI Orchestrator  
 **Status:** Fase 3 em andamento  
-**Capacidade atual:** multiagent project execution v0.4 implementada, validada em CI e comprovada no ambiente Linux/OpenClaw instalado  
+**Capacidade atual:** multiagent project execution v0.4 implementada, validada em CI e comprovada no ambiente Linux/OpenClaw instalado, inclusive com o verifier semântico corrigido  
 **Próximo Work Unit oficial:** `WU-055 — Runtime Event Monitoring`
 
 ## 1. Finalidade
@@ -35,11 +35,13 @@ Está comprovado:
 - paralelismo lateral backend/backend, frontend/frontend e backend/frontend quando seguro;
 - escalabilidade testada em CI até seis Work Units independentes;
 - 284 testes no gate v0.4 original;
+- 289 testes no `main` pós-hardening do bootstrap;
 - Ariel Agent Skills alinhado ao project mode;
 - OpenClaw Gateway real operacional no Linux Mint do usuário;
 - E2E 1: Adaptive → OpenClaw → Adaptive — PASS;
 - E2E 2: Adaptive → 3 workers OpenClaw paralelos → fan-in → Adaptive — PASS;
-- E2E 3: OpenClaw → bridge → Adaptive → 3 workers → fan-in → OpenClaw — PASS semântico.
+- E2E 3: OpenClaw → bridge → Adaptive → 3 workers → fan-in → OpenClaw — PASS;
+- reexecução final com `adaptive-openclaw-verify --quick` usando o verifier corrigido — PASS, com `fan_in_present=true`, `max_parallelism_observed=3`, `ok=true` e `status_completed=true`.
 
 ## 4. Incidentes aprendidos e incorporados
 
@@ -56,6 +58,8 @@ O bootstrap foi endurecido para:
 - consultar `chat.history` como segunda fonte de evidência;
 - validar `COMPLETED + parallelism >= 3 + fan-in marker` semanticamente;
 - possuir regressão automatizada para output machine-style e humanized;
+- fazer o updater atual auto-reparar launchers e registro de PATH após sincronizar o repositório;
+- documentar a transição única em que um updater antigo pode baixar código novo, mas não executar retroativamente a nova lógica dentro do processo Bash já iniciado;
 - classificar falha por camada antes de reinstalar componentes.
 
 ## 5. Limites que permanecem
