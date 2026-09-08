@@ -4,7 +4,7 @@ project:
   name: Adaptive AI Orchestrator
   repository_role: authoritative-project-repository
   current_phase: 3
-  current_status: multiagent-project-execution-v0.4
+  current_status: multiagent-project-execution-v0.4-installed-e2e-pass
   current_release_capability: continuous-bounded-multiagent-project-orchestration
   next_work_unit: WU-055
   next_work_unit_name: Runtime Event Monitoring
@@ -23,9 +23,10 @@ authority_model:
     - tests-and-evidence
   operational_state_precedence:
     - CONTEXT.md
+    - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md
+    - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md
+    - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md
     - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
-    - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md
-    - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md
     - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
     - docs/process/PHASE-3-GATE-REPORT.md
     - work-unit-evidence
@@ -100,13 +101,29 @@ artifact_groups:
     default_retrieval: true
     paths:
       - CONTEXT.md
+      - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md
+      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md
+      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md
       - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
-      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md
-      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md
       - docs/process/PHASE-3-IMPLEMENTATION-PLAN.md
       - docs/process/PHASE-3-GATE-REPORT.md
       - docs/process/OPENCLAW-GATEWAY-RESEARCH-WU-051.md
       - docs/architecture/OPENCLAW-GATEWAY-INTEGRATION-WU-052.md
+
+  environment_bootstrap:
+    authority: operational-process
+    default_retrieval: on-demand
+    paths:
+      - COMECE-AQUI-NOVA-MAQUINA.md
+      - bootstrap/README.md
+      - bootstrap/TROUBLESHOOTING.md
+      - bootstrap/RECOVERY-PROMPT.md
+      - bootstrap/manifest.json
+      - bootstrap/setup.sh
+      - bootstrap/update.sh
+      - bootstrap/verify.sh
+      - bootstrap/install-launchers.sh
+      - bootstrap/lib/e2e_evidence.py
 
   implementation:
     authority: implementation
@@ -125,6 +142,7 @@ artifact_groups:
       - scripts/validate.py
       - docs/architecture/*-WU-*.md
       - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md
+      - docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md
 
   historical_plans_and_snapshots:
     authority: historical
@@ -137,6 +155,8 @@ artifact_groups:
       - docs/process/DEVELOPMENT-CONTINUITY-v0.6.md
       - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT.md
       - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md
+      - docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md
+      - docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md
 
   legacy_professional_software_engineering_skill:
     authority: legacy-non-authoritative
