@@ -2,7 +2,7 @@
 
 **Purpose:** root entry point for humans and AI agents resuming or inspecting the project.
 
-**Status:** Phase 3 in progress — continuous bounded multiagent project execution v0.4 is repository-validated; the installed OpenClaw multiagent E2E remains pending; next official Work Unit: `WU-055 — Runtime Event Monitoring`.
+**Status:** Phase 3 in progress — continuous bounded multiagent project execution v0.4 is repository-validated **and passed the installed Linux/OpenClaw multiagent E2E**; next official Work Unit: `WU-055 — Runtime Event Monitoring`.
 
 ## 1. Project Identity
 
@@ -38,15 +38,16 @@ Specification remains normative for intended behavior. Code and tests are implem
 For current execution status, prefer the newest applicable operational evidence:
 
 1. this `CONTEXT.md`
-2. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
-3. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md`
-4. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md`
-5. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
-6. current phase implementation plan and gate
-7. Work Unit implementation/evidence records
-8. v0.7 and older continuity snapshots
+2. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`
+3. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md`
+4. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md`
+5. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
+6. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
+7. current phase implementation plan and gate
+8. Work Unit implementation/evidence records
+9. v0.8 and older continuity snapshots
 
-The unversioned `ORCHESTRATOR-NEW-CHAT-CONTEXT.md` and `ORCHESTRATOR-DEVELOPMENT-CONTINUITY.md` describe the pre-v0.4 operational snapshot. Retain them for provenance, but do not let them override the v0.8 continuity or v0.4 gate when describing current state.
+The v0.8 continuity recorded the state after repository validation but before the installed multiagent E2E. It remains historical evidence and must not override the v0.9 deployment state.
 
 If operational documents disagree, do not silently choose one. Compare version, scope, date, authority, supersession and supporting evidence.
 
@@ -60,19 +61,28 @@ Validated:
 - `WU-052` — OpenClaw Gateway WebSocket adapter: complete.
 - `WU-053` — Gateway runtime vertical slice: complete.
 - `WU-054` — Real Gateway compatibility: complete for the tested local path.
-- Real OpenClaw Gateway compatibility: **PASS** for the tested historical local path.
-- Continuous bounded multiagent project orchestration v0.4: **IMPLEMENTED AND REPOSITORY-VALIDATED**.
+- Continuous bounded multiagent project orchestration v0.4: **IMPLEMENTED, REPOSITORY-VALIDATED, AND INSTALLED-E2E VALIDATED**.
 - Project-level entrypoint: `adaptive-orchestrator orchestrate`.
 - Dynamic Ready Frontier, continuous slot replenishment, accepted-result dependency advancement, bounded retries/replanning and fan-in are implemented for the v0.4 scope.
 - Parallel backend/backend, frontend/frontend and backend/frontend execution is allowed when the Work Graph, policy and write/runtime safety permit it.
 - Automated evidence includes six independent Work Units with `max_concurrency=6` and a test proving a newly unlocked Work Unit starts before an unrelated long-running worker finishes.
-- Fail-closed merged CI evidence for v0.4: **284 tests passed**; Orchestrator Validation and Bootstrap Validation passed.
-- Ariel Agent Skills multiagent integration validation passed on its merged `main`.
+- Repository gate evidence: **284 tests passed**; Orchestrator Validation and Bootstrap Validation passed.
+- Ariel Agent Skills multiagent integration validation passed on merged `main`.
+- Installed Linux Mint/OpenClaw E2E 1: Adaptive → OpenClaw → Adaptive — **PASS**.
+- Installed E2E 2: Adaptive → three parallel OpenClaw worker sessions → fan-in → Adaptive — **PASS**.
+- Installed E2E 3: OpenClaw → bridge → Adaptive project mode → three parallel workers → fan-in → OpenClaw — **PASS**.
+- The original E2E 3 harness false-negative was traced to presentation formatting (`Max parallelism observed` versus `max_parallelism_observed`) and led to semantic evidence validation plus regression hardening.
 
-Still required before claiming the user's installed stack has passed the new multiagent path:
+Bootstrap/recovery hardening now includes:
 
-- `adaptive-openclaw-update`;
-- `adaptive-openclaw-verify --e2e` on the installed Linux/OpenClaw environment.
+- `bootstrap/TROUBLESHOOTING.md`;
+- semantic inbound validator `bootstrap/lib/e2e_evidence.py`;
+- tests for machine-style and humanized evidence;
+- generic `/skill adaptive-orchestrator-bridge` inbound test entrypoint;
+- `chat.history` fallback evidence;
+- persisted `~/.local/bin` launcher PATH;
+- recovery launchers installed before final E2E;
+- first-failing-boundary diagnostic discipline.
 
 Open roadmap:
 
@@ -84,7 +94,7 @@ Open roadmap:
 
 The project is **not production-ready**.
 
-Operational numbers, Git state, runtime versions, models and test counts are snapshots. Revalidate them in the active clone before declaring them current.
+Operational numbers, Git state, runtime versions, models and test counts are snapshots. Revalidate them when a materially relevant component changes before declaring them current.
 
 ## 4. Multiagent Execution Boundary
 
@@ -116,16 +126,23 @@ For shared-checkout writes, `filesystem.write` requires explicit repository-rela
 When resuming development, read:
 
 1. `CONTEXT.md`
-2. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
-3. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.8.md`
-4. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.8.md`
-5. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
-6. `docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md`
-7. `docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md`
-8. `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`
-9. `docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md`
-10. `docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
-11. Phase 3 plan/gate and WU-specific artifacts when the task reaches WU-055 or later.
+2. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`
+3. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md`
+4. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md`
+5. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
+6. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
+7. `docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md`
+8. `docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md`
+9. `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`
+10. `docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md`
+11. `docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
+12. Phase 3 plan/gate and WU-specific artifacts when the task reaches WU-055 or later.
+
+For installation/recovery problems, also read:
+
+- `bootstrap/README.md`;
+- `bootstrap/TROUBLESHOOTING.md`;
+- `bootstrap/RECOVERY-PROMPT.md`.
 
 Read additional artifacts only when the task requires them.
 
@@ -168,7 +185,26 @@ The Adaptive AI Orchestrator core remains authoritative for its own:
 
 The `adaptive-orchestrator-bridge` is an invocation boundary, not the scheduler. OpenClaw may execute bounded work and provide operational evidence, but it must not silently redefine project specification, policy, gates or authoritative project knowledge.
 
-## 8. Generated / Local Noise
+## 8. Bootstrap Diagnostic Rule
+
+Do not replace a working lower layer because a higher-level assertion failed. Diagnose in order:
+
+```text
+shell/PATH
+→ Git sync
+→ Python/tests
+→ OpenClaw config
+→ Gateway RPC
+→ skill visibility
+→ outbound single-unit E2E
+→ direct multiagent E2E
+→ inbound bridge E2E
+→ semantic presentation/evidence
+```
+
+Maintenance warnings such as an NVM-backed Gateway service are not runtime blockers when the authoritative probe/E2E passes. Exact AI wording is not authoritative when equivalent semantic evidence can be obtained from the completed session.
+
+## 9. Generated / Local Noise
 
 Do not treat these as project knowledge:
 
@@ -177,7 +213,7 @@ Do not treat these as project knowledge:
 - `**/__pycache__/**`
 - `**/*.pyc`
 
-## 9. Change Discipline
+## 10. Change Discipline
 
 Relevant changes follow:
 
@@ -194,4 +230,4 @@ discovery
 → versioning
 ```
 
-Do not convert experience, a prompt, a Skill, runtime behavior or legacy guidance directly into project authority.
+Do not convert experience, a prompt, a Skill, runtime behavior or legacy guidance directly into project authority. When real operational evidence exposes a test/bootstrap defect, correct the harness and preserve the evidence rather than weakening the runtime contract.
