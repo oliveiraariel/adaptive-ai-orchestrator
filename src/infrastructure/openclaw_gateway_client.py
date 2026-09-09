@@ -78,10 +78,21 @@ class OpenClawGatewayClient(OpenClawClient):
         }
         model = configuration.get("model")
         provider = configuration.get("provider")
+
         if model:
-            params["model"] = str(model)
-        if provider:
-            params["provider"] = str(provider)
+            model_ref = str(model)
+
+            if "/" not in model_ref and provider:
+                model_ref = f"{provider}/{model_ref}"
+
+            self._rpc(
+                "sessions.patch",
+                {
+                    "key": session_key,
+                    "agentId": agent_id,
+                    "model": model_ref,
+                },
+            )
 
         payload = self._rpc("agent", params)
         run_id = payload.get("runId")
