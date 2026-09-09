@@ -33,6 +33,9 @@ class GatewayConfig:
     timeout_seconds: float = 30.0
     agent_timeout_seconds: int = 600
     agent_wait_timeout_ms: int = 30_000
+    # A Gateway long-poll timeout means "not finished yet", not failure. The
+    # client keeps polling until this bounded total is reached.
+    agent_result_timeout_seconds: float = 600.0
 
 
 @dataclass(frozen=True)
@@ -121,14 +124,7 @@ class OpenClawGatewayClient(OpenClawClient):
     def retrieve_result(self, external_id: str) -> object:
         run = self._get_run(external_id)
 
-        result = self._rpc(
-            "agent.wait",
-            {
-                "runId": run.run_id,
-                "timeoutMs": self._config.agent_wait_timeout_ms,
-            },
-        )
-
+        result = self._wait_for_result(run.run_id)
         status = self._normalize_wait_status(result.get("status"))
 
         if status == "TIMEOUT":
@@ -151,6 +147,19 @@ class OpenClawGatewayClient(OpenClawClient):
             **result,
             "output": output,
         }
+
+    def _wait_for_result(self, run_id: str) -> dict[str, Any]:
+        """Poll bounded Gateway waits; timeout is an intermediate state."""
+        deadline = time.monotonic() + self._config.agent_result_timeout_seconds
+        while True:
+            result = self._rpc(
+                "agent.wait",
+                {"runId": run_id, "timeoutMs": self._config.agent_wait_timeout_ms},
+            )
+            if self._normalize_wait_status(result.get("status")) != "TIMEOUT":
+                return result
+            if self._config.agent_result_timeout_seconds <= 0 or time.monotonic() >= deadline:
+                return result
 
     def cancel(self, external_id: str) -> None:
         run = self._get_run(external_id)

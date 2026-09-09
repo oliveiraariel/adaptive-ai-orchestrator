@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from application.observability import JsonlObservabilitySink
 from pathlib import Path
 from typing import Sequence
 
@@ -281,7 +282,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 execution_policy=_execution_policy(args),
                 human_approved=args.human_approved,
                 plan=plan,
-            )
+            ),
+            observability=(
+                JsonlObservabilitySink(os.environ["ADAPTIVE_OBSERVABILITY_LOG"])
+                if os.environ.get("ADAPTIVE_OBSERVABILITY_LOG") else None
+            ),
         )
     except (
         OSError,

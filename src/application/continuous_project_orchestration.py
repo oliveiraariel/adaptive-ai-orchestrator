@@ -6,6 +6,7 @@ from typing import Sequence
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntimeResult
+from application.observability import NullObservabilitySink, ObservabilitySink
 from application.execution_coordinator import (
     DispatchFrontierRequest,
     DispatchOutcome,
@@ -47,7 +48,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
     def execute(
         self,
         request: ProjectOrchestrationRequest,
+        *,
+        observability: ObservabilitySink | None = None,
     ) -> ProjectOrchestrationResult:
+        observability = observability or NullObservabilitySink()
         orchestration_id = uuid4().hex
         planning_request = ProjectPlanningRequest(
             objective=request.objective,
@@ -58,7 +62,14 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             max_work_units=request.max_work_units,
             max_concurrency=request.max_concurrency,
         )
+        observability.emit("orchestration_started", orchestration_id=orchestration_id)
         plan = request.plan or self._planner.plan(planning_request)
+        for spec in plan.work_units:
+            observability.emit(
+                "work_unit_created", orchestration_id=orchestration_id,
+                work_unit_id=spec.id, role=spec.role, objective=spec.objective,
+                skills=list(spec.requested_skills), status="WAITING",
+            )
         if len(plan.work_units) > request.max_work_units:
             raise ProjectOrchestrationError(
                 f"Plan contains {len(plan.work_units)} Work Units; "
@@ -168,6 +179,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         max_new_workers=available_slots,
                     )
                     if selected_ids:
+                        for work_unit_id in selected_ids:
+                            observability.emit(
+                                "work_unit_ready", orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id, status="READY",
+                            )
                         dispatch_generation += 1
                         generation = dispatch_generation
                         dispatch_records.append(
@@ -193,6 +209,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             for work_unit_id in selected_ids
                         )
+                        assignment_by_id = {
+                            assignment.work_unit.id.value: assignment
+                            for assignment in assignments
+                        }
                         dispatch = ExecutionCoordinator(
                             runtime=self._runtime,
                             claim_registry=self._claims,
@@ -221,6 +241,19 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 )
                                 active[future] = (outcome, generation)
                                 active_by_id[outcome.work_unit_id] = outcome
+                                spec = specs[outcome.work_unit_id]
+                                configuration = assignment_by_id[outcome.work_unit_id].configuration
+                                observability.emit(
+                                    "worker_dispatched", orchestration_id=orchestration_id,
+                                    work_unit_id=outcome.work_unit_id,
+                                    execution_id=outcome.execution.id,
+                                    external_id=outcome.execution.external_id,
+                                    role=spec.role, objective=spec.objective,
+                                    skills=list(skill_sets[outcome.work_unit_id]),
+                                    model=configuration.model, provider=configuration.provider,
+                                    attempt=attempts[outcome.work_unit_id], wave=generation,
+                                    status="DISPATCHED",
+                                )
                                 continue
                             self._record_dispatch_failure(
                                 outcome=outcome,
@@ -276,6 +309,16 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             max_attempts=request.max_attempts_per_work_unit,
                         )
                         records.append(record)
+                        observability.emit(
+                            "work_unit_status_changed", orchestration_id=orchestration_id,
+                            work_unit_id=record.work_unit_id, execution_id=record.execution_id,
+                            external_id=record.external_id, role=record.role,
+                            skills=list(record.skills), attempt=record.attempt,
+                            wave=record.wave, status=record.status,
+                            runtime_status=record.runtime_status, verdict=record.verdict,
+                            summary=record.output[:500] if record.output else None,
+                            reason=record.reason[:500] if record.reason else None,
+                        )
                         if record.output:
                             outputs[work_unit_id] = record.output
                         if record.verdict not in {
@@ -339,7 +382,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         else:
             status = ProjectRunStatus.BLOCKED
 
-        return ProjectOrchestrationResult(
+        result = ProjectOrchestrationResult(
             orchestration_id=orchestration_id,
             status=status,
             plan_summary=plan.summary,
@@ -352,6 +395,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             max_parallelism_observed=max_parallelism_observed,
             replan_count=replan_count,
         )
+        observability.emit(
+            "orchestration_completed", orchestration_id=orchestration_id,
+            status=result.status.value, summary=plan.summary[:500],
+        )
+        return result
 
     def _build_continuous_assignment(
         self,

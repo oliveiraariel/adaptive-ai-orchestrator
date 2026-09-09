@@ -192,7 +192,9 @@ def test_gateway_client_reports_wait_timeout_as_still_running() -> None:
     }
     url, _, server, thread = start_gateway(responses)
     try:
-        client = OpenClawGatewayClient(GatewayConfig(url=url))
+        client = OpenClawGatewayClient(
+            GatewayConfig(url=url, agent_result_timeout_seconds=0)
+        )
         external = client.submit({
             "task_id": "task-001",
             "work_unit_id": "wu-001",
