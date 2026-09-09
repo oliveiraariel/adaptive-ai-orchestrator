@@ -32,7 +32,7 @@ class ModelRoutingAuditLog:
     def append(self, event: dict[str, Any]) -> None:
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            *event,
+            **event,
         }
         encoded = json.dumps(
             payload,
