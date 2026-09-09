@@ -27,11 +27,20 @@ class FakeOpenClawClient:
         self.cancelled.append(external_id)
 
 
+class RecordingSink:
+    def __init__(self) -> None:
+        self.events = []
+
+    def emit(self, event_type: str, **fields: object) -> None:
+        self.events.append((event_type, fields))
+
+
 def make_task() -> TaskPackage:
     return TaskPackage(
         task_id="task-001",
         work_unit_id="wu-001",
         objective="Execute through OpenClaw.",
+        orchestration_id="orch-001",
         configuration=ResourceConfiguration(
             agent="agent-001",
             skills=("tdd",),
@@ -57,6 +66,21 @@ def test_submit_translates_task_and_returns_execution_reference() -> None:
 
     assert client.submissions[0]["task_id"] == "task-001"
     assert client.submissions[0]["configuration"]["agent"] == "agent-001"
+
+
+def test_model_selection_preserves_orchestration_correlation() -> None:
+    sink = RecordingSink()
+    adapter = OpenClawAdapter(FakeOpenClawClient(), observability=sink)
+
+    adapter.submit(make_task())
+
+    event_type, event = sink.events[0]
+    assert event_type == "model_selected"
+    assert event["orchestration_id"] == "orch-001"
+    assert event["work_unit_id"] == "wu-001"
+    assert event["model"] == "model-001"
+    assert event["provider"] == "provider-001"
+    assert event["skills"] == ["tdd"]
 
 
 def test_status_is_normalized_from_openclaw_values() -> None:

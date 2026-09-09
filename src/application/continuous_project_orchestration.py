@@ -305,6 +305,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             work_unit=work_units[work_unit_id],
                             skills=skill_sets[work_unit_id],
                             dependencies=dependencies,
+                            orchestration_id=orchestration_id,
                             attempts=attempts[work_unit_id],
                             max_attempts=request.max_attempts_per_work_unit,
                         )

@@ -644,6 +644,7 @@ class RunProjectOrchestration:
             task_id=f"project:{orchestration_id}:wave:{wave}:{spec.id}:attempt:{work_unit.state.value}",
             work_unit_id=spec.id,
             objective=spec.objective,
+            orchestration_id=orchestration_id,
             scope=spec.scope,
             context=tuple(context),
             inputs=spec.inputs,
@@ -693,6 +694,7 @@ class RunProjectOrchestration:
         work_unit: WorkUnit,
         skills: tuple[str, ...],
         dependencies: Sequence[Dependency],
+        orchestration_id: str,
         attempts: int,
         max_attempts: int,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
@@ -727,6 +729,7 @@ class RunProjectOrchestration:
                 claim=outcome.claim,
                 verdict=evaluation.verdict,
                 dependencies=dependencies,
+                orchestration_id=orchestration_id,
             )
         )
         if (

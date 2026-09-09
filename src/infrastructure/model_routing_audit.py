@@ -30,6 +30,11 @@ class ModelRoutingAuditLog:
         )
 
     def append(self, event: dict[str, Any]) -> None:
+        correlation = event.get("orchestration_id")
+        if not isinstance(correlation, str) or not correlation.strip():
+            raise ModelRoutingAuditError(
+                "Model-routing audit events require nonblank orchestration_id."
+            )
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **event,

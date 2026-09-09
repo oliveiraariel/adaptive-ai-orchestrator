@@ -15,6 +15,7 @@ class FinalizeExecutionRequest:
     claim: ExecutionClaim
     verdict: EvaluationVerdict
     dependencies: Sequence[Dependency]
+    orchestration_id: str
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class FinalizeExecution:
         self._audit.append(
             {
                 "event": "evaluation-finalized",
+                "orchestration_id": request.orchestration_id,
                 "work_unit_id": work_unit.id.value,
                 "execution_id": request.claim.execution_id,
                 "verdict": request.verdict.value,

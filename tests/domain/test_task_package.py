@@ -50,6 +50,16 @@ def test_task_package_requires_work_unit_id() -> None:
         )
 
 
+def test_task_package_requires_nonblank_orchestration_id() -> None:
+    with pytest.raises(TaskPackageError):
+        TaskPackage(
+            task_id="task-001",
+            work_unit_id="wu-001",
+            objective="Implement.",
+            orchestration_id=" ",
+        )
+
+
 def test_task_package_requires_objective() -> None:
     with pytest.raises(TaskPackageError):
         TaskPackage(
