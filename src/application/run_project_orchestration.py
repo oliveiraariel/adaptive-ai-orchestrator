@@ -644,6 +644,7 @@ class RunProjectOrchestration:
             task_id=f"project:{orchestration_id}:wave:{wave}:{spec.id}:attempt:{work_unit.state.value}",
             work_unit_id=spec.id,
             objective=spec.objective,
+            orchestration_id=orchestration_id,
             scope=spec.scope,
             context=tuple(context),
             inputs=spec.inputs,

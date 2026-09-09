@@ -16,6 +16,7 @@ class TaskPackage:
     task_id: str
     work_unit_id: str
     objective: str
+    orchestration_id: str | None = None
     scope: str = ""
     context: Tuple[str, ...] = field(default_factory=tuple)
     inputs: Tuple[str, ...] = field(default_factory=tuple)

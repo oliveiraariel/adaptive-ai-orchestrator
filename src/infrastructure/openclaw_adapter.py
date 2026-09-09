@@ -117,7 +117,8 @@ class OpenClawAdapter(AgentRuntime):
             started_monotonic=time.monotonic(),
         )
         self._observability.emit(
-            "model_selected", work_unit_id=task.work_unit_id,
+            "model_selected", orchestration_id=task.orchestration_id,
+            work_unit_id=task.work_unit_id,
             execution_id=execution.id, external_id=external_id,
             model=decision.model, provider=decision.provider,
             attempt=decision.attempt, skills=list(configuration.skills),
