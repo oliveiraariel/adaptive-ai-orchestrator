@@ -152,9 +152,11 @@ class OpenClawGatewayClient(OpenClawClient):
         """Poll bounded Gateway waits; timeout is an intermediate state."""
         deadline = time.monotonic() + self._config.agent_result_timeout_seconds
         while True:
+            remaining = max(0.001, deadline - time.monotonic())
+            timeout_ms = min(self._config.agent_wait_timeout_ms, max(1, int(remaining * 1000)))
             result = self._rpc(
                 "agent.wait",
-                {"runId": run_id, "timeoutMs": self._config.agent_wait_timeout_ms},
+                {"runId": run_id, "timeoutMs": timeout_ms},
             )
             if self._normalize_wait_status(result.get("status")) != "TIMEOUT":
                 return result

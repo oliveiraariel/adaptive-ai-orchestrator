@@ -67,7 +67,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         for spec in plan.work_units:
             observability.emit(
                 "work_unit_created", orchestration_id=orchestration_id,
-                work_unit_id=spec.id, role=spec.role, objective=spec.objective,
+                work_unit_id=spec.id, role=spec.role,
                 skills=list(spec.requested_skills), status="WAITING",
             )
         if len(plan.work_units) > request.max_work_units:
@@ -248,7 +248,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     work_unit_id=outcome.work_unit_id,
                                     execution_id=outcome.execution.id,
                                     external_id=outcome.execution.external_id,
-                                    role=spec.role, objective=spec.objective,
+                                    role=spec.role,
                                     skills=list(skill_sets[outcome.work_unit_id]),
                                     model=configuration.model, provider=configuration.provider,
                                     attempt=attempts[outcome.work_unit_id], wave=generation,
@@ -316,8 +316,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             skills=list(record.skills), attempt=record.attempt,
                             wave=record.wave, status=record.status,
                             runtime_status=record.runtime_status, verdict=record.verdict,
-                            summary=record.output[:500] if record.output else None,
-                            reason=record.reason[:500] if record.reason else None,
                         )
                         if record.output:
                             outputs[work_unit_id] = record.output

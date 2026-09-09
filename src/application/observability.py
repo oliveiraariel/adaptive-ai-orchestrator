@@ -22,9 +22,15 @@ class JsonlObservabilitySink:
 
     _fields = {
         "event_id", "timestamp", "orchestration_id", "work_unit_id",
-        "execution_id", "external_id", "role", "objective", "skills",
+        "execution_id", "external_id", "role", "skills",
         "model", "provider", "attempt", "wave", "status", "verdict",
-        "summary", "reason", "runtime_status",
+        "runtime_status",
+    }
+    _event_types = {
+        "orchestration_started", "work_unit_created", "work_unit_ready",
+        "worker_dispatched", "model_selected", "worker_started",
+        "work_unit_status_changed", "worker_escalated", "evaluation_finalized",
+        "orchestration_completed",
     }
 
     def __init__(self, path: str | Path) -> None:
@@ -32,6 +38,8 @@ class JsonlObservabilitySink:
         self._lock = Lock()
 
     def emit(self, event_type: str, **fields: Any) -> None:
+        if event_type not in self._event_types:
+            raise ValueError(f"Unsupported observability event type: {event_type!r}")
         safe = {key: value for key, value in fields.items() if key in self._fields}
         safe["event_type"] = event_type
         safe.setdefault("event_id", f"adaptive:{uuid4().hex}")
