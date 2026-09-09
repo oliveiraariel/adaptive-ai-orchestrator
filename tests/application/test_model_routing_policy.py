@@ -53,6 +53,7 @@ def test_architecture_analysis_and_code_review_use_strong_model() -> None:
     for objective in (
         "Definir a arquitetura da aplicação e decisões estruturais.",
         "Realizar análise gerencial de riscos do projeto.",
+        "Analisar o manifesto do projeto e produzir síntese gerencial.",
         "Perform code review for the backend implementation.",
     ):
         decision = policy.select(make_task(objective))
