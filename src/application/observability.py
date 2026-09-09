@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
 from datetime import datetime, timezone
+from uuid import uuid4
 
 
 class ObservabilitySink(Protocol):
@@ -33,7 +34,7 @@ class JsonlObservabilitySink:
     def emit(self, event_type: str, **fields: Any) -> None:
         safe = {key: value for key, value in fields.items() if key in self._fields}
         safe["event_type"] = event_type
-        safe.setdefault("event_id", f"adaptive:{datetime.now(timezone.utc).isoformat()}:{id(safe)}")
+        safe.setdefault("event_id", f"adaptive:{uuid4().hex}")
         safe.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock, self._path.open("a", encoding="utf-8") as stream:
