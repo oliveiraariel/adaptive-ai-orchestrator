@@ -26,6 +26,7 @@ def test_final_verdict_is_persisted_with_execution_id(tmp_path) -> None:
             claim=claim,
             verdict=EvaluationVerdict.ACCEPTED,
             dependencies=(),
+            orchestration_id="orch-a",
         )
     )
 

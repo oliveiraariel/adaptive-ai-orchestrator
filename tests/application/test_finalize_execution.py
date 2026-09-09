@@ -29,6 +29,7 @@ def test_accepted_execution_completes_work_advances_dependencies_and_releases_cl
             claim=claim,
             verdict=EvaluationVerdict.ACCEPTED,
             dependencies=(dependency,),
+            orchestration_id="orch-a",
         )
     )
 
@@ -52,6 +53,7 @@ def test_accepted_execution_records_optional_dependency_satisfaction_too() -> No
             claim=claim,
             verdict=EvaluationVerdict.ACCEPTED,
             dependencies=(optional,),
+            orchestration_id="orch-a",
         )
     )
 
@@ -69,6 +71,7 @@ def test_returned_execution_requires_revision_and_does_not_advance_dependency() 
             claim=claim,
             verdict=EvaluationVerdict.RETURNED,
             dependencies=(dependency,),
+            orchestration_id="orch-a",
         )
     )
 
@@ -87,6 +90,7 @@ def test_blocked_evaluation_blocks_work_and_releases_claim() -> None:
             claim=claim,
             verdict=EvaluationVerdict.BLOCKED,
             dependencies=(),
+            orchestration_id="orch-a",
         )
     )
 

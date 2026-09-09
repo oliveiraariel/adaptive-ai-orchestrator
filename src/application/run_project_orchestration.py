@@ -694,6 +694,7 @@ class RunProjectOrchestration:
         work_unit: WorkUnit,
         skills: tuple[str, ...],
         dependencies: Sequence[Dependency],
+        orchestration_id: str,
         attempts: int,
         max_attempts: int,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
@@ -728,6 +729,7 @@ class RunProjectOrchestration:
                 claim=outcome.claim,
                 verdict=evaluation.verdict,
                 dependencies=dependencies,
+                orchestration_id=orchestration_id,
             )
         )
         if (

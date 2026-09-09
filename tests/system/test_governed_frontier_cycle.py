@@ -129,8 +129,9 @@ def test_accepted_frontier_member_unlocks_next_work_unit() -> None:
         FinalizeExecutionRequest(
             work_unit=first,
             claim=by_id["wu-a"].claim,
-            verdict=summary.verdict,
-            dependencies=(dependency,),
+                verdict=summary.verdict,
+                dependencies=(dependency,),
+                orchestration_id="orch-system",
         )
     )
 

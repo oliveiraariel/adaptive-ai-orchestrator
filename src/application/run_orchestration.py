@@ -194,6 +194,7 @@ class RunOrchestration:
                 claim=outcome.claim,
                 verdict=evaluation.verdict,
                 dependencies=(),
+                orchestration_id=run_id,
             )
         )
 
