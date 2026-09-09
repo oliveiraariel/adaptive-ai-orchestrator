@@ -13,6 +13,7 @@ from application.model_routing_policy import (
     ModelRoutingDecision,
     ModelRoutingPolicy,
 )
+from application.observability import NullObservabilitySink, ObservabilitySink
 from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
 from infrastructure.model_routing_audit import ModelRoutingAuditLog
@@ -58,11 +59,13 @@ class OpenClawAdapter(AgentRuntime):
         *,
         model_routing_policy: ModelRoutingPolicy | None = None,
         audit_log: ModelRoutingAuditLog | None = None,
+        observability: ObservabilitySink | None = None,
     ) -> None:
         self._client = client
         self._executions: dict[str, ExecutionReference] = {}
         self._routing_policy = model_routing_policy or ModelRoutingPolicy.from_env()
         self._audit = audit_log or ModelRoutingAuditLog()
+        self._observability = observability or NullObservabilitySink()
         self._routing_executions: dict[str, _RoutingExecutionState] = {}
 
     def submit(self, task: TaskPackage) -> ExecutionReference:
@@ -112,6 +115,12 @@ class OpenClawAdapter(AgentRuntime):
             work_unit_id=task.work_unit_id,
             decision=decision,
             started_monotonic=time.monotonic(),
+        )
+        self._observability.emit(
+            "model_selected", work_unit_id=task.work_unit_id,
+            execution_id=execution.id, external_id=external_id,
+            model=decision.model, provider=decision.provider,
+            attempt=decision.attempt, skills=list(configuration.skills),
         )
         self._audit.append(
             {
