@@ -368,13 +368,17 @@ def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:
 
 
 def _runtime(args: argparse.Namespace) -> OpenClawAdapter:
+    observability = (
+        JsonlObservabilitySink(os.environ["ADAPTIVE_OBSERVABILITY_LOG"])
+        if os.environ.get("ADAPTIVE_OBSERVABILITY_LOG") else None
+    )
     config = GatewayConfig(
         url=args.gateway_url,
         token=os.environ.get("OPENCLAW_GATEWAY_TOKEN"),
         password=os.environ.get("OPENCLAW_GATEWAY_PASSWORD"),
         agent_wait_timeout_ms=args.wait_timeout_ms,
     )
-    return OpenClawAdapter(OpenClawGatewayClient(config))
+    return OpenClawAdapter(OpenClawGatewayClient(config), observability=observability)
 
 
 def _find_skill_registry(*, required: bool) -> Path | None:
