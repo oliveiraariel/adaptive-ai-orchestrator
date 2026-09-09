@@ -162,7 +162,7 @@ class OpenClawGatewayClient(OpenClawClient):
     def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         assert connect is not None
         request_id = str(uuid.uuid4())
-        deadline = time.monotonic() + self._config.timeout_seconds
+        handshake_deadline = time.monotonic() + self._config.timeout_seconds
 
         try:
             with connect(
@@ -170,7 +170,7 @@ class OpenClawGatewayClient(OpenClawClient):
                 open_timeout=self._config.timeout_seconds,
                 close_timeout=self._config.timeout_seconds,
             ) as websocket:
-                self._handshake(websocket, deadline)
+                self._handshake(websocket, handshake_deadline)
                 websocket.send(
                     json.dumps(
                         {
@@ -182,7 +182,19 @@ class OpenClawGatewayClient(OpenClawClient):
                         separators=(",", ":"),
                     )
                 )
-                for frame in self._receive_until_response(websocket, request_id, deadline):
+
+                response_timeout_seconds = self._config.timeout_seconds
+                if method == "agent.wait":
+                    timeout_ms = params.get("timeoutMs")
+                    if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+                        response_timeout_seconds += timeout_ms / 1000
+
+                response_deadline = time.monotonic() + response_timeout_seconds
+                for frame in self._receive_until_response(
+                    websocket,
+                    request_id,
+                    response_deadline,
+                ):
                     if frame.get("ok") is True:
                         payload = frame.get("payload")
                         if not isinstance(payload, dict):
