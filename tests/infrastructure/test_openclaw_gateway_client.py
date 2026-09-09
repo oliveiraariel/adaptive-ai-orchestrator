@@ -36,7 +36,7 @@ def start_gateway(responses: dict[str, dict], *, protocol: int = 4):
                 "type": "hello-ok",
                 "protocol": protocol,
                 "server": {"version": "test", "connId": "conn-001"},
-                "features": {"methods": ["agent", "agent.wait", "sessions.abort"], "events": ["agent"]},
+                "features": {"methods": ["sessions.patch", "agent", "agent.wait", "sessions.abort"], "events": ["agent"]},
                 "snapshot": {},
                 "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
                 "policy": {"maxPayload": 26214400, "maxBufferedBytes": 52428800, "tickIntervalMs": 15000},
@@ -66,6 +66,7 @@ def start_gateway(responses: dict[str, dict], *, protocol: int = 4):
 
 def test_gateway_protocol_submit_status_result_and_cancel() -> None:
     responses = {
+        "sessions.patch": {"ok": True},
         "agent": {"runId": "run-001", "acceptedAt": 123},
         "agent.wait": {
             "status": "ok",
@@ -134,6 +135,7 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
         ]
 
         assert request_methods == [
+            "sessions.patch",
             "agent",
             "agent.wait",
             "agent.wait",
@@ -142,7 +144,7 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
         ]
 
         assert (
-            holder["requests"][0]["params"]["sessionKey"]
+            holder["requests"][1]["params"]["sessionKey"]
             == "agent:agent-001:orchestrator:task-001"
         )
 
@@ -184,6 +186,7 @@ def test_gateway_client_rejects_protocol_mismatch() -> None:
 
 def test_gateway_client_reports_wait_timeout_as_still_running() -> None:
     responses = {
+        "sessions.patch": {"ok": True},
         "agent": {"runId": "run-001", "acceptedAt": 123},
         "agent.wait": {"status": "timeout"},
     }

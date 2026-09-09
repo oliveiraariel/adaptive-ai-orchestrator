@@ -27,7 +27,7 @@ def start_gateway() -> tuple[str, object, threading.Thread]:
                 "type": "hello-ok",
                 "protocol": 4,
                 "server": {"version": "test", "connId": "c"},
-                "features": {"methods": ["agent", "agent.wait", "chat.history", "sessions.abort"], "events": ["agent"]},
+                "features": {"methods": ["sessions.patch", "agent", "agent.wait", "chat.history", "sessions.abort"], "events": ["agent"]},
                 "snapshot": {},
                 "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
                 "policy": {"maxPayload": 26214400, "maxBufferedBytes": 52428800, "tickIntervalMs": 15000},
@@ -36,6 +36,7 @@ def start_gateway() -> tuple[str, object, threading.Thread]:
 
         request = json.loads(websocket.recv())
         payloads = {
+            "sessions.patch": {"ok": True},
             "agent": {"runId": "run-vertical-001", "acceptedAt": 1},
             "agent.wait": {
                 "status": "ok",
