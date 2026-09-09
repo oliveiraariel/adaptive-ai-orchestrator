@@ -37,6 +37,7 @@ class OpenClawClient:
 
 @dataclass(frozen=True)
 class _RoutingExecutionState:
+    orchestration_id: str
     task_id: str
     work_unit_id: str
     decision: ModelRoutingDecision
@@ -90,6 +91,7 @@ class OpenClawAdapter(AgentRuntime):
             {
                 "event": "routing-selected",
                 "task_id": task.task_id,
+                "orchestration_id": task.orchestration_id,
                 "work_unit_id": task.work_unit_id,
                 "model": decision.model,
                 "provider": decision.provider,
@@ -111,6 +113,7 @@ class OpenClawAdapter(AgentRuntime):
         )
         self._executions[execution.id] = execution
         self._routing_executions[execution.id] = _RoutingExecutionState(
+            orchestration_id=task.orchestration_id,
             task_id=task.task_id,
             work_unit_id=task.work_unit_id,
             decision=decision,
@@ -127,6 +130,7 @@ class OpenClawAdapter(AgentRuntime):
             {
                 "event": "model-dispatch",
                 "task_id": task.task_id,
+                "orchestration_id": task.orchestration_id,
                 "work_unit_id": task.work_unit_id,
                 "execution_id": execution.id,
                 "external_id": external_id,
@@ -166,6 +170,7 @@ class OpenClawAdapter(AgentRuntime):
                     {
                         "event": "runtime-result-error",
                         "task_id": state.task_id,
+                        "orchestration_id": state.orchestration_id,
                         "work_unit_id": state.work_unit_id,
                         "execution_id": execution.id,
                         "external_id": execution.external_id,
@@ -190,6 +195,7 @@ class OpenClawAdapter(AgentRuntime):
                 {
                     "event": "runtime-result",
                     "task_id": state.task_id,
+                    "orchestration_id": state.orchestration_id,
                     "work_unit_id": state.work_unit_id,
                     "execution_id": execution.id,
                     "external_id": execution.external_id,
@@ -229,6 +235,7 @@ class OpenClawAdapter(AgentRuntime):
                 {
                     "event": "runtime-cancelled",
                     "task_id": state.task_id,
+                    "orchestration_id": state.orchestration_id,
                     "work_unit_id": state.work_unit_id,
                     "execution_id": execution.id,
                     "external_id": execution.external_id,
