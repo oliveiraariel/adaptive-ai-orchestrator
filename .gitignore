@@ -3,3 +3,12 @@ __pycache__/
 .pytest_cache/
 *.pyc
 *.egg-info/
+
+# Secrets
+.env
+.env.*
+*.env
+secrets.env
+
+# Permitir arquivo de exemplo sem segredos
+!.env.example
