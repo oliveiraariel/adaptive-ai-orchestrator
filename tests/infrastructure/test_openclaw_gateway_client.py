@@ -297,3 +297,96 @@ def test_gateway_client_retrieves_assistant_text_from_chat_history() -> None:
     finally:
         server.shutdown()
         thread.join(timeout=1)
+
+
+def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
+    ready = threading.Event()
+
+    def handler(websocket: ServerConnection) -> None:
+        websocket.send(json.dumps({
+            "type": "event",
+            "event": "connect.challenge",
+            "payload": {"nonce": "n-long-poll", "ts": int(time.time() * 1000)},
+        }))
+        connect_frame = json.loads(websocket.recv())
+        websocket.send(json.dumps({
+            "type": "res",
+            "id": connect_frame["id"],
+            "ok": True,
+            "payload": {
+                "type": "hello-ok",
+                "protocol": 4,
+                "server": {"version": "test", "connId": "conn-long-poll"},
+                "features": {"methods": ["agent", "agent.wait", "chat.history"], "events": ["agent"]},
+                "snapshot": {},
+                "auth": {"role": "operator", "scopes": ["operator.read", "operator.write"]},
+                "policy": {"maxPayload": 26214400, "maxBufferedBytes": 52428800, "tickIntervalMs": 15000},
+            },
+        }))
+
+        request = json.loads(websocket.recv())
+        method = request["method"]
+        if method == "agent":
+            payload = {"runId": "run-long-poll", "acceptedAt": 123}
+        elif method == "agent.wait":
+            time.sleep(0.3)
+            payload = {
+                "status": "ok",
+                "startedAt": 100,
+                "endedAt": 200,
+                "stopReason": "stop",
+            }
+        elif method == "chat.history":
+            payload = {
+                "sessionKey": "agent:agent-001:orchestrator:task-long-poll",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "LONG_POLL_OK"}],
+                        "stopReason": "stop",
+                    }
+                ],
+            }
+        else:
+            raise AssertionError(f"Unexpected method: {method}")
+
+        websocket.send(json.dumps({
+            "type": "res",
+            "id": request["id"],
+            "ok": True,
+            "payload": payload,
+        }))
+
+    server = serve(handler, "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    ready.set()
+
+    try:
+        client = OpenClawGatewayClient(
+            GatewayConfig(
+                url=f"ws://127.0.0.1:{server.socket.getsockname()[1]}",
+                timeout_seconds=0.2,
+                agent_wait_timeout_ms=500,
+            )
+        )
+        external = client.submit({
+            "task_id": "task-long-poll",
+            "work_unit_id": "wu-long-poll",
+            "objective": "do work",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["LONG_POLL_OK"],
+            "acceptance_criteria": ["status=ok"],
+            "configuration": {"agent": "agent-001"},
+        })
+
+        assert client.retrieve_result(external)["output"] == "LONG_POLL_OK"
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
