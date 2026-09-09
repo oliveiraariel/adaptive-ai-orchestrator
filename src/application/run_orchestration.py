@@ -109,6 +109,7 @@ class RunOrchestration:
             task_id=task_id,
             work_unit_id=work_unit_id,
             objective=request.objective,
+            orchestration_id=run_id,
             scope=request.scope,
             context=request.context,
             inputs=request.inputs,

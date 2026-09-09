@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Tuple
+from uuid import uuid4
 
 from domain.context_strategy import ContextPolicy
 from domain.delegation_context import DelegationContext
@@ -16,7 +17,9 @@ class TaskPackage:
     task_id: str
     work_unit_id: str
     objective: str
-    orchestration_id: str | None = None
+    # Standalone packages receive their own correlation root; orchestrated
+    # callers pass the shared run id explicitly.
+    orchestration_id: str = field(default_factory=lambda: uuid4().hex)
     scope: str = ""
     context: Tuple[str, ...] = field(default_factory=tuple)
     inputs: Tuple[str, ...] = field(default_factory=tuple)
@@ -41,6 +44,11 @@ class TaskPackage:
 
         if not self.objective.strip():
             raise TaskPackageError("TaskPackage objective must not be empty.")
+
+        if not self.orchestration_id.strip():
+            raise TaskPackageError(
+                "TaskPackage orchestration_id must not be empty."
+            )
 
         if self.configuration is None:
             raise TaskPackageError(
