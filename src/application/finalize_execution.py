@@ -6,6 +6,7 @@ from domain.dependency import Dependency
 from domain.evaluation import EvaluationVerdict
 from domain.execution_claim import ExecutionClaim
 from domain.work_unit import WorkUnit, WorkUnitState
+from infrastructure.model_routing_audit import ModelRoutingAuditLog
 
 
 @dataclass(frozen=True)
@@ -27,11 +28,19 @@ class FinalizeExecution:
 
     Dependencies advance only after an accepted outcome. The execution claim is
     released after the evaluation has been incorporated so a revision can be
-    claimed by a later execution.
+    claimed by a later execution. The final evaluation is also appended to the
+    model-routing audit trail and can be correlated with model-dispatch entries
+    through the execution id.
     """
 
-    def __init__(self, claim_registry: ClaimRegistry) -> None:
+    def __init__(
+        self,
+        claim_registry: ClaimRegistry,
+        *,
+        audit_log: ModelRoutingAuditLog | None = None,
+    ) -> None:
         self._claim_registry = claim_registry
+        self._audit = audit_log or ModelRoutingAuditLog()
 
     def execute(self, request: FinalizeExecutionRequest) -> FinalizeExecutionResult:
         work_unit = request.work_unit
@@ -65,6 +74,17 @@ class FinalizeExecution:
             work_unit.mark_blocked()
         else:
             raise ValueError("Evaluation verdict is not finalizable.")
+
+        self._audit.append(
+            {
+                "event": "evaluation-finalized",
+                "work_unit_id": work_unit.id.value,
+                "execution_id": request.claim.execution_id,
+                "verdict": request.verdict.value,
+                "work_unit_state": work_unit.state.value,
+                "satisfied_dependencies": tuple(satisfied),
+            }
+        )
 
         self._claim_registry.release(request.claim)
 
