@@ -142,10 +142,12 @@ class OpenClawGatewayClient(OpenClawClient):
         )
 
         output = self._extract_assistant_text(history)
+        metadata = self._extract_assistant_metadata(history)
 
         return {
             **result,
             "output": output,
+            **metadata,
         }
 
     def _wait_for_result(self, run_id: str) -> dict[str, Any]:
@@ -368,6 +370,28 @@ class OpenClawGatewayClient(OpenClawClient):
         raise OpenClawGatewayError(
             "OpenClaw chat.history contained no assistant text output."
         )
+
+    @staticmethod
+    def _extract_assistant_metadata(history: dict[str, Any]) -> dict[str, Any]:
+        messages = history.get("messages")
+        if not isinstance(messages, list):
+            return {}
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            metadata: dict[str, Any] = {}
+            for key in ("usage", "token_usage", "cost"):
+                value = message.get(key)
+                if isinstance(value, dict):
+                    metadata[key] = value
+            nested = message.get("metadata")
+            if isinstance(nested, dict):
+                for key in ("usage", "token_usage", "cost"):
+                    value = nested.get(key)
+                    if isinstance(value, dict):
+                        metadata[key] = value
+            return metadata
+        return {}
 
     @staticmethod
     def _normalize_wait_status(status: object) -> str:
