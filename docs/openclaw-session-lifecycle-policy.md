@@ -100,22 +100,24 @@ Automatic deletion/retention should be added only after durable Adaptive project
 
 ## Operational configuration
 
-The project activation script enables lifecycle-safe auto-archive by default:
+Lifecycle-safe automatic archival is a **core Adaptive default**. When no override is supplied, completed and explicitly cancelled Adaptive-owned worker sessions are archived according to the safety rules above regardless of how Adaptive is entered, including:
 
-```bash
-export ADAPTIVE_SESSION_AUTO_ARCHIVE=1
-```
+- OpenClaw Dashboard / Chat through `adaptive-orchestrator-bridge`;
+- direct Adaptive CLI execution;
+- the project activation script;
+- library/integration construction of `OpenClawGatewayClient` with default lifecycle settings.
 
-To temporarily keep completed sessions active while diagnosing lifecycle behavior, set the variable before sourcing the activation script:
+No shell activation step is required merely to enable this behavior.
+
+To temporarily keep completed sessions active while diagnosing lifecycle behavior, set:
 
 ```bash
 export ADAPTIVE_SESSION_AUTO_ARCHIVE=0
-source scripts/activate-adaptive.sh
 ```
 
-The activation script preserves an explicitly supplied value.
+The project activation script preserves an explicitly supplied value. Without an explicit override, it continues to expose the enabled state for local development convenience.
 
-Library/integration callers can also override the behavior through `GatewayConfig.archive_completed_sessions` and `GatewayConfig.archive_cancelled_sessions`.
+Library/integration callers can override the environment-derived default explicitly through `GatewayConfig.archive_completed_sessions` and `GatewayConfig.archive_cancelled_sessions`.
 
 ## OpenClaw references
 
