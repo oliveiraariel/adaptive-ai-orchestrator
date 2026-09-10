@@ -12,10 +12,10 @@ class ResourceConfiguration:
     skills: Tuple[str, ...] = field(default_factory=tuple)
     model: str | None = None
     provider: str | None = None
-    thinking: str | None = None
     tools: Tuple[str, ...] = field(default_factory=tuple)
     runtime: str | None = None
     policy_constraints: Tuple[str, ...] = field(default_factory=tuple)
+    thinking: str | None = None
 
     def __post_init__(self) -> None:
         if not self.agent or not self.agent.strip():
