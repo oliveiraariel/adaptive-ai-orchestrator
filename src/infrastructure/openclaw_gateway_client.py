@@ -37,8 +37,8 @@ class GatewayConfig:
     # A Gateway long-poll timeout means "not finished yet", not failure. The
     # client keeps polling until this bounded total is reached.
     agent_result_timeout_seconds: float = 600.0
-    # Library callers are conservative by default. The project activation
-    # script enables lifecycle management through ADAPTIVE_SESSION_AUTO_ARCHIVE.
+    # Lifecycle-safe archival is a core Adaptive default. Callers can override
+    # it explicitly or set ADAPTIVE_SESSION_AUTO_ARCHIVE=0 for diagnostics.
     archive_completed_sessions: bool | None = None
     archive_cancelled_sessions: bool | None = None
     session_archive_attempts: int = 3
@@ -100,7 +100,7 @@ class OpenClawGatewayClient(OpenClawClient):
 
         env_auto_archive = self._env_flag(
             "ADAPTIVE_SESSION_AUTO_ARCHIVE",
-            default=False,
+            default=True,
         )
         self._archive_completed_sessions = (
             env_auto_archive
