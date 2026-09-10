@@ -25,6 +25,7 @@ class JsonlObservabilitySink:
         "execution_id", "external_id", "role", "skills",
         "model", "provider", "attempt", "wave", "status", "verdict",
         "runtime_status",
+        "usage", "cost",
     }
     _event_types = {
         "orchestration_started", "work_unit_created", "work_unit_ready",

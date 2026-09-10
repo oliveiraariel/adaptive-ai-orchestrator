@@ -152,6 +152,7 @@ class OpenClawAdapter(AgentRuntime):
         )
         updated = replace(execution, status=status)
         self._executions[execution.id] = updated
+
         return status
 
     def retrieve_result(
@@ -189,8 +190,23 @@ class OpenClawAdapter(AgentRuntime):
 
         updated = replace(execution, status=status)
         self._executions[execution.id] = updated
+        usage = self._extract_usage(raw_result)
+        cost = self._extract_cost(raw_result)
 
         if state is not None:
+            self._observability.emit(
+                "work_unit_status_changed",
+                orchestration_id=state.orchestration_id,
+                work_unit_id=state.work_unit_id,
+                execution_id=execution.id,
+                external_id=execution.external_id,
+                model=state.decision.model,
+                provider=state.decision.provider,
+                attempt=state.decision.attempt,
+                status=status.value,
+                usage=usage,
+                cost=cost,
+            )
             self._audit.append(
                 {
                     "event": "runtime-result",
@@ -206,6 +222,8 @@ class OpenClawAdapter(AgentRuntime):
                     "attempt": state.decision.attempt,
                     "escalated_from": state.decision.escalated_from,
                     "runtime_status": status.value,
+                    **({"usage": usage} if usage else {}),
+                    **({"cost": cost} if cost else {}),
                     "elapsed_seconds": round(
                         max(0.0, time.monotonic() - state.started_monotonic),
                         3,
@@ -217,6 +235,45 @@ class OpenClawAdapter(AgentRuntime):
             execution=updated,
             raw_result=raw_result,
         )
+
+    @staticmethod
+    def _extract_usage(raw_result: object) -> dict[str, int] | None:
+        if not isinstance(raw_result, dict):
+            return None
+        candidate = raw_result.get("usage") or raw_result.get("token_usage")
+        if not isinstance(candidate, dict):
+            return None
+        aliases = {
+            "input_tokens": ("input_tokens", "prompt_tokens", "input"),
+            "output_tokens": ("output_tokens", "completion_tokens", "output"),
+            "cache_read_tokens": ("cache_read_tokens", "cached_input_tokens"),
+            "cache_write_tokens": ("cache_write_tokens", "cached_output_tokens"),
+            "total_tokens": ("total_tokens", "total"),
+        }
+        result: dict[str, int] = {}
+        for target, names in aliases.items():
+            for name in names:
+                value = candidate.get(name)
+                if isinstance(value, int) and value >= 0:
+                    result[target] = value
+                    break
+        if "total_tokens" not in result and {"input_tokens", "output_tokens"} <= result.keys():
+            result["total_tokens"] = result["input_tokens"] + result["output_tokens"]
+        return result or None
+
+    @staticmethod
+    def _extract_cost(raw_result: object) -> dict[str, object] | None:
+        if not isinstance(raw_result, dict) or not isinstance(raw_result.get("cost"), dict):
+            return None
+        value = raw_result["cost"]
+        result: dict[str, object] = {}
+        if value.get("status") in {"actual", "estimated", "unknown"}:
+            result["status"] = value["status"]
+        if isinstance(value.get("usd"), (int, float)) and value["usd"] >= 0:
+            result["usd"] = value["usd"]
+        if isinstance(value.get("pricing_source"), str):
+            result["pricing_source"] = value["pricing_source"][:300]
+        return result or None
 
     def cancel(self, execution: ExecutionReference) -> ExecutionReference:
         self._ensure_openclaw_execution(execution)
