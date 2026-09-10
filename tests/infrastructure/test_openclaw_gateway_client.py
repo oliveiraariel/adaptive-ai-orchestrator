@@ -180,9 +180,13 @@ def test_gateway_client_rejects_protocol_mismatch() -> None:
             assert "expected 4" in str(exc)
         else:
             raise AssertionError("Expected protocol mismatch to fail.")
+        finally:
+            server.shutdown()
+            thread.join(timeout=1)
     finally:
         server.shutdown()
         thread.join(timeout=1)
+
 
 def test_gateway_client_reports_wait_timeout_as_still_running() -> None:
     responses = {
@@ -220,6 +224,17 @@ def test_gateway_client_reports_wait_timeout_as_still_running() -> None:
     finally:
         server.shutdown()
         thread.join(timeout=1)
+
+
+def test_assistant_metadata_matches_message_with_text() -> None:
+    history = {
+        "messages": [
+            {"role": "assistant", "content": [{"type": "text", "text": "done"}], "usage": {"total_tokens": 10}},
+            {"role": "assistant", "content": [{"type": "toolCall"}], "usage": {"total_tokens": 99}},
+        ]
+    }
+    assert OpenClawGatewayClient._extract_assistant_text(history) == "done"
+    assert OpenClawGatewayClient._extract_assistant_metadata(history) == {"usage": {"total_tokens": 10}}
 
 
 def test_gateway_client_retrieves_assistant_text_from_chat_history() -> None:
