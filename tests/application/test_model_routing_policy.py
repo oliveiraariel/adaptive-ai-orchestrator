@@ -11,6 +11,7 @@ def make_task(
     skills: tuple[str, ...] = (),
     model: str | None = None,
     provider: str | None = None,
+    thinking: str | None = None,
 ) -> TaskPackage:
     return TaskPackage(
         task_id=task_id,
@@ -22,6 +23,7 @@ def make_task(
             skills=skills,
             model=model,
             provider=provider,
+            thinking=thinking,
             runtime="openclaw",
         ),
         expected_output=("result",),
@@ -29,7 +31,7 @@ def make_task(
     )
 
 
-def test_planner_uses_strong_model() -> None:
+def test_planner_uses_strong_model_with_high_thinking() -> None:
     policy = ModelRoutingPolicy()
     task = make_task(
         "You are the planning layer of Adaptive AI Orchestrator.",
@@ -44,10 +46,11 @@ def test_planner_uses_strong_model() -> None:
 
     assert decision.model == "openai/gpt-5.6-sol"
     assert decision.tier == "strong"
+    assert decision.thinking == "high"
     assert decision.attempt == 1
 
 
-def test_architecture_analysis_and_code_review_use_strong_model() -> None:
+def test_architecture_analysis_and_code_review_use_sol_high() -> None:
     policy = ModelRoutingPolicy()
 
     for objective in (
@@ -59,9 +62,10 @@ def test_architecture_analysis_and_code_review_use_strong_model() -> None:
         decision = policy.select(make_task(objective))
         assert decision.model == "openai/gpt-5.6-sol"
         assert decision.tier == "strong"
+        assert decision.thinking == "high"
 
 
-def test_routine_code_first_attempt_uses_economy_model() -> None:
+def test_routine_code_first_attempt_uses_luna_high() -> None:
     policy = ModelRoutingPolicy()
     decision = policy.select(
         make_task("Implementar o repository PHP para persistência de categorias.")
@@ -70,9 +74,21 @@ def test_routine_code_first_attempt_uses_economy_model() -> None:
     assert decision.model == "openai/gpt-5.6-luna"
     assert decision.tier == "economy"
     assert decision.reason == "routine-code-or-test-first-attempt"
+    assert decision.thinking == "high"
+    assert decision.thinking_reason == "code-or-test-high-reasoning"
 
 
-def test_code_retry_escalates_to_kimi() -> None:
+def test_routine_non_code_work_uses_luna_medium() -> None:
+    policy = ModelRoutingPolicy()
+    decision = policy.select(make_task("Organizar os nomes dos arquivos de saída."))
+
+    assert decision.model == "openai/gpt-5.6-luna"
+    assert decision.tier == "economy"
+    assert decision.reason == "routine-or-mechanical-work"
+    assert decision.thinking == "medium"
+
+
+def test_code_retry_escalates_to_kimi_with_provider_native_thinking() -> None:
     policy = ModelRoutingPolicy()
     decision = policy.select(
         make_task(
@@ -84,6 +100,8 @@ def test_code_retry_escalates_to_kimi() -> None:
 
     assert decision.model == "moonshot/kimi-k2.7-code"
     assert decision.tier == "code-specialist"
+    assert decision.thinking is None
+    assert decision.thinking_reason == "provider-native-code-specialist-reasoning"
     assert decision.escalated_from == "openai/gpt-5.6-luna"
     assert decision.attempt == 2
 
@@ -99,15 +117,17 @@ def test_explicit_remediation_uses_kimi_even_on_first_attempt() -> None:
     assert decision.model == "moonshot/kimi-k2.7-code"
     assert decision.tier == "code-specialist"
     assert decision.reason == "explicit-code-remediation"
+    assert decision.thinking is None
 
 
-def test_explicit_model_override_is_preserved() -> None:
+def test_explicit_kimi_model_keeps_provider_native_thinking() -> None:
     policy = ModelRoutingPolicy()
     decision = policy.select(
         make_task(
             "Implement code.",
             model="moonshot/kimi-k2.7-code",
             provider="moonshot",
+            thinking="high",
         )
     )
 
@@ -115,15 +135,54 @@ def test_explicit_model_override_is_preserved() -> None:
     assert decision.provider == "moonshot"
     assert decision.tier == "explicit"
     assert decision.reason == "explicit-model-override"
+    assert decision.thinking is None
+    assert decision.thinking_reason == "provider-native-code-specialist-reasoning"
 
 
-def test_environment_can_override_policy_models(monkeypatch) -> None:
+def test_explicit_openai_thinking_override_is_preserved() -> None:
+    policy = ModelRoutingPolicy()
+    decision = policy.select(
+        make_task(
+            "Implement code.",
+            model="openai/gpt-5.6-sol",
+            provider="openai",
+            thinking="xhigh",
+        )
+    )
+
+    assert decision.model == "openai/gpt-5.6-sol"
+    assert decision.thinking == "xhigh"
+    assert decision.thinking_reason == "explicit-thinking-override"
+
+
+def test_explicit_openai_coding_model_without_thinking_gets_high() -> None:
+    policy = ModelRoutingPolicy()
+    decision = policy.select(
+        make_task(
+            "Implement code.",
+            model="openai/gpt-5.6-sol",
+            provider="openai",
+        )
+    )
+
+    assert decision.model == "openai/gpt-5.6-sol"
+    assert decision.thinking == "high"
+    assert decision.thinking_reason == "code-or-test-high-reasoning"
+
+
+def test_environment_can_override_policy_models_and_thinking(monkeypatch) -> None:
     monkeypatch.setenv("ADAPTIVE_STRONG_MODEL", "openai/strong-custom")
     monkeypatch.setenv("ADAPTIVE_ECONOMY_MODEL", "openai/economy-custom")
     monkeypatch.setenv("ADAPTIVE_CODE_SPECIALIST_MODEL", "vendor/code-custom")
+    monkeypatch.setenv("ADAPTIVE_STRONG_THINKING", "xhigh")
+    monkeypatch.setenv("ADAPTIVE_CODE_THINKING", "xhigh")
+    monkeypatch.setenv("ADAPTIVE_ROUTINE_THINKING", "low")
 
     policy = ModelRoutingPolicy.from_env()
 
     assert policy.strong_model == "openai/strong-custom"
     assert policy.economy_model == "openai/economy-custom"
     assert policy.code_specialist_model == "vendor/code-custom"
+    assert policy.strong_thinking == "xhigh"
+    assert policy.code_thinking == "xhigh"
+    assert policy.routine_thinking == "low"
