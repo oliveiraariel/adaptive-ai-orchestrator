@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -36,6 +37,12 @@ class GatewayConfig:
     # A Gateway long-poll timeout means "not finished yet", not failure. The
     # client keeps polling until this bounded total is reached.
     agent_result_timeout_seconds: float = 600.0
+    # Library callers are conservative by default. The project activation
+    # script enables lifecycle management through ADAPTIVE_SESSION_AUTO_ARCHIVE.
+    archive_completed_sessions: bool | None = None
+    archive_cancelled_sessions: bool | None = None
+    session_archive_attempts: int = 3
+    session_archive_retry_delay_seconds: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -44,13 +51,36 @@ class GatewayRun:
     session_key: str
 
 
+@dataclass(frozen=True)
+class SessionArchiveOutcome:
+    """Sanitized result of one OpenClaw session archive attempt."""
+
+    status: str
+    trigger: str
+    error_type: str | None = None
+
+    @property
+    def archived(self) -> bool:
+        return self.status in {"archived", "already-archived", "missing"}
+
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "status": self.status,
+            "trigger": self.trigger,
+            "archived": self.archived,
+        }
+        if self.error_type:
+            payload["error_type"] = self.error_type
+        return payload
+
+
 class OpenClawGatewayClient(OpenClawClient):
     """OpenClaw Gateway client using the documented WebSocket + RPC surface.
 
     The client intentionally implements only the orchestration-facing methods
     required by the existing ``OpenClawClient`` seam: submit, status, result,
-    and cancel. It negotiates Gateway protocol v4 and does not expose Gateway
-    SDK types to the application layer.
+    cancellation, and lifecycle-safe archival. It negotiates Gateway protocol
+    v4 and does not expose Gateway SDK types to the application layer.
     """
 
     RUNTIME_NAME = "openclaw-gateway"
@@ -63,7 +93,27 @@ class OpenClawGatewayClient(OpenClawClient):
             ) from _IMPORT_ERROR
 
         self._config = config or GatewayConfig()
+        if self._config.session_archive_attempts < 1:
+            raise ValueError("session_archive_attempts must be at least 1.")
+        if self._config.session_archive_retry_delay_seconds < 0:
+            raise ValueError("session_archive_retry_delay_seconds must not be negative.")
+
+        env_auto_archive = self._env_flag(
+            "ADAPTIVE_SESSION_AUTO_ARCHIVE",
+            default=False,
+        )
+        self._archive_completed_sessions = (
+            env_auto_archive
+            if self._config.archive_completed_sessions is None
+            else self._config.archive_completed_sessions
+        )
+        self._archive_cancelled_sessions = (
+            env_auto_archive
+            if self._config.archive_cancelled_sessions is None
+            else self._config.archive_cancelled_sessions
+        )
         self._runs: dict[str, GatewayRun] = {}
+        self._archive_outcomes: dict[str, SessionArchiveOutcome] = {}
 
     def submit(self, task_payload: dict) -> str:
         task_id = str(task_payload["task_id"])
@@ -148,13 +198,24 @@ class OpenClawGatewayClient(OpenClawClient):
             {"sessionKey": run.session_key},
         )
 
+        # Capture everything Adaptive needs before changing the OpenClaw session
+        # lifecycle. Archive is preservation, not deletion, but history capture
+        # remains the explicit safety boundary for automatic cleanup.
         output = self._extract_assistant_text(history)
         metadata = self._extract_assistant_metadata(history)
+
+        lifecycle: dict[str, object] | None = None
+        if self._archive_completed_sessions:
+            lifecycle = self.archive(
+                external_id,
+                trigger="result-captured",
+            ).as_payload()
 
         return {
             **result,
             "output": output,
             **metadata,
+            **({"session_lifecycle": lifecycle} if lifecycle is not None else {}),
         }
 
     def _wait_for_result(self, run_id: str) -> dict[str, Any]:
@@ -178,6 +239,118 @@ class OpenClawGatewayClient(OpenClawClient):
             "sessions.abort",
             {"runId": run.run_id, "key": run.session_key},
         )
+        if self._archive_cancelled_sessions:
+            self.archive(external_id, trigger="cancelled")
+
+    def archive(
+        self,
+        external_id: str,
+        *,
+        trigger: str = "explicit",
+    ) -> SessionArchiveOutcome:
+        """Archive an Adaptive-owned session without making cleanup fatal.
+
+        OpenClaw archive is an in-place lifecycle operation that retains the
+        transcript. The observed ``sessionId`` is supplied as
+        ``expectedSessionId`` so a stale task key cannot archive a replacement
+        generation. Any lifecycle failure leaves the session available for
+        inspection and is returned as sanitized metadata instead of failing an
+        already-completed Work Unit.
+        """
+        try:
+            status = self._archive_session(external_id)
+        except Exception as exc:
+            outcome = SessionArchiveOutcome(
+                status="failed",
+                trigger=trigger,
+                error_type=type(exc).__name__,
+            )
+        else:
+            outcome = SessionArchiveOutcome(status=status, trigger=trigger)
+
+        self._archive_outcomes[external_id] = outcome
+        return outcome
+
+    def get_archive_outcome(
+        self,
+        external_id: str,
+    ) -> SessionArchiveOutcome | None:
+        """Return the last sanitized archive outcome for diagnostics."""
+        return self._archive_outcomes.get(external_id)
+
+    def _archive_session(self, external_id: str) -> str:
+        run = self._get_run(external_id)
+        description = self._rpc(
+            "sessions.describe",
+            {"key": run.session_key},
+        )
+        session = description.get("session")
+        if session is None:
+            # Nothing remains in the active session index, so the cleanup goal
+            # is already satisfied without creating or mutating a replacement.
+            return "missing"
+        if not isinstance(session, dict):
+            raise OpenClawGatewayError(
+                "OpenClaw sessions.describe returned an invalid session row."
+            )
+        if session.get("archived") is True:
+            return "already-archived"
+
+        session_id = session.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            raise OpenClawGatewayError(
+                "OpenClaw sessions.describe returned no durable sessionId."
+            )
+
+        # Never allow cleanup of this run to cancel unrelated work that happens
+        # to share the key. When exact activity identities are unavailable, the
+        # conservative choice is to leave the session visible for inspection.
+        active_run_ids = session.get("activeRunIds")
+        if isinstance(active_run_ids, list):
+            foreign_active = [
+                item
+                for item in active_run_ids
+                if isinstance(item, str) and item and item != run.run_id
+            ]
+            if foreign_active:
+                return "skipped-active"
+        elif session.get("hasActiveRun") is True:
+            return "skipped-active"
+
+        params = {
+            "key": run.session_key,
+            "expectedSessionId": session_id,
+            "archived": True,
+        }
+        for attempt in range(self._config.session_archive_attempts):
+            try:
+                self._rpc("sessions.patch", params)
+                return "archived"
+            except OpenClawGatewayError as exc:
+                is_last = attempt + 1 >= self._config.session_archive_attempts
+                if is_last or not self._is_retryable_archive_error(exc):
+                    raise
+                delay = self._config.session_archive_retry_delay_seconds * (2**attempt)
+                if delay > 0:
+                    time.sleep(delay)
+
+        raise OpenClawGatewayError("OpenClaw session archive exhausted retries.")
+
+    @staticmethod
+    def _is_retryable_archive_error(exc: OpenClawGatewayError) -> bool:
+        return "UNAVAILABLE" in str(exc).upper()
+
+    @staticmethod
+    def _env_flag(name: str, *, default: bool) -> bool:
+        value = os.environ.get(name)
+        if value is None:
+            return default
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
 
     def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         assert connect is not None
