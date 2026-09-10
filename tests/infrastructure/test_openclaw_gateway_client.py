@@ -100,7 +100,12 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
 
     try:
         client = OpenClawGatewayClient(
-            GatewayConfig(url=url, token="secret")
+            GatewayConfig(
+                url=url,
+                token="secret",
+                archive_completed_sessions=False,
+                archive_cancelled_sessions=False,
+            )
         )
 
         external = client.submit({
@@ -275,7 +280,11 @@ def test_gateway_client_retrieves_assistant_text_from_chat_history() -> None:
 
     try:
         client = OpenClawGatewayClient(
-            GatewayConfig(url=url, token="secret")
+            GatewayConfig(
+                url=url,
+                token="secret",
+                archive_completed_sessions=False,
+            )
         )
 
         external = client.submit({
@@ -385,6 +394,7 @@ def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
                 url=f"ws://127.0.0.1:{server.socket.getsockname()[1]}",
                 timeout_seconds=0.2,
                 agent_wait_timeout_ms=500,
+                archive_completed_sessions=False,
             )
         )
         external = client.submit({
