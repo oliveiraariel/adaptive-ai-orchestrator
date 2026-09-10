@@ -12,6 +12,7 @@ class ResourceConfiguration:
     skills: Tuple[str, ...] = field(default_factory=tuple)
     model: str | None = None
     provider: str | None = None
+    thinking: str | None = None
     tools: Tuple[str, ...] = field(default_factory=tuple)
     runtime: str | None = None
     policy_constraints: Tuple[str, ...] = field(default_factory=tuple)
@@ -30,6 +31,11 @@ class ResourceConfiguration:
         if self.provider is not None and not self.provider.strip():
             raise ResourceConfigurationError(
                 "ResourceConfiguration provider must not be blank when provided."
+            )
+
+        if self.thinking is not None and not self.thinking.strip():
+            raise ResourceConfigurationError(
+                "ResourceConfiguration thinking must not be blank when provided."
             )
 
         if self.runtime is not None and not self.runtime.strip():
