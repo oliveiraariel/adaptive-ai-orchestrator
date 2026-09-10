@@ -54,6 +54,10 @@ class JsonlObservabilitySink:
         ):
             raise ValueError(f"{event_type} requires nonblank work_unit_id")
         safe = {key: value for key, value in fields.items() if key in self._fields}
+        if "usage" in safe and not isinstance(safe["usage"], dict):
+            safe.pop("usage")
+        if "cost" in safe and not isinstance(safe["cost"], dict):
+            safe.pop("cost")
         if isinstance(safe.get("usage"), dict):
             safe["usage"] = {
                 key: value for key, value in safe["usage"].items()
