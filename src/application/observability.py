@@ -23,7 +23,7 @@ class JsonlObservabilitySink:
     _fields = {
         "event_id", "timestamp", "orchestration_id", "work_unit_id",
         "execution_id", "external_id", "role", "skills",
-        "model", "provider", "attempt", "wave", "status", "verdict",
+        "model", "provider", "thinking", "attempt", "wave", "status", "verdict",
         "runtime_status",
         "usage", "cost",
     }

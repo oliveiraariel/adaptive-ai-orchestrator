@@ -47,9 +47,9 @@ class _RoutingExecutionState:
 class OpenClawAdapter(AgentRuntime):
     """Translates the internal AgentRuntime seam to an OpenClaw client.
 
-    Model routing is enforced at the runtime boundary. This keeps planner and
-    worker calls under one deterministic policy even when upstream planning
-    code leaves model/provider unspecified.
+    Model and thinking routing are enforced at the runtime boundary. This keeps
+    planner and worker calls under one deterministic policy even when upstream
+    planning code leaves model/provider/thinking unspecified.
     """
 
     RUNTIME_NAME = "openclaw"
@@ -74,14 +74,22 @@ class OpenClawAdapter(AgentRuntime):
         assert configuration is not None
 
         decision = self._routing_policy.select(task)
+        thinking_constraint = (
+            f"adaptive-thinking-level:{decision.thinking}"
+            if decision.thinking is not None
+            else "adaptive-thinking-level:provider-native"
+        )
         routed_configuration = replace(
             configuration,
             model=decision.model,
             provider=decision.provider,
+            thinking=decision.thinking,
             policy_constraints=(
                 *configuration.policy_constraints,
                 f"adaptive-model-tier:{decision.tier}",
                 f"adaptive-model-routing-reason:{decision.reason}",
+                thinking_constraint,
+                f"adaptive-thinking-routing-reason:{decision.thinking_reason}",
             ),
         )
 
@@ -98,6 +106,8 @@ class OpenClawAdapter(AgentRuntime):
                 "tier": decision.tier,
                 "reason": decision.reason,
                 "attempt": decision.attempt,
+                "thinking": decision.thinking,
+                "thinking_reason": decision.thinking_reason,
                 "escalated_from": decision.escalated_from,
             }
         )
@@ -124,6 +134,7 @@ class OpenClawAdapter(AgentRuntime):
             work_unit_id=task.work_unit_id,
             execution_id=execution.id, external_id=external_id,
             model=decision.model, provider=decision.provider,
+            thinking=decision.thinking,
             attempt=decision.attempt, skills=list(configuration.skills),
         )
         self._audit.append(
@@ -139,6 +150,8 @@ class OpenClawAdapter(AgentRuntime):
                 "tier": decision.tier,
                 "reason": decision.reason,
                 "attempt": decision.attempt,
+                "thinking": decision.thinking,
+                "thinking_reason": decision.thinking_reason,
                 "escalated_from": decision.escalated_from,
             }
         )
@@ -179,6 +192,8 @@ class OpenClawAdapter(AgentRuntime):
                         "provider": state.decision.provider,
                         "tier": state.decision.tier,
                         "attempt": state.decision.attempt,
+                        "thinking": state.decision.thinking,
+                        "thinking_reason": state.decision.thinking_reason,
                         "elapsed_seconds": round(
                             max(0.0, time.monotonic() - state.started_monotonic),
                             3,
@@ -202,6 +217,7 @@ class OpenClawAdapter(AgentRuntime):
                 external_id=execution.external_id,
                 model=state.decision.model,
                 provider=state.decision.provider,
+                thinking=state.decision.thinking,
                 attempt=state.decision.attempt,
                 status=status.value,
                 usage=usage,
@@ -220,6 +236,8 @@ class OpenClawAdapter(AgentRuntime):
                     "tier": state.decision.tier,
                     "reason": state.decision.reason,
                     "attempt": state.decision.attempt,
+                    "thinking": state.decision.thinking,
+                    "thinking_reason": state.decision.thinking_reason,
                     "escalated_from": state.decision.escalated_from,
                     "runtime_status": status.value,
                     **({"usage": usage} if usage else {}),
@@ -300,6 +318,8 @@ class OpenClawAdapter(AgentRuntime):
                     "provider": state.decision.provider,
                     "tier": state.decision.tier,
                     "attempt": state.decision.attempt,
+                    "thinking": state.decision.thinking,
+                    "thinking_reason": state.decision.thinking_reason,
                     "elapsed_seconds": round(
                         max(0.0, time.monotonic() - state.started_monotonic),
                         3,
@@ -333,6 +353,7 @@ class OpenClawAdapter(AgentRuntime):
                 "skills": effective_configuration.skills,
                 "model": effective_configuration.model,
                 "provider": effective_configuration.provider,
+                "thinking": effective_configuration.thinking,
                 "tools": effective_configuration.tools,
                 "runtime": effective_configuration.runtime,
                 "policy_constraints": effective_configuration.policy_constraints,

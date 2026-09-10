@@ -15,6 +15,7 @@ class ResourceConfiguration:
     tools: Tuple[str, ...] = field(default_factory=tuple)
     runtime: str | None = None
     policy_constraints: Tuple[str, ...] = field(default_factory=tuple)
+    thinking: str | None = None
 
     def __post_init__(self) -> None:
         if not self.agent or not self.agent.strip():
@@ -30,6 +31,11 @@ class ResourceConfiguration:
         if self.provider is not None and not self.provider.strip():
             raise ResourceConfigurationError(
                 "ResourceConfiguration provider must not be blank when provided."
+            )
+
+        if self.thinking is not None and not self.thinking.strip():
+            raise ResourceConfigurationError(
+                "ResourceConfiguration thinking must not be blank when provided."
             )
 
         if self.runtime is not None and not self.runtime.strip():
