@@ -81,6 +81,13 @@ class OpenClawGatewayClient(OpenClawClient):
         }
         model = configuration.get("model")
         provider = configuration.get("provider")
+        thinking = configuration.get("thinking")
+
+        if isinstance(thinking, str) and thinking.strip():
+            # The Gateway `agent` RPC accepts a turn-level `thinking` value.
+            # This keeps adaptive reasoning explicit without elevating this
+            # client to operator.admin solely to patch privileged session state.
+            params["thinking"] = thinking.strip()
 
         if model:
             model_ref = str(model)
