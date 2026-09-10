@@ -54,6 +54,22 @@ class JsonlObservabilitySink:
         ):
             raise ValueError(f"{event_type} requires nonblank work_unit_id")
         safe = {key: value for key, value in fields.items() if key in self._fields}
+        if isinstance(safe.get("usage"), dict):
+            safe["usage"] = {
+                key: value for key, value in safe["usage"].items()
+                if key in {"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"}
+                and isinstance(value, int) and value >= 0
+            }
+        if isinstance(safe.get("cost"), dict):
+            raw_cost = safe["cost"]
+            cost: dict[str, Any] = {}
+            if raw_cost.get("status") in {"actual", "estimated", "unknown"}:
+                cost["status"] = raw_cost["status"]
+            if isinstance(raw_cost.get("usd"), (int, float)) and raw_cost["usd"] >= 0:
+                cost["usd"] = raw_cost["usd"]
+            if isinstance(raw_cost.get("pricing_source"), str):
+                cost["pricing_source"] = raw_cost["pricing_source"][:300]
+            safe["cost"] = cost
         safe["event_type"] = event_type
         safe.setdefault("event_id", f"adaptive:{uuid4().hex}")
         safe.setdefault("timestamp", datetime.now(timezone.utc).isoformat())

@@ -379,6 +379,12 @@ class OpenClawGatewayClient(OpenClawClient):
         for message in reversed(messages):
             if not isinstance(message, dict) or message.get("role") != "assistant":
                 continue
+            content = message.get("content")
+            if not isinstance(content, list) or not any(
+                isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+                for block in content
+            ):
+                continue
             metadata: dict[str, Any] = {}
             for key in ("usage", "token_usage", "cost"):
                 value = message.get(key)
