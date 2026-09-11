@@ -21,8 +21,9 @@ The active automatic policy is:
 - **GPT-5.6 Sol is excluded from automatic Adaptive routing by default**.
 
 The OpenClaw owner session may also be pinned manually to `moonshot/kimi-k3` with
-`low` reasoning. That owner-session choice is distinct from worker routing,
-but it intentionally matches the default orchestration role.
+`max` reasoning on the direct Moonshot route. That owner-session choice is
+distinct from worker routing, but it intentionally matches the default
+orchestration role.
 
 ## Default routing matrix
 
@@ -146,6 +147,10 @@ Task classification and primary routing are enforced in
 Operational provider failover is enforced in
 `OpenClawGatewayClient.retrieve_result()`, because billing/rate/auth/provider
 failures become visible only after an OpenClaw run executes.
+
+Provider failures are first classified by Adaptive Runtime Intelligence into
+structured incident categories/subtypes and passed through remediation and
+temporary provider-health policy. See [Adaptive Runtime Intelligence](runtime-intelligence.md).
 
 ## Audit and observability
 
