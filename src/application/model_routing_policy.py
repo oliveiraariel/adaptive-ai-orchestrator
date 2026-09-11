@@ -21,34 +21,40 @@ class ModelRoutingDecision:
 
 @dataclass(frozen=True)
 class ModelRoutingPolicy:
-    """Deterministic model-and-thinking routing for Adaptive/OpenClaw.
+    """Deterministic two-model routing for Adaptive/OpenClaw.
 
-    Policy goals:
-    - reserve the strongest model for planning, architecture, governance,
-      high-stakes analysis and code review;
-    - use the economical model for routine/mechanical implementation work;
-    - use high reasoning for substantive coding regardless of whether Luna or
-      Sol is selected;
-    - keep routine non-code work at medium reasoning;
-    - escalate code/test implementation to the code-specialist model after a
-      failed/revision attempt or when the task is explicitly remedial;
-    - preserve explicit model/thinking choices when they are compatible with
-      the selected provider model.
+    Active policy:
+    - Kimi K2.7 Code handles strong/complex responsibilities, complex first-pass
+      code, retries, remediation, security, architecture and review;
+    - GPT-5.6 Luna handles routine/mechanical work and routine first-pass code;
+    - Luna always uses medium reasoning;
+    - Kimi keeps provider-native reasoning;
+    - GPT-5.6 Sol is excluded from automatic routing.
     """
 
-    strong_model: str = "openai/gpt-5.6-sol"
+    strong_model: str = "moonshot/kimi-k2.7-code"
     economy_model: str = "openai/gpt-5.6-luna"
     code_specialist_model: str = "moonshot/kimi-k2.7-code"
-    strong_thinking: str = "high"
-    code_thinking: str = "high"
+    strong_thinking: str = "medium"
+    code_thinking: str = "medium"
     routine_thinking: str = "medium"
+    disabled_models: tuple[str, ...] = ("openai/gpt-5.6-sol",)
 
     @classmethod
     def from_env(cls) -> "ModelRoutingPolicy":
+        disabled = os.environ.get(
+            "ADAPTIVE_DISABLED_MODELS",
+            "openai/gpt-5.6-sol",
+        )
+        disabled_models = tuple(
+            item.strip()
+            for item in disabled.split(",")
+            if item.strip()
+        )
         return cls(
             strong_model=os.environ.get(
                 "ADAPTIVE_STRONG_MODEL",
-                "openai/gpt-5.6-sol",
+                "moonshot/kimi-k2.7-code",
             ),
             economy_model=os.environ.get(
                 "ADAPTIVE_ECONOMY_MODEL",
@@ -60,16 +66,17 @@ class ModelRoutingPolicy:
             ),
             strong_thinking=os.environ.get(
                 "ADAPTIVE_STRONG_THINKING",
-                "high",
+                "medium",
             ),
             code_thinking=os.environ.get(
                 "ADAPTIVE_CODE_THINKING",
-                "high",
+                "medium",
             ),
             routine_thinking=os.environ.get(
                 "ADAPTIVE_ROUTINE_THINKING",
                 "medium",
             ),
+            disabled_models=disabled_models,
         )
 
     def select(self, task: TaskPackage) -> ModelRoutingDecision:
@@ -83,18 +90,20 @@ class ModelRoutingPolicy:
             configuration.skills,
         )
         code_or_test = self._is_code_or_test_work(primary_text, all_text)
+        complex_code = code_or_test and self._is_complex_code_work(all_text)
         remedial = self._is_remedial_work(all_text)
 
-        if configuration.model:
+        explicit_model = configuration.model
+        if explicit_model and not self.is_disabled(explicit_model):
             thinking, thinking_reason = self._thinking_for_explicit_model(
-                configuration.model,
+                explicit_model,
                 requested=configuration.thinking,
                 strong_responsibility=strong_responsibility,
                 code_or_test=code_or_test,
             )
             return ModelRoutingDecision(
-                model=configuration.model,
-                provider=configuration.provider or self._provider(configuration.model),
+                model=explicit_model,
+                provider=configuration.provider or self._provider(explicit_model),
                 tier="explicit",
                 reason="explicit-model-override",
                 attempt=attempt,
@@ -109,7 +118,7 @@ class ModelRoutingPolicy:
                 reason="analytical-managerial-high-stakes-or-review",
                 attempt=attempt,
                 thinking=self.strong_thinking,
-                thinking_reason="strong-responsibility-high-reasoning",
+                thinking_reason="strong-responsibility-model-policy",
             )
 
         if code_or_test and (attempt >= 2 or remedial):
@@ -128,6 +137,16 @@ class ModelRoutingPolicy:
                 escalated_from=self.economy_model,
             )
 
+        if complex_code:
+            return self._decision(
+                self.code_specialist_model,
+                tier="code-specialist",
+                reason="complex-code-or-test-first-attempt",
+                attempt=attempt,
+                thinking=None,
+                thinking_reason="provider-native-code-specialist-reasoning",
+            )
+
         if code_or_test:
             return self._decision(
                 self.economy_model,
@@ -135,7 +154,7 @@ class ModelRoutingPolicy:
                 reason="routine-code-or-test-first-attempt",
                 attempt=attempt,
                 thinking=self.code_thinking,
-                thinking_reason="code-or-test-high-reasoning",
+                thinking_reason="routine-code-medium-reasoning",
             )
 
         return self._decision(
@@ -146,6 +165,56 @@ class ModelRoutingPolicy:
             thinking=self.routine_thinking,
             thinking_reason="routine-non-code-medium-reasoning",
         )
+
+    def fallback_for(
+        self,
+        decision: ModelRoutingDecision,
+        *,
+        failure_reason: str,
+    ) -> ModelRoutingDecision | None:
+        """Return the other active model for operational failover.
+
+        The active pair is intentionally Luna <-> Kimi. Disabled models are
+        never selected as fallback candidates.
+        """
+        normalized = decision.model.strip().casefold()
+        economy = self.economy_model.strip().casefold()
+        strong = self.strong_model.strip().casefold()
+        specialist = self.code_specialist_model.strip().casefold()
+
+        if normalized == economy:
+            target = self.code_specialist_model
+        elif normalized in {strong, specialist}:
+            target = self.economy_model
+        else:
+            return None
+
+        if target.strip().casefold() == normalized or self.is_disabled(target):
+            return None
+
+        thinking = None if self._uses_provider_native_thinking(target) else self.routine_thinking
+        thinking_reason = (
+            "provider-native-code-specialist-reasoning"
+            if thinking is None
+            else "operational-fallback-medium-reasoning"
+        )
+        return ModelRoutingDecision(
+            model=target,
+            provider=self._provider(target),
+            tier="fallback",
+            reason=f"operational-fallback-after-{failure_reason}",
+            attempt=decision.attempt,
+            thinking=thinking,
+            thinking_reason=thinking_reason,
+            escalated_from=decision.model,
+        )
+
+    def is_disabled(self, model: str) -> bool:
+        normalized = model.strip().casefold()
+        return normalized in {
+            item.strip().casefold()
+            for item in self.disabled_models
+        }
 
     def _decision(
         self,
@@ -158,6 +227,8 @@ class ModelRoutingPolicy:
         thinking_reason: str,
         escalated_from: str | None = None,
     ) -> ModelRoutingDecision:
+        if self.is_disabled(model):
+            raise ValueError(f"Adaptive model routing selected disabled model: {model}")
         if self._uses_provider_native_thinking(model):
             thinking = None
             thinking_reason = "provider-native-code-specialist-reasoning"
@@ -185,10 +256,12 @@ class ModelRoutingPolicy:
             return None, "provider-native-code-specialist-reasoning"
         if requested is not None:
             return requested, "explicit-thinking-override"
+        if model.strip().casefold() == self.economy_model.strip().casefold():
+            return self.routine_thinking, "economy-model-medium-reasoning"
         if strong_responsibility:
-            return self.strong_thinking, "strong-responsibility-high-reasoning"
+            return self.strong_thinking, "strong-responsibility-model-policy"
         if code_or_test:
-            return self.code_thinking, "code-or-test-high-reasoning"
+            return self.code_thinking, "routine-code-medium-reasoning"
         return self.routine_thinking, "routine-non-code-medium-reasoning"
 
     @staticmethod
@@ -359,6 +432,40 @@ class ModelRoutingPolicy:
             "rest api",
         )
         return cls._contains_any(primary_text, terms) or cls._contains_any(all_text, terms)
+
+    @classmethod
+    def _is_complex_code_work(cls, text: str) -> bool:
+        terms = (
+            "atomic",
+            "atomicidade",
+            "transaction",
+            "transação",
+            "rollback",
+            "concurrency",
+            "concorrência",
+            "authorization",
+            "autorização",
+            "authentication",
+            "autenticação",
+            "security",
+            "segurança",
+            "financial consistency",
+            "consistência financeira",
+            "saldo",
+            "transferência",
+            "transferencia",
+            "migration",
+            "migração",
+            "cross-cutting",
+            "multi-file",
+            "multiple files",
+            "múltiplos arquivos",
+            "state machine",
+            "distributed",
+            "idempotency",
+            "idempotência",
+        )
+        return cls._contains_any(text, terms)
 
     @classmethod
     def _is_remedial_work(cls, text: str) -> bool:

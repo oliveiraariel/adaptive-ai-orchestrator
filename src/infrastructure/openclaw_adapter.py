@@ -208,16 +208,67 @@ class OpenClawAdapter(AgentRuntime):
         usage = self._extract_usage(raw_result)
         cost = self._extract_cost(raw_result)
 
+        effective_model = state.decision.model if state is not None else None
+        effective_provider = state.decision.provider if state is not None else None
+        effective_thinking = state.decision.thinking if state is not None else None
+        failover: dict[str, object] | None = None
+        if isinstance(raw_result, dict):
+            candidate = raw_result.get("model_failover")
+            if isinstance(candidate, dict) and candidate.get("triggered") is True:
+                failover = candidate
+                to_model = candidate.get("to_model")
+                to_provider = candidate.get("to_provider")
+                if isinstance(to_model, str) and to_model:
+                    effective_model = to_model
+                if isinstance(to_provider, str) and to_provider:
+                    effective_provider = to_provider
+                if (
+                    isinstance(effective_model, str)
+                    and effective_model.casefold().startswith("moonshot/kimi-k2.7-code")
+                ):
+                    effective_thinking = None
+                elif isinstance(effective_model, str):
+                    effective_thinking = "medium"
+
         if state is not None:
+            if failover is not None:
+                self._observability.emit(
+                    "model_failover",
+                    orchestration_id=state.orchestration_id,
+                    work_unit_id=state.work_unit_id,
+                    execution_id=execution.id,
+                    external_id=execution.external_id,
+                    from_model=failover.get("from_model"),
+                    to_model=effective_model,
+                    provider=effective_provider,
+                    reason=failover.get("reason"),
+                    runtime_attempt=failover.get("runtime_attempt"),
+                )
+                self._audit.append(
+                    {
+                        "event": "model-failover",
+                        "task_id": state.task_id,
+                        "orchestration_id": state.orchestration_id,
+                        "work_unit_id": state.work_unit_id,
+                        "execution_id": execution.id,
+                        "external_id": execution.external_id,
+                        "from_model": failover.get("from_model"),
+                        "to_model": effective_model,
+                        "to_provider": effective_provider,
+                        "failure_reason": failover.get("reason"),
+                        "runtime_attempt": failover.get("runtime_attempt"),
+                    }
+                )
+
             self._observability.emit(
                 "work_unit_status_changed",
                 orchestration_id=state.orchestration_id,
                 work_unit_id=state.work_unit_id,
                 execution_id=execution.id,
                 external_id=execution.external_id,
-                model=state.decision.model,
-                provider=state.decision.provider,
-                thinking=state.decision.thinking,
+                model=effective_model,
+                provider=effective_provider,
+                thinking=effective_thinking,
                 attempt=state.decision.attempt,
                 status=status.value,
                 usage=usage,
@@ -231,14 +282,32 @@ class OpenClawAdapter(AgentRuntime):
                     "work_unit_id": state.work_unit_id,
                     "execution_id": execution.id,
                     "external_id": execution.external_id,
-                    "model": state.decision.model,
-                    "provider": state.decision.provider,
-                    "tier": state.decision.tier,
-                    "reason": state.decision.reason,
+                    "model": effective_model,
+                    "provider": effective_provider,
+                    "tier": (
+                        "fallback" if failover is not None else state.decision.tier
+                    ),
+                    "reason": (
+                        f"operational-fallback-after-{failover.get('reason')}"
+                        if failover is not None
+                        else state.decision.reason
+                    ),
                     "attempt": state.decision.attempt,
-                    "thinking": state.decision.thinking,
-                    "thinking_reason": state.decision.thinking_reason,
-                    "escalated_from": state.decision.escalated_from,
+                    "thinking": effective_thinking,
+                    "thinking_reason": (
+                        "provider-native-code-specialist-reasoning"
+                        if effective_thinking is None
+                        else (
+                            "operational-fallback-medium-reasoning"
+                            if failover is not None
+                            else state.decision.thinking_reason
+                        )
+                    ),
+                    "escalated_from": (
+                        failover.get("from_model")
+                        if failover is not None
+                        else state.decision.escalated_from
+                    ),
                     "runtime_status": status.value,
                     **({"usage": usage} if usage else {}),
                     **({"cost": cost} if cost else {}),

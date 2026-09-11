@@ -4,7 +4,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 from infrastructure.openclaw_adapter import OpenClawClient
@@ -49,6 +49,8 @@ class GatewayConfig:
 class GatewayRun:
     run_id: str
     session_key: str
+    task_payload: dict[str, Any] = field(default_factory=dict)
+    runtime_attempt: int = 1
 
 
 @dataclass(frozen=True)
@@ -116,10 +118,21 @@ class OpenClawGatewayClient(OpenClawClient):
         self._archive_outcomes: dict[str, SessionArchiveOutcome] = {}
 
     def submit(self, task_payload: dict) -> str:
+        return self._submit_task(task_payload, runtime_attempt=1)
+
+    def _submit_task(
+        self,
+        task_payload: dict[str, Any],
+        *,
+        runtime_attempt: int,
+    ) -> str:
         task_id = str(task_payload["task_id"])
         configuration = task_payload["configuration"]
         agent_id = str(configuration["agent"])
         session_key = f"agent:{agent_id}:orchestrator:{task_id}"
+        idempotency_key = f"orchestrator:{task_id}"
+        if runtime_attempt > 1:
+            idempotency_key = f"{idempotency_key}:runtime-fallback:{runtime_attempt}"
 
         params: dict[str, Any] = {
             "message": self._build_message(task_payload),
@@ -127,7 +140,7 @@ class OpenClawGatewayClient(OpenClawClient):
             "sessionKey": session_key,
             "deliver": False,
             "timeout": self._config.agent_timeout_seconds,
-            "idempotencyKey": f"orchestrator:{task_id}",
+            "idempotencyKey": idempotency_key,
         }
         model = configuration.get("model")
         provider = configuration.get("provider")
@@ -162,7 +175,12 @@ class OpenClawGatewayClient(OpenClawClient):
             )
 
         external_id = f"gateway:{run_id}"
-        self._runs[external_id] = GatewayRun(run_id=run_id, session_key=session_key)
+        self._runs[external_id] = GatewayRun(
+            run_id=run_id,
+            session_key=session_key,
+            task_payload=dict(task_payload),
+            runtime_attempt=runtime_attempt,
+        )
         return external_id
 
     def get_status(self, external_id: str) -> str:
@@ -181,6 +199,54 @@ class OpenClawGatewayClient(OpenClawClient):
     def retrieve_result(self, external_id: str) -> object:
         run = self._get_run(external_id)
 
+        try:
+            return self._retrieve_result_for_run(external_id, run)
+        except OpenClawGatewayError as exc:
+            reason = self._classify_failover_error(exc)
+            fallback_payload = self._build_failover_payload(run, reason)
+            if fallback_payload is None:
+                raise
+
+            fallback_external_id = self._submit_task(
+                fallback_payload,
+                runtime_attempt=run.runtime_attempt + 1,
+            )
+            fallback_run = self._get_run(fallback_external_id)
+
+            try:
+                result = self._retrieve_result_for_run(
+                    fallback_external_id,
+                    fallback_run,
+                )
+            except OpenClawGatewayError:
+                raise
+
+            # Keep callers holding the original ExecutionReference on the
+            # successful runtime candidate. get_status/cancel continue to work
+            # without changing the application-level execution id.
+            self._runs[external_id] = fallback_run
+
+            if isinstance(result, dict):
+                result = dict(result)
+                original_model = str(
+                    run.task_payload.get("configuration", {}).get("model") or ""
+                )
+                fallback_configuration = fallback_payload["configuration"]
+                result["model_failover"] = {
+                    "triggered": True,
+                    "reason": reason,
+                    "from_model": original_model,
+                    "to_model": fallback_configuration.get("model"),
+                    "to_provider": fallback_configuration.get("provider"),
+                    "runtime_attempt": fallback_run.runtime_attempt,
+                }
+            return result
+
+    def _retrieve_result_for_run(
+        self,
+        external_id: str,
+        run: GatewayRun,
+    ) -> object:
         result = self._wait_for_result(run.run_id)
         status = self._normalize_wait_status(result.get("status"))
 
@@ -217,6 +283,178 @@ class OpenClawGatewayClient(OpenClawClient):
             **metadata,
             **({"session_lifecycle": lifecycle} if lifecycle is not None else {}),
         }
+
+    def _build_failover_payload(
+        self,
+        run: GatewayRun,
+        reason: str | None,
+    ) -> dict[str, Any] | None:
+        if reason is None or run.runtime_attempt >= 2:
+            return None
+
+        configuration = run.task_payload.get("configuration")
+        if not isinstance(configuration, dict):
+            return None
+
+        current_model = str(configuration.get("model") or "").strip()
+        economy_model = os.environ.get(
+            "ADAPTIVE_ECONOMY_MODEL",
+            "openai/gpt-5.6-luna",
+        ).strip()
+        strong_model = os.environ.get(
+            "ADAPTIVE_STRONG_MODEL",
+            "moonshot/kimi-k2.7-code",
+        ).strip()
+        specialist_model = os.environ.get(
+            "ADAPTIVE_CODE_SPECIALIST_MODEL",
+            "moonshot/kimi-k2.7-code",
+        ).strip()
+        disabled_models = {
+            item.strip().casefold()
+            for item in os.environ.get(
+                "ADAPTIVE_DISABLED_MODELS",
+                "openai/gpt-5.6-sol",
+            ).split(",")
+            if item.strip()
+        }
+
+        normalized = current_model.casefold()
+        if normalized == economy_model.casefold():
+            fallback_model = specialist_model
+        elif normalized in {
+            strong_model.casefold(),
+            specialist_model.casefold(),
+        }:
+            fallback_model = economy_model
+        else:
+            return None
+
+        if (
+            not fallback_model
+            or fallback_model.casefold() == normalized
+            or fallback_model.casefold() in disabled_models
+        ):
+            return None
+
+        fallback_configuration = dict(configuration)
+        fallback_configuration["model"] = fallback_model
+        fallback_configuration["provider"] = self._provider_from_model(
+            fallback_model
+        )
+        fallback_configuration["thinking"] = (
+            None
+            if fallback_model.casefold()
+            in {
+                "moonshot/kimi-k2.7-code",
+                "moonshot/kimi-k2.7-code-highspeed",
+            }
+            else os.environ.get("ADAPTIVE_ROUTINE_THINKING", "medium")
+        )
+        constraints = list(
+            fallback_configuration.get("policy_constraints") or ()
+        )
+        constraints.extend(
+            (
+                f"adaptive-operational-failover:{reason}",
+                f"adaptive-failover-from:{current_model}",
+                f"adaptive-failover-to:{fallback_model}",
+            )
+        )
+        fallback_configuration["policy_constraints"] = constraints
+
+        context = list(run.task_payload.get("context") or ())
+        context.append(
+            "Adaptive automatic operational failover: the previous model "
+            f"failed because of {reason}. Continue in the same worker session. "
+            "Inspect the transcript and repository state first; preserve "
+            "completed work and side effects, do not blindly repeat completed "
+            "actions, and continue idempotently from the interrupted point."
+        )
+
+        return {
+            **run.task_payload,
+            "configuration": fallback_configuration,
+            "context": context,
+        }
+
+    @staticmethod
+    def _classify_failover_error(
+        exc: OpenClawGatewayError,
+    ) -> str | None:
+        message = str(exc).casefold()
+
+        billing_terms = (
+            "insufficient credits",
+            "insufficient credit",
+            "insufficient quota",
+            "no credits remaining",
+            "credit balance",
+            "balance too low",
+            "billing",
+            "payment required",
+            "quota balance",
+        )
+        if any(term in message for term in billing_terms):
+            return "billing"
+
+        rate_limit_terms = (
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "429",
+            "throttl",
+            "resource exhausted",
+            "usage limit",
+            "weekly limit",
+            "monthly limit",
+            "quota limit",
+            "concurrency limit",
+        )
+        if any(term in message for term in rate_limit_terms):
+            return "rate_limit"
+
+        auth_terms = (
+            "authentication",
+            "unauthorized",
+            "invalid api key",
+            "invalid key",
+            "login required",
+            "401",
+            "403",
+        )
+        if any(term in message for term in auth_terms):
+            return "auth"
+
+        timeout_terms = (
+            "timed out",
+            "timeout",
+        )
+        if any(term in message for term in timeout_terms):
+            return "timeout"
+
+        unavailable_terms = (
+            "unavailable",
+            "overloaded",
+            "at capacity",
+            "temporarily unavailable",
+            "model not found",
+            "not available",
+            "server error",
+            "502",
+            "503",
+            "504",
+        )
+        if any(term in message for term in unavailable_terms):
+            return "unavailable"
+
+        return None
+
+    @staticmethod
+    def _provider_from_model(model: str) -> str:
+        normalized = model.strip()
+        if "/" in normalized:
+            return normalized.split("/", 1)[0]
+        return "openai"
 
     def _wait_for_result(self, run_id: str) -> dict[str, Any]:
         """Poll bounded Gateway waits; timeout is an intermediate state."""
