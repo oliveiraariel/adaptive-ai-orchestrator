@@ -401,6 +401,7 @@ class OpenClawGatewayClient(OpenClawClient):
             "rate limit",
             "rate_limit",
             "too many requests",
+            "slow down",
             "429",
             "throttl",
             "resource exhausted",
