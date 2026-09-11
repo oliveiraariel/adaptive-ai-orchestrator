@@ -4,7 +4,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 from infrastructure.openclaw_adapter import OpenClawClient
@@ -49,7 +49,7 @@ class GatewayConfig:
 class GatewayRun:
     run_id: str
     session_key: str
-    task_payload: dict[str, Any]
+    task_payload: dict[str, Any] = field(default_factory=dict)
     runtime_attempt: int = 1
 
 
