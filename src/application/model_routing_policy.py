@@ -21,21 +21,26 @@ class ModelRoutingDecision:
 
 @dataclass(frozen=True)
 class ModelRoutingPolicy:
-    """Deterministic two-model routing for Adaptive/OpenClaw.
+    """Deterministic role-aware routing for Adaptive/OpenClaw.
 
     Active policy:
-    - Kimi K2.7 Code handles strong/complex responsibilities, complex first-pass
-      code, retries, remediation, security, architecture and review;
+    - Kimi K3 handles orchestration, project discovery, planning, governance,
+      synthesis and systemic/high-level architecture;
+    - Kimi K2.7 Code handles code-specialist work, code-level architecture,
+      complex implementation, review, retries and remediation;
     - GPT-5.6 Luna handles routine/mechanical work and routine first-pass code;
-    - Luna always uses medium reasoning;
-    - Kimi keeps provider-native reasoning;
+    - K3 defaults to low reasoning and escalates to high only for explicitly
+      critical systemic work;
+    - Luna runs at medium reasoning;
+    - K2.7 Code keeps provider-native reasoning;
     - GPT-5.6 Sol is excluded from automatic routing.
     """
 
-    strong_model: str = "moonshot/kimi-k2.7-code"
+    strong_model: str = "kimi/k3"
     economy_model: str = "openai/gpt-5.6-luna"
     code_specialist_model: str = "moonshot/kimi-k2.7-code"
-    strong_thinking: str = "medium"
+    strong_thinking: str = "low"
+    critical_thinking: str = "high"
     code_thinking: str = "medium"
     routine_thinking: str = "medium"
     disabled_models: tuple[str, ...] = ("openai/gpt-5.6-sol",)
@@ -54,7 +59,7 @@ class ModelRoutingPolicy:
         return cls(
             strong_model=os.environ.get(
                 "ADAPTIVE_STRONG_MODEL",
-                "moonshot/kimi-k2.7-code",
+                "kimi/k3",
             ),
             economy_model=os.environ.get(
                 "ADAPTIVE_ECONOMY_MODEL",
@@ -66,7 +71,11 @@ class ModelRoutingPolicy:
             ),
             strong_thinking=os.environ.get(
                 "ADAPTIVE_STRONG_THINKING",
-                "medium",
+                "low",
+            ),
+            critical_thinking=os.environ.get(
+                "ADAPTIVE_CRITICAL_THINKING",
+                "high",
             ),
             code_thinking=os.environ.get(
                 "ADAPTIVE_CODE_THINKING",
@@ -88,6 +97,14 @@ class ModelRoutingPolicy:
         strong_responsibility = self._is_strong_responsibility(
             primary_text,
             configuration.skills,
+        )
+        code_specialist_responsibility = self._is_code_specialist_responsibility(
+            primary_text,
+            all_text,
+        )
+        critical_systemic = (
+            strong_responsibility
+            and self._is_critical_systemic_work(all_text)
         )
         code_or_test = self._is_code_or_test_work(primary_text, all_text)
         complex_code = code_or_test and self._is_complex_code_work(all_text)
@@ -111,14 +128,36 @@ class ModelRoutingPolicy:
                 thinking_reason=thinking_reason,
             )
 
+        if code_specialist_responsibility:
+            return self._decision(
+                self.code_specialist_model,
+                tier="code-specialist",
+                reason="code-review-or-code-level-architecture",
+                attempt=attempt,
+                thinking=None,
+                thinking_reason="provider-native-code-specialist-reasoning",
+            )
+
         if strong_responsibility:
             return self._decision(
                 self.strong_model,
                 tier="strong",
-                reason="analytical-managerial-high-stakes-or-review",
+                reason=(
+                    "critical-systemic-orchestration"
+                    if critical_systemic
+                    else "orchestration-planning-or-systemic-architecture"
+                ),
                 attempt=attempt,
-                thinking=self.strong_thinking,
-                thinking_reason="strong-responsibility-model-policy",
+                thinking=(
+                    self.critical_thinking
+                    if critical_systemic
+                    else self.strong_thinking
+                ),
+                thinking_reason=(
+                    "critical-systemic-high-reasoning"
+                    if critical_systemic
+                    else "orchestrator-low-reasoning"
+                ),
             )
 
         if code_or_test and (attempt >= 2 or remedial):
@@ -172,10 +211,11 @@ class ModelRoutingPolicy:
         *,
         failure_reason: str,
     ) -> ModelRoutingDecision | None:
-        """Return the other active model for operational failover.
+        """Return the next role-compatible model for operational failover.
 
-        The active pair is intentionally Luna <-> Kimi. Disabled models are
-        never selected as fallback candidates.
+        Routine Luna work falls back to K2.7 Code. K3 orchestration falls back
+        to K2.7 Code. Direct K2.7 Code work falls back to Luna. Disabled models
+        are never selected as fallback candidates.
         """
         normalized = decision.model.strip().casefold()
         economy = self.economy_model.strip().casefold()
@@ -184,7 +224,9 @@ class ModelRoutingPolicy:
 
         if normalized == economy:
             target = self.code_specialist_model
-        elif normalized in {strong, specialist}:
+        elif normalized == strong:
+            target = self.code_specialist_model
+        elif normalized == specialist:
             target = self.economy_model
         else:
             return None
@@ -192,12 +234,15 @@ class ModelRoutingPolicy:
         if target.strip().casefold() == normalized or self.is_disabled(target):
             return None
 
-        thinking = None if self._uses_provider_native_thinking(target) else self.routine_thinking
-        thinking_reason = (
-            "provider-native-code-specialist-reasoning"
-            if thinking is None
-            else "operational-fallback-medium-reasoning"
-        )
+        if self._uses_provider_native_thinking(target):
+            thinking = None
+            thinking_reason = "provider-native-code-specialist-reasoning"
+        elif target.strip().casefold() == strong:
+            thinking = self.strong_thinking
+            thinking_reason = "operational-fallback-orchestrator-low-reasoning"
+        else:
+            thinking = self.routine_thinking
+            thinking_reason = "operational-fallback-medium-reasoning"
         return ModelRoutingDecision(
             model=target,
             provider=self._provider(target),
@@ -256,6 +301,8 @@ class ModelRoutingPolicy:
             return None, "provider-native-code-specialist-reasoning"
         if requested is not None:
             return requested, "explicit-thinking-override"
+        if model.strip().casefold() == self.strong_model.strip().casefold():
+            return self.strong_thinking, "orchestrator-model-low-reasoning"
         if model.strip().casefold() == self.economy_model.strip().casefold():
             return self.routine_thinking, "economy-model-medium-reasoning"
         if strong_responsibility:
@@ -376,12 +423,6 @@ class ModelRoutingPolicy:
             "analis",
             "analítico",
             "analítica",
-            "code review",
-            "review code",
-            "reviewer",
-            "revisão de código",
-            "revisor de código",
-            "security review",
             "security architecture",
             "segurança",
             "audit",
@@ -397,6 +438,55 @@ class ModelRoutingPolicy:
             "criticidade alta",
         )
         return cls._contains_any(text, strong_terms)
+
+    @classmethod
+    def _is_code_specialist_responsibility(
+        cls,
+        primary_text: str,
+        all_text: str,
+    ) -> bool:
+        terms = (
+            "code review",
+            "review code",
+            "reviewer",
+            "revisão de código",
+            "revisor de código",
+            "security code review",
+            "implementation review",
+            "revisão da implementação",
+            "code architecture",
+            "implementation architecture",
+            "architecture applied to code",
+            "arquitetura aplicada ao código",
+            "arquitetura aplicada ao codigo",
+            "refactor architecture",
+            "refatoração arquitetural do código",
+            "refatoracao arquitetural do codigo",
+        )
+        return cls._contains_any(primary_text, terms) or cls._contains_any(
+            all_text,
+            terms,
+        )
+
+    @classmethod
+    def _is_critical_systemic_work(cls, text: str) -> bool:
+        terms = (
+            "high-stakes",
+            "high stakes",
+            "critical decision",
+            "critical analysis",
+            "decisão crítica",
+            "análise crítica",
+            "criticidade alta",
+            "security architecture",
+            "arquitetura de segurança",
+            "system-wide",
+            "system wide",
+            "sistêmic",
+            "cross-cutting architecture",
+            "arquitetura transversal",
+        )
+        return cls._contains_any(text, terms)
 
     @classmethod
     def _is_code_or_test_work(cls, primary_text: str, all_text: str) -> bool:
