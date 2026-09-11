@@ -59,7 +59,7 @@ def read_events(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_adapter_enforces_luna_high_for_routine_code_and_audits_result(tmp_path) -> None:
+def test_adapter_enforces_luna_medium_for_routine_code_and_audits_result(tmp_path) -> None:
     client = FakeClient()
     log_path = tmp_path / "routing.jsonl"
     adapter = OpenClawAdapter(
@@ -76,9 +76,9 @@ def test_adapter_enforces_luna_high_for_routine_code_and_audits_result(tmp_path)
     submitted = client.submissions[0]["configuration"]
     assert submitted["model"] == "openai/gpt-5.6-luna"
     assert submitted["provider"] == "openai"
-    assert submitted["thinking"] == "high"
+    assert submitted["thinking"] == "medium"
     assert "adaptive-model-tier:economy" in submitted["policy_constraints"]
-    assert "adaptive-thinking-level:high" in submitted["policy_constraints"]
+    assert "adaptive-thinking-level:medium" in submitted["policy_constraints"]
     assert result.execution.status is AgentRuntimeStatus.COMPLETED
 
     events = read_events(log_path)
@@ -88,7 +88,7 @@ def test_adapter_enforces_luna_high_for_routine_code_and_audits_result(tmp_path)
         "runtime-result",
     ]
     assert events[-1]["model"] == "openai/gpt-5.6-luna"
-    assert events[-1]["thinking"] == "high"
+    assert events[-1]["thinking"] == "medium"
     assert events[-1]["runtime_status"] == "COMPLETED"
     assert events[-1]["elapsed_seconds"] >= 0
 
@@ -137,7 +137,7 @@ def test_adapter_escalates_second_code_attempt_to_kimi_without_thinking_override
     assert events[0]["thinking"] is None
 
 
-def test_adapter_preserves_explicit_openai_thinking_override(tmp_path) -> None:
+def test_adapter_does_not_dispatch_disabled_sol_override(tmp_path) -> None:
     client = FakeClient()
     adapter = OpenClawAdapter(
         client,
@@ -147,16 +147,16 @@ def test_adapter_preserves_explicit_openai_thinking_override(tmp_path) -> None:
 
     adapter.submit(
         make_task(
-            "Implementar código.",
+            "Implementar código PHP simples.",
             model="openai/gpt-5.6-sol",
             provider="openai",
-            thinking="xhigh",
+            thinking="high",
         )
     )
 
     submitted = client.submissions[0]["configuration"]
-    assert submitted["model"] == "openai/gpt-5.6-sol"
+    assert submitted["model"] == "openai/gpt-5.6-luna"
     assert submitted["provider"] == "openai"
-    assert submitted["thinking"] == "xhigh"
-    assert "adaptive-model-tier:explicit" in submitted["policy_constraints"]
-    assert "adaptive-thinking-level:xhigh" in submitted["policy_constraints"]
+    assert submitted["thinking"] == "medium"
+    assert "adaptive-model-tier:economy" in submitted["policy_constraints"]
+    assert "adaptive-thinking-level:medium" in submitted["policy_constraints"]
