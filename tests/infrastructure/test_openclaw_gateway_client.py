@@ -513,6 +513,89 @@ def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -
     assert client.get_status(external) == "COMPLETED"
 
 
+def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        )
+    )
+    patched_models: list[str] = []
+    agent_calls: list[dict] = []
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        if method == "sessions.patch":
+            patched_models.append(params["model"])
+            return {"ok": True}
+        if method == "agent":
+            agent_calls.append(params)
+            return {
+                "runId": f"run-{len(agent_calls)}",
+                "acceptedAt": 123,
+            }
+        if method == "agent.wait":
+            if params["runId"] == "run-1":
+                return {
+                    "status": "error",
+                    "error": "provider slow down retry later",
+                }
+            return {
+                "status": "ok",
+                "startedAt": 100,
+                "endedAt": 200,
+                "stopReason": "stop",
+            }
+        if method == "chat.history":
+            return {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "K27_RECOVERED"}],
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    external = client.submit(
+        {
+            "task_id": "task-k3-rate-failover",
+            "work_unit_id": "wu-k3-rate-failover",
+            "objective": "Definir arquitetura sistêmica.",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "kimi/k3",
+                "provider": "kimi",
+                "thinking": "low",
+                "policy_constraints": [],
+            },
+        }
+    )
+
+    result = client.retrieve_result(external)
+
+    assert result["output"] == "K27_RECOVERED"
+    assert result["model_failover"]["reason"] == "rate_limit"
+    assert result["model_failover"]["from_model"] == "kimi/k3"
+    assert result["model_failover"]["to_model"] == "moonshot/kimi-k2.7-code"
+    assert patched_models == [
+        "kimi/k3",
+        "moonshot/kimi-k2.7-code",
+    ]
+    fallback_message = json.loads(agent_calls[1]["message"])
+    assert fallback_message["configuration"]["thinking"] is None
+
+
 def test_gateway_automatically_fails_over_kimi_to_luna_on_rate_limit(monkeypatch) -> None:
     client = OpenClawGatewayClient(
         GatewayConfig(
