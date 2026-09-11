@@ -66,6 +66,32 @@ The developer remains the final authority over important project decisions.
 
 ---
 
+## Adaptive Runtime Intelligence
+
+The Orchestrator now includes a deterministic operational-diagnostics layer for
+provider/model failures. It distinguishes routing from runtime health and can
+classify billing, quota, authentication, timeout, provider availability and
+configuration incidents; correlate quota subtypes such as project budget, TPM,
+RPM and concurrency; detect credential-route mismatches, provider-catalog
+shadowing and stale effective context; and apply temporary circuit-breaker
+semantics without silently rewriting permanent routing policy.
+
+The current implementation is especially explicit about OpenAI and Kimi/Moonshot
+credential provenance:
+
+- OpenAI Platform API credentials are distinct from ChatGPT/Codex OAuth access;
+- Kimi Platform pay-as-you-go routes are distinct from Kimi Code membership
+  routes;
+- a generic HTTP 429 is treated as a symptom until stronger budget/rate evidence
+  identifies the actual cause.
+
+Sanitized incidents are recorded in
+`~/.local/state/adaptive-ai-orchestrator/provider-incidents.jsonl`, while
+governed troubleshooting knowledge lives in
+`knowledge/provider-operational-lessons.json`.
+
+See [`docs/runtime-intelligence.md`](docs/runtime-intelligence.md).
+
 ## Core Idea
 
 The project follows a workflow similar to:

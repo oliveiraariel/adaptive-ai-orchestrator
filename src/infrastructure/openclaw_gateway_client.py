@@ -7,7 +7,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
+from application.incident_classifier import IncidentClassifier
+from application.provider_health_policy import ProviderHealthPolicy
+from application.remediation_policy import RemediationPolicy
 from infrastructure.openclaw_adapter import OpenClawClient
+from infrastructure.provider_telemetry_store import ProviderTelemetryStore
 
 try:
     from websockets.sync.client import ClientConnection, connect
@@ -87,7 +91,15 @@ class OpenClawGatewayClient(OpenClawClient):
 
     RUNTIME_NAME = "openclaw-gateway"
 
-    def __init__(self, config: GatewayConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig | None = None,
+        *,
+        incident_classifier: IncidentClassifier | None = None,
+        remediation_policy: RemediationPolicy | None = None,
+        provider_health_policy: ProviderHealthPolicy | None = None,
+        provider_telemetry: ProviderTelemetryStore | None = None,
+    ) -> None:
         if _IMPORT_ERROR is not None:
             raise OpenClawGatewayError(
                 "The OpenClaw Gateway client requires the 'websockets' package. "
@@ -116,6 +128,10 @@ class OpenClawGatewayClient(OpenClawClient):
         )
         self._runs: dict[str, GatewayRun] = {}
         self._archive_outcomes: dict[str, SessionArchiveOutcome] = {}
+        self._incident_classifier = incident_classifier or IncidentClassifier()
+        self._remediation_policy = remediation_policy or RemediationPolicy()
+        self._provider_health = provider_health_policy or ProviderHealthPolicy()
+        self._provider_telemetry = provider_telemetry or ProviderTelemetryStore()
 
     def submit(self, task_payload: dict) -> str:
         return self._submit_task(task_payload, runtime_attempt=1)
@@ -200,9 +216,34 @@ class OpenClawGatewayClient(OpenClawClient):
         run = self._get_run(external_id)
 
         try:
-            return self._retrieve_result_for_run(external_id, run)
+            result = self._retrieve_result_for_run(external_id, run)
         except OpenClawGatewayError as exc:
-            reason = self._classify_failover_error(exc)
+            configuration = run.task_payload.get("configuration")
+            if not isinstance(configuration, dict):
+                raise
+            model = str(configuration.get("model") or "").strip()
+            provider = str(
+                configuration.get("provider")
+                or self._provider_from_model(model)
+            ).strip()
+            incident = self._incident_classifier.classify(
+                exc,
+                provider=provider,
+                model=model,
+            )
+            if incident is None:
+                raise
+
+            remediation = self._remediation_policy.decide(incident)
+            health = self._provider_health.record_failure(
+                incident,
+                cooldown_seconds=remediation.cooldown_seconds,
+            )
+            self._record_incident(run, incident, remediation)
+            if not remediation.fallback_allowed:
+                raise
+
+            reason = incident.failover_reason
             fallback_payload = self._build_failover_payload(run, reason)
             if fallback_payload is None:
                 raise
@@ -221,6 +262,17 @@ class OpenClawGatewayClient(OpenClawClient):
             except OpenClawGatewayError:
                 raise
 
+            fallback_configuration = fallback_payload["configuration"]
+            fallback_model = str(fallback_configuration.get("model") or "")
+            fallback_provider = str(
+                fallback_configuration.get("provider")
+                or self._provider_from_model(fallback_model)
+            )
+            self._provider_health.record_success(
+                fallback_provider,
+                fallback_model,
+            )
+
             # Keep callers holding the original ExecutionReference on the
             # successful runtime candidate. get_status/cancel continue to work
             # without changing the application-level execution id.
@@ -228,10 +280,7 @@ class OpenClawGatewayClient(OpenClawClient):
 
             if isinstance(result, dict):
                 result = dict(result)
-                original_model = str(
-                    run.task_payload.get("configuration", {}).get("model") or ""
-                )
-                fallback_configuration = fallback_payload["configuration"]
+                original_model = str(configuration.get("model") or "")
                 result["model_failover"] = {
                     "triggered": True,
                     "reason": reason,
@@ -239,7 +288,21 @@ class OpenClawGatewayClient(OpenClawClient):
                     "to_model": fallback_configuration.get("model"),
                     "to_provider": fallback_configuration.get("provider"),
                     "runtime_attempt": fallback_run.runtime_attempt,
+                    "incident": incident.as_payload(),
+                    "remediation": remediation.as_payload(),
+                    "circuit_state": health.state,
                 }
+            return result
+        else:
+            configuration = run.task_payload.get("configuration")
+            if isinstance(configuration, dict):
+                model = str(configuration.get("model") or "").strip()
+                provider = str(
+                    configuration.get("provider")
+                    or self._provider_from_model(model)
+                ).strip()
+                if model:
+                    self._provider_health.record_success(provider, model)
             return result
 
     def _retrieve_result_for_run(
@@ -303,7 +366,7 @@ class OpenClawGatewayClient(OpenClawClient):
         ).strip()
         strong_model = os.environ.get(
             "ADAPTIVE_STRONG_MODEL",
-            "kimi/k3",
+            "moonshot/kimi-k3",
         ).strip()
         specialist_model = os.environ.get(
             "ADAPTIVE_CODE_SPECIALIST_MODEL",
@@ -348,7 +411,7 @@ class OpenClawGatewayClient(OpenClawClient):
         elif fallback_model.casefold() == strong_model.casefold():
             fallback_configuration["thinking"] = os.environ.get(
                 "ADAPTIVE_STRONG_THINKING",
-                "low",
+                "max",
             )
         else:
             fallback_configuration["thinking"] = os.environ.get(
@@ -386,74 +449,34 @@ class OpenClawGatewayClient(OpenClawClient):
     def _classify_failover_error(
         exc: OpenClawGatewayError,
     ) -> str | None:
-        message = str(exc).casefold()
-
-        billing_terms = (
-            "insufficient credits",
-            "insufficient credit",
-            "insufficient quota",
-            "no credits remaining",
-            "credit balance",
-            "balance too low",
-            "billing",
-            "payment required",
-            "quota balance",
+        """Compatibility wrapper around the structured incident classifier."""
+        incident = IncidentClassifier().classify(
+            exc,
+            provider="unknown",
+            model="unknown",
         )
-        if any(term in message for term in billing_terms):
-            return "billing"
+        return incident.failover_reason if incident is not None else None
 
-        rate_limit_terms = (
-            "rate limit",
-            "rate_limit",
-            "too many requests",
-            "slow down",
-            "429",
-            "throttl",
-            "resource exhausted",
-            "usage limit",
-            "weekly limit",
-            "monthly limit",
-            "quota limit",
-            "concurrency limit",
-        )
-        if any(term in message for term in rate_limit_terms):
-            return "rate_limit"
-
-        auth_terms = (
-            "authentication",
-            "unauthorized",
-            "invalid api key",
-            "invalid key",
-            "login required",
-            "401",
-            "403",
-        )
-        if any(term in message for term in auth_terms):
-            return "auth"
-
-        timeout_terms = (
-            "timed out",
-            "timeout",
-        )
-        if any(term in message for term in timeout_terms):
-            return "timeout"
-
-        unavailable_terms = (
-            "unavailable",
-            "overloaded",
-            "at capacity",
-            "temporarily unavailable",
-            "model not found",
-            "not available",
-            "server error",
-            "502",
-            "503",
-            "504",
-        )
-        if any(term in message for term in unavailable_terms):
-            return "unavailable"
-
-        return None
+    def _record_incident(
+        self,
+        run: GatewayRun,
+        incident: object,
+        remediation: object,
+    ) -> None:
+        """Persist sanitized incident evidence without making telemetry fatal."""
+        try:
+            self._provider_telemetry.append_incident(
+                incident,  # type: ignore[arg-type]
+                remediation,  # type: ignore[arg-type]
+                task_id=str(run.task_payload.get("task_id") or "") or None,
+                work_unit_id=str(run.task_payload.get("work_unit_id") or "") or None,
+                runtime_attempt=run.runtime_attempt,
+            )
+        except Exception:
+            # Provider telemetry is diagnostic. Execution/audit policy must not
+            # become unavailable solely because the auxiliary incident log
+            # cannot be written.
+            pass
 
     @staticmethod
     def _provider_from_model(model: str) -> str:

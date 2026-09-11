@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "purpose": "Governed operational knowledge for provider/runtime troubleshooting. Rules are advisory evidence; they do not mutate permanent routing policy.",
+  "lessons": [
+    {
+      "id": "kimi-platform-vs-kimi-code-route",
+      "providers": [
+        "kimi",
+        "moonshot"
+      ],
+      "symptom": [
+        "Unknown model: kimi/k3",
+        "credential accepted on a different Kimi product"
+      ],
+      "diagnosis": "Kimi Platform pay-as-you-go and Kimi Code membership are distinct credential/endpoint products.",
+      "remediation": [
+        "For Kimi Platform credits, prefer moonshot/kimi-* on the Moonshot Platform endpoint.",
+        "Use kimi/* only with a compatible Kimi Code membership credential/endpoint."
+      ],
+      "safety": "Never log or request raw API keys."
+    },
+    {
+      "id": "moonshot-authored-catalog-shadowing",
+      "providers": [
+        "moonshot"
+      ],
+      "symptom": [
+        "plugin advertises model but models list omits it"
+      ],
+      "diagnosis": "An authored models.providers.moonshot.models list can replace the bundled/discovered provider catalog.",
+      "remediation": [
+        "Inspect models.providers.moonshot.models before reinstalling the plugin.",
+        "Remove the authored list or declare all intended models, then refresh the catalog."
+      ]
+    },
+    {
+      "id": "openclaw-core-plugin-version-alignment",
+      "providers": [
+        "openclaw"
+      ],
+      "symptom": [
+        "new provider model unavailable after core update"
+      ],
+      "diagnosis": "Core and bundled/global provider plugin versions may be misaligned.",
+      "remediation": [
+        "Inspect packageVersion, builtWithOpenClawVersion, activated and status first.",
+        "Update/reinstall only when evidence shows a mismatch."
+      ]
+    },
+    {
+      "id": "generic-429-is-not-a-root-cause",
+      "providers": [
+        "moonshot",
+        "openai",
+        "generic"
+      ],
+      "symptom": [
+        "HTTP 429",
+        "rate limit reached"
+      ],
+      "diagnosis": "429 can represent TPM, RPM, concurrency, project budget, organization budget, usage-window exhaustion or transient throttling.",
+      "remediation": [
+        "Correlate budget/quota dashboards and provider evidence before labeling the cause.",
+        "Suppress retry storms for structural budget/usage-window failures."
+      ]
+    },
+    {
+      "id": "kimi-project-budget-exhaustion",
+      "providers": [
+        "moonshot"
+      ],
+      "symptom": [
+        "HTTP 429 after repeated retries",
+        "project daily or monthly consumption at configured limit"
+      ],
+      "diagnosis": "Project budget policy can reject otherwise valid K3 requests.",
+      "remediation": [
+        "Wait for the budget window or make an authorized budget adjustment.",
+        "Do not treat this as TPM without supporting evidence."
+      ]
+    },
+    {
+      "id": "context-window-vs-output-budget",
+      "providers": [
+        "generic"
+      ],
+      "symptom": [
+        "large-context model creates quota pressure"
+      ],
+      "diagnosis": "Native contextWindow and max output tokens are separate controls.",
+      "remediation": [
+        "Preserve the required context window while setting a reasonable per-model maxTokens output budget.",
+        "Do not edit provider catalog metadata just to cap output."
+      ]
+    },
+    {
+      "id": "stale-session-context-after-live-switch",
+      "providers": [
+        "openclaw"
+      ],
+      "symptom": [
+        "selected model advertises ~1M context but session/preflight still behaves near an older 200k budget"
+      ],
+      "diagnosis": "Session/runtime context metadata may remain stale or capped after a live model switch.",
+      "remediation": [
+        "Inspect status, contextTokens caps and live-switch state.",
+        "Preserve the historical session unless evidence requires a new one."
+      ]
+    },
+    {
+      "id": "openai-oauth-vs-platform-api",
+      "providers": [
+        "openai"
+      ],
+      "symptom": [
+        "ChatGPT/Codex access works while OpenAI API billing/quota fails, or vice versa"
+      ],
+      "diagnosis": "ChatGPT/Codex OAuth and OpenAI Platform API keys are distinct credential and billing products.",
+      "remediation": [
+        "Track credential provenance explicitly.",
+        "Do not infer API credit availability from a ChatGPT subscription."
+      ]
+    },
+    {
+      "id": "safe-provider-plugin-diagnosis",
+      "providers": [
+        "openclaw"
+      ],
+      "symptom": [
+        "model missing or provider behavior unexpected"
+      ],
+      "diagnosis": "Plugin reinstall is not the first diagnostic step.",
+      "remediation": [
+        "Inspect provider plugin runtime metadata and effective catalog.",
+        "Check allowlists, authored provider catalogs, credential provenance and session state before mutation."
+      ]
+    },
+    {
+      "id": "transient-circuit-breaker",
+      "providers": [
+        "generic"
+      ],
+      "symptom": [
+        "same provider/model repeatedly fails operationally"
+      ],
+      "diagnosis": "Repeated dispatch can amplify rate limits and cost.",
+      "remediation": [
+        "Open a temporary in-memory circuit after repeated retryable failures or immediately for non-retryable structural incidents.",
+        "Use cooldown and a half-open probe; never silently rewrite permanent routing policy."
+      ]
+    }
+  ]
+}
