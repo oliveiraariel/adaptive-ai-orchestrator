@@ -303,7 +303,7 @@ class OpenClawGatewayClient(OpenClawClient):
         ).strip()
         strong_model = os.environ.get(
             "ADAPTIVE_STRONG_MODEL",
-            "moonshot/kimi-k2.7-code",
+            "kimi/k3",
         ).strip()
         specialist_model = os.environ.get(
             "ADAPTIVE_CODE_SPECIALIST_MODEL",
@@ -321,10 +321,9 @@ class OpenClawGatewayClient(OpenClawClient):
         normalized = current_model.casefold()
         if normalized == economy_model.casefold():
             fallback_model = specialist_model
-        elif normalized in {
-            strong_model.casefold(),
-            specialist_model.casefold(),
-        }:
+        elif normalized == strong_model.casefold():
+            fallback_model = specialist_model
+        elif normalized == specialist_model.casefold():
             fallback_model = economy_model
         else:
             return None
@@ -341,15 +340,21 @@ class OpenClawGatewayClient(OpenClawClient):
         fallback_configuration["provider"] = self._provider_from_model(
             fallback_model
         )
-        fallback_configuration["thinking"] = (
-            None
-            if fallback_model.casefold()
-            in {
-                "moonshot/kimi-k2.7-code",
-                "moonshot/kimi-k2.7-code-highspeed",
-            }
-            else os.environ.get("ADAPTIVE_ROUTINE_THINKING", "medium")
-        )
+        if fallback_model.casefold() in {
+            "moonshot/kimi-k2.7-code",
+            "moonshot/kimi-k2.7-code-highspeed",
+        }:
+            fallback_configuration["thinking"] = None
+        elif fallback_model.casefold() == strong_model.casefold():
+            fallback_configuration["thinking"] = os.environ.get(
+                "ADAPTIVE_STRONG_THINKING",
+                "low",
+            )
+        else:
+            fallback_configuration["thinking"] = os.environ.get(
+                "ADAPTIVE_ROUTINE_THINKING",
+                "medium",
+            )
         constraints = list(
             fallback_configuration.get("policy_constraints") or ()
         )

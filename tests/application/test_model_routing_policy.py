@@ -31,7 +31,7 @@ def make_task(
     )
 
 
-def test_planner_uses_kimi_with_provider_native_thinking() -> None:
+def test_planner_uses_k3_low() -> None:
     policy = ModelRoutingPolicy()
     task = make_task(
         "You are the planning layer of Adaptive AI Orchestrator.",
@@ -44,24 +44,55 @@ def test_planner_uses_kimi_with_provider_native_thinking() -> None:
 
     decision = policy.select(task)
 
-    assert decision.model == "moonshot/kimi-k2.7-code"
+    assert decision.model == "kimi/k3"
+    assert decision.provider == "kimi"
     assert decision.tier == "strong"
-    assert decision.thinking is None
+    assert decision.thinking == "low"
+    assert decision.thinking_reason == "orchestrator-low-reasoning"
     assert decision.attempt == 1
 
 
-def test_architecture_analysis_and_code_review_use_kimi() -> None:
+def test_systemic_architecture_analysis_and_synthesis_use_k3_low() -> None:
     policy = ModelRoutingPolicy()
 
     for objective in (
         "Definir a arquitetura da aplicação e decisões estruturais.",
         "Realizar análise gerencial de riscos do projeto.",
         "Analisar o manifesto do projeto e produzir síntese gerencial.",
+    ):
+        decision = policy.select(make_task(objective))
+        assert decision.model == "kimi/k3"
+        assert decision.provider == "kimi"
+        assert decision.tier == "strong"
+        assert decision.thinking == "low"
+
+
+def test_critical_systemic_architecture_uses_k3_high() -> None:
+    policy = ModelRoutingPolicy()
+    decision = policy.select(
+        make_task(
+            "Definir security architecture para uma decisão crítica e sistêmica."
+        )
+    )
+
+    assert decision.model == "kimi/k3"
+    assert decision.tier == "strong"
+    assert decision.reason == "critical-systemic-orchestration"
+    assert decision.thinking == "high"
+    assert decision.thinking_reason == "critical-systemic-high-reasoning"
+
+
+def test_code_review_and_code_level_architecture_use_k27() -> None:
+    policy = ModelRoutingPolicy()
+
+    for objective in (
         "Perform code review for the backend implementation.",
+        "Revisar arquitetura aplicada ao código dos services e repositories.",
     ):
         decision = policy.select(make_task(objective))
         assert decision.model == "moonshot/kimi-k2.7-code"
-        assert decision.tier == "strong"
+        assert decision.provider == "moonshot"
+        assert decision.tier == "code-specialist"
         assert decision.thinking is None
 
 
@@ -185,10 +216,27 @@ def test_operational_fallback_switches_luna_to_kimi() -> None:
     assert fallback.escalated_from == "openai/gpt-5.6-luna"
 
 
-def test_operational_fallback_switches_kimi_to_luna() -> None:
+def test_operational_fallback_switches_k3_to_k27() -> None:
     policy = ModelRoutingPolicy()
     primary = policy.select(
         make_task("Definir arquitetura da aplicação.")
+    )
+
+    fallback = policy.fallback_for(primary, failure_reason="rate_limit")
+
+    assert fallback is not None
+    assert fallback.model == "moonshot/kimi-k2.7-code"
+    assert fallback.provider == "moonshot"
+    assert fallback.thinking is None
+    assert fallback.escalated_from == "kimi/k3"
+
+
+def test_operational_fallback_switches_k27_to_luna() -> None:
+    policy = ModelRoutingPolicy()
+    primary = policy.select(
+        make_task(
+            "Implementar transferência financeira com transação e rollback."
+        )
     )
 
     fallback = policy.fallback_for(primary, failure_reason="rate_limit")
@@ -207,6 +255,7 @@ def test_environment_can_override_policy_models_thinking_and_disabled_models(
     monkeypatch.setenv("ADAPTIVE_ECONOMY_MODEL", "vendor/economy-custom")
     monkeypatch.setenv("ADAPTIVE_CODE_SPECIALIST_MODEL", "vendor/code-custom")
     monkeypatch.setenv("ADAPTIVE_STRONG_THINKING", "low")
+    monkeypatch.setenv("ADAPTIVE_CRITICAL_THINKING", "high")
     monkeypatch.setenv("ADAPTIVE_CODE_THINKING", "medium")
     monkeypatch.setenv("ADAPTIVE_ROUTINE_THINKING", "low")
     monkeypatch.setenv("ADAPTIVE_DISABLED_MODELS", "vendor/off-1,vendor/off-2")
@@ -217,6 +266,7 @@ def test_environment_can_override_policy_models_thinking_and_disabled_models(
     assert policy.economy_model == "vendor/economy-custom"
     assert policy.code_specialist_model == "vendor/code-custom"
     assert policy.strong_thinking == "low"
+    assert policy.critical_thinking == "high"
     assert policy.code_thinking == "medium"
     assert policy.routine_thinking == "low"
     assert policy.disabled_models == ("vendor/off-1", "vendor/off-2")
