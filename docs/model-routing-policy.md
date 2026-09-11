@@ -2,62 +2,76 @@
 
 ## Purpose
 
-Adaptive uses a deliberately small active model set to control cost while keeping
-strong engineering performance.
+Adaptive uses a role-aware model policy: the orchestration model keeps the
+global project picture, the code specialist handles deep implementation work,
+and the economy model handles routine execution.
 
-The active policy is:
+The active automatic policy is:
 
-- **Kimi K2.7 Code** for strong/complex responsibilities, complex first-pass
-  code, architecture, governance, security, code review, retries and
+- **Kimi K3** (`kimi/k3`) for orchestration, project discovery, planning,
+  decomposition, governance, synthesis/fan-in and systemic/high-level
+  architecture;
+- **Kimi K3 defaults to `low` reasoning** and escalates to `high` only for
+  explicitly critical systemic work;
+- **Kimi K2.7 Code** (`moonshot/kimi-k2.7-code`) for code review, code-level
+  architecture, complex implementation, substantial refactors, retries and
   remediation;
-- **GPT-5.6 Luna** for routine/mechanical work and routine first-pass code;
-- **Luna always runs at `medium` reasoning** under this policy;
-- **Kimi K2.7 Code uses provider-native reasoning**;
-- **GPT-5.6 Sol is disabled from automatic Adaptive routing**.
+- **GPT-5.6 Luna** (`openai/gpt-5.6-luna`) for routine/mechanical work and
+  routine first-pass code/tests at `medium` reasoning;
+- **GPT-5.6 Sol is excluded from automatic Adaptive routing by default**.
 
-The policy remains deterministic and auditable at the runtime boundary.
+The OpenClaw owner session may also be pinned manually to `kimi/k3` with
+`low` reasoning. That owner-session choice is distinct from worker routing,
+but it intentionally matches the default orchestration role.
 
 ## Default routing matrix
 
-| Task class | Default model | Thinking |
+| Responsibility | Default model | Thinking |
 | --- | --- | --- |
-| Planning, architecture, governance, security, high-stakes analysis, code review | `moonshot/kimi-k2.7-code` | provider-native |
+| Owner/orchestrator, project discovery, planning, decomposition, governance, synthesis/fan-in | `kimi/k3` | `low` |
+| Systemic/high-level architecture and broad project analysis | `kimi/k3` | `low` |
+| Critical systemic decision, high-stakes analysis, security architecture | `kimi/k3` | `high` |
+| Code review or architecture applied directly to code | `moonshot/kimi-k2.7-code` | provider-native |
 | Complex first-pass implementation or tests | `moonshot/kimi-k2.7-code` | provider-native |
 | Retry, remediation, failing tests, substantial refactor | `moonshot/kimi-k2.7-code` | provider-native |
 | Routine first-pass implementation or tests | `openai/gpt-5.6-luna` | `medium` |
 | Routine/mechanical non-code work | `openai/gpt-5.6-luna` | `medium` |
 
-Examples of complexity signals include transactional/atomic work, rollback,
+Examples of complex-code signals include transactional/atomic work, rollback,
 authorization/authentication, concurrency, financial consistency, migrations,
 multi-file cross-cutting changes, state machines and idempotency.
 
-## Sol policy
-
-`openai/gpt-5.6-sol` is excluded from automatic routing by default.
-
-The default denylist is controlled by:
+The architectural split is intentional:
 
 ```text
-ADAPTIVE_DISABLED_MODELS=openai/gpt-5.6-sol
-```
+systemic / high-level architecture
+    -> Kimi K3
 
-This prevents an old explicit Sol override from silently reintroducing Sol into
-normal Adaptive execution. The denylist can be changed intentionally through the
-environment when the operating policy changes in the future.
+architecture applied directly to code / code review
+    -> Kimi K2.7 Code
+```
 
 ## Operational failover
 
-Adaptive/OpenClaw uses a two-model operational failover pair:
+Adaptive keeps one operational fallback attempt per execution.
+
+The default routes are:
 
 ```text
-Luna  <->  Kimi K2.7 Code
+Luna routine work
+    -> K2.7 Code
+
+K3 orchestration/systemic work
+    -> K2.7 Code
+
+K2.7 Code specialist work
+    -> Luna
 ```
 
-If the selected model fails before producing a usable result because of an
-operational provider problem, the Gateway client automatically continues the
-same worker session with the other active model.
+This means a K3 provider failure does not demote orchestration directly to the
+economy model; it first moves to the code-capable K2.7 route.
 
-Failover-worthy categories are:
+Failover-worthy categories include:
 
 - billing / insufficient credits;
 - rate limit / quota window / throttling;
@@ -66,144 +80,96 @@ Failover-worthy categories are:
 - provider overload or unavailability;
 - model unavailable / not found in the active provider route.
 
-Semantic quality failures are **not** operational failover triggers. For
-example, failing acceptance criteria or a result that needs revision remains an
-Adaptive evaluation/replanning concern.
+Semantic quality failures are **not** operational failover triggers. Acceptance
+criteria failures and revision requests remain Adaptive evaluation/replanning
+concerns.
 
-### Luna to Kimi
-
-Typical example:
-
-```text
-routine first-pass code
-    -> Luna / medium
-    -> OpenAI billing exhausted
-    -> same worker session switches to Kimi K2.7 Code
-    -> provider-native reasoning
-    -> continue from existing transcript/repository state
-```
-
-### Kimi to Luna
-
-The reverse route is also available for operational failures:
-
-```text
-architecture / complex code
-    -> Kimi K2.7 Code
-    -> Moonshot rate limit / provider unavailable
-    -> same worker session switches to Luna / medium
-```
-
-If the second model also fails, the execution remains failed/blocked. Adaptive
-never introduces Sol as a hidden third fallback.
-
-## Continuation safety
-
-Operational failover does not start a new logical Work Unit.
-
-The same Adaptive-owned OpenClaw session key is reused. The fallback dispatch:
-
-1. switches the session model;
-2. uses a distinct runtime idempotency key;
-3. adds recovery context instructing the worker to inspect transcript and
-   repository state first;
-4. preserves already-completed work and side effects;
-5. instructs the worker not to blindly repeat completed actions;
-6. continues idempotently from the interrupted point.
-
-This is important for repository-writing Work Units.
+The same Adaptive-owned OpenClaw session key is reused during failover. The
+fallback receives recovery context instructing it to inspect transcript and
+repository state, preserve completed work and continue idempotently.
 
 ## Model selection precedence
 
-The runtime applies the rules in this order:
+The runtime applies rules in this order:
 
-1. a caller-selected model is preserved only if it is not disabled;
-2. strong responsibilities route to Kimi;
-3. code/test retry or remediation routes to Kimi;
-4. complex first-pass code/test routes to Kimi;
-5. routine first-pass code/test routes to Luna / medium;
-6. routine non-code work routes to Luna / medium.
+1. preserve a caller-selected model when it is not disabled;
+2. route explicit code-review/code-level-architecture responsibilities to
+   K2.7 Code;
+3. route orchestration/planning/governance/systemic architecture to K3;
+4. elevate K3 from `low` to `high` for explicitly critical systemic work;
+5. route code/test retry or remediation to K2.7 Code;
+6. route complex first-pass code/test to K2.7 Code;
+7. route routine first-pass code/test to Luna / `medium`;
+8. route routine non-code work to Luna / `medium`.
 
-Kimi K2.7 Code always keeps provider-native reasoning. Adaptive does not invent
-OpenClaw `high` or `xhigh` values for it.
+K2.7 Code keeps provider-native reasoning and Adaptive does not inject a
+generic reasoning level for it.
+
+## Sol policy
+
+`openai/gpt-5.6-sol` is excluded from automatic routing by default:
+
+```text
+ADAPTIVE_DISABLED_MODELS=openai/gpt-5.6-sol
+```
+
+This does not prevent a user from keeping Sol available in OpenClaw's manual
+model allowlist. OpenClaw model availability and Adaptive automatic routing are
+separate controls.
 
 ## Environment overrides
 
-The active model ids can still be changed without modifying source:
+Current defaults:
 
 ```text
-ADAPTIVE_STRONG_MODEL
-ADAPTIVE_ECONOMY_MODEL
-ADAPTIVE_CODE_SPECIALIST_MODEL
-ADAPTIVE_STRONG_THINKING
-ADAPTIVE_CODE_THINKING
-ADAPTIVE_ROUTINE_THINKING
-ADAPTIVE_DISABLED_MODELS
-```
-
-Current defaults are:
-
-```text
-ADAPTIVE_STRONG_MODEL=moonshot/kimi-k2.7-code
+ADAPTIVE_STRONG_MODEL=kimi/k3
 ADAPTIVE_ECONOMY_MODEL=openai/gpt-5.6-luna
 ADAPTIVE_CODE_SPECIALIST_MODEL=moonshot/kimi-k2.7-code
 
-ADAPTIVE_STRONG_THINKING=medium
+ADAPTIVE_STRONG_THINKING=low
+ADAPTIVE_CRITICAL_THINKING=high
 ADAPTIVE_CODE_THINKING=medium
 ADAPTIVE_ROUTINE_THINKING=medium
 
 ADAPTIVE_DISABLED_MODELS=openai/gpt-5.6-sol
 ```
 
-For Kimi K2.7 Code, provider-native reasoning overrides the generic thinking
-value.
+`ADAPTIVE_STRONG_MODEL` now represents the orchestration/systemic model. The
+existing environment variable name is retained for compatibility even though
+its role is more specific than the historical "strong model" label.
 
 ## Enforcement points
 
-Task classification and primary model routing are enforced in
+Task classification and primary routing are enforced in
 `OpenClawAdapter.submit()` through `ModelRoutingPolicy`.
 
 Operational provider failover is enforced in
-`OpenClawGatewayClient.retrieve_result()`, because provider billing/rate/auth
-failures become visible only after the OpenClaw run has executed.
-
-The Gateway client keeps the application-level execution identity stable while
-moving the original execution reference onto the successful runtime candidate.
+`OpenClawGatewayClient.retrieve_result()`, because billing/rate/auth/provider
+failures become visible only after an OpenClaw run executes.
 
 ## Audit and observability
 
-The append-only model-routing history remains:
+Routing history remains append-only at:
 
 ```text
 ~/.local/state/adaptive-ai-orchestrator/model-routing-history.jsonl
 ```
 
-When failover occurs, Adaptive records a `model-failover` event and the final
-`runtime-result` records the model that actually completed the Work Unit.
-
-Relevant fields include:
-
-- `from_model`;
-- `to_model`;
-- `to_provider`;
-- `failure_reason`;
-- `runtime_attempt`;
-- final `model`, `provider`, `thinking` and runtime status.
-
-This allows later comparison by **accepted Work Unit cost**, not only by
-per-token price.
+Relevant audit fields include model, provider, tier, thinking, failover source,
+failover target, failure reason, runtime attempt and final runtime status.
 
 ## Cost-policy intent
 
-The policy intentionally optimizes for:
+The policy optimizes for:
 
 ```text
-routine work -> cheap Luna / medium
-complex work -> Kimi directly
-Luna failure/revision -> Kimi
-provider operational failure -> automatic cross-provider failover
-Sol -> disabled
+global understanding / orchestration -> K3 low
+critical systemic work              -> K3 high
+deep code work                      -> K2.7 Code
+routine work                        -> Luna medium
+operational failure                 -> one role-compatible fallback
+Sol                                 -> manual availability only, disabled automatically
 ```
 
-The policy can be revisited later using accumulated routing history, acceptance
-rate, number of attempts, elapsed time and actual/estimated cost.
+The policy can be revisited using acceptance rate, retries, elapsed time,
+context usage and actual/estimated cost.
