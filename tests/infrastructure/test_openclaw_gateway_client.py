@@ -492,14 +492,16 @@ def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -
     result = client.retrieve_result(external)
 
     assert result["output"] == "KIMI_RECOVERED"
-    assert result["model_failover"] == {
-        "triggered": True,
-        "reason": "billing",
-        "from_model": "openai/gpt-5.6-luna",
-        "to_model": "moonshot/kimi-k2.7-code",
-        "to_provider": "moonshot",
-        "runtime_attempt": 2,
-    }
+    failover = result["model_failover"]
+    assert failover["triggered"] is True
+    assert failover["reason"] == "billing"
+    assert failover["from_model"] == "openai/gpt-5.6-luna"
+    assert failover["to_model"] == "moonshot/kimi-k2.7-code"
+    assert failover["to_provider"] == "moonshot"
+    assert failover["runtime_attempt"] == 2
+    assert failover["incident"]["category"] == "billing"
+    assert failover["incident"]["subtype"] == "insufficient_funds"
+    assert failover["remediation"]["allow_same_model_retry"] is False
     assert patched_models == [
         "openai/gpt-5.6-luna",
         "moonshot/kimi-k2.7-code",
@@ -574,9 +576,9 @@ def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -
             "acceptance_criteria": ["runtime-completed"],
             "configuration": {
                 "agent": "sgfp",
-                "model": "kimi/k3",
-                "provider": "kimi",
-                "thinking": "low",
+                "model": "moonshot/kimi-k3",
+                "provider": "moonshot",
+                "thinking": "max",
                 "policy_constraints": [],
             },
         }
@@ -586,10 +588,12 @@ def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -
 
     assert result["output"] == "K27_RECOVERED"
     assert result["model_failover"]["reason"] == "rate_limit"
-    assert result["model_failover"]["from_model"] == "kimi/k3"
+    assert result["model_failover"]["from_model"] == "moonshot/kimi-k3"
+    assert result["model_failover"]["incident"]["category"] == "quota"
+    assert result["model_failover"]["incident"]["subtype"] == "provider_rate_limit_unknown"
     assert result["model_failover"]["to_model"] == "moonshot/kimi-k2.7-code"
     assert patched_models == [
-        "kimi/k3",
+        "moonshot/kimi-k3",
         "moonshot/kimi-k2.7-code",
     ]
     fallback_message = json.loads(agent_calls[1]["message"])
@@ -730,3 +734,91 @@ def test_gateway_does_not_fail_over_for_unclassified_semantic_failure(monkeypatc
         assert "acceptance criteria not satisfied" in str(exc)
     else:
         raise AssertionError("Expected unclassified failure to remain terminal.")
+
+
+def test_gateway_classifies_daily_budget_as_non_retryable_quota_and_fails_over(monkeypatch, tmp_path) -> None:
+    from infrastructure.provider_telemetry_store import ProviderTelemetryStore
+
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        ),
+        provider_telemetry=ProviderTelemetryStore(tmp_path / "incidents.jsonl"),
+    )
+    patched_models: list[str] = []
+    agent_calls: list[dict] = []
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        if method == "sessions.patch":
+            patched_models.append(params["model"])
+            return {"ok": True}
+        if method == "agent":
+            agent_calls.append(params)
+            return {"runId": f"run-{len(agent_calls)}", "acceptedAt": 123}
+        if method == "agent.wait":
+            if params["runId"] == "run-1":
+                return {
+                    "status": "error",
+                    "error": "Project daily usage limit reached (429).",
+                }
+            return {
+                "status": "ok",
+                "startedAt": 100,
+                "endedAt": 200,
+                "stopReason": "stop",
+            }
+        if method == "chat.history":
+            return {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "BUDGET_RECOVERED"}],
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    external = client.submit(
+        {
+            "task_id": "task-daily-budget",
+            "work_unit_id": "wu-daily-budget",
+            "objective": "Definir arquitetura sistêmica.",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "moonshot/kimi-k3",
+                "provider": "moonshot",
+                "thinking": "max",
+                "policy_constraints": [],
+            },
+        }
+    )
+
+    result = client.retrieve_result(external)
+
+    assert result["output"] == "BUDGET_RECOVERED"
+    failover = result["model_failover"]
+    assert failover["reason"] == "rate_limit"
+    assert failover["incident"]["subtype"] == "daily_usage_window"
+    assert failover["incident"]["retryable"] is False
+    assert failover["remediation"]["allow_same_model_retry"] is False
+    assert failover["remediation"]["fallback_allowed"] is True
+    assert failover["circuit_state"] == "open"
+    assert patched_models == [
+        "moonshot/kimi-k3",
+        "moonshot/kimi-k2.7-code",
+    ]
+    telemetry = (tmp_path / "incidents.jsonl").read_text(encoding="utf-8")
+    assert "daily_usage_window" in telemetry
+    assert "Project daily usage limit reached" not in telemetry
