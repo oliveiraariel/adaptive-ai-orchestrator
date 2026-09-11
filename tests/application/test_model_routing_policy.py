@@ -44,11 +44,11 @@ def test_planner_uses_k3_low() -> None:
 
     decision = policy.select(task)
 
-    assert decision.model == "kimi/k3"
-    assert decision.provider == "kimi"
+    assert decision.model == "moonshot/kimi-k3"
+    assert decision.provider == "moonshot"
     assert decision.tier == "strong"
-    assert decision.thinking == "low"
-    assert decision.thinking_reason == "orchestrator-low-reasoning"
+    assert decision.thinking == "max"
+    assert decision.thinking_reason == "orchestrator-max-reasoning"
     assert decision.attempt == 1
 
 
@@ -61,10 +61,10 @@ def test_systemic_architecture_analysis_and_synthesis_use_k3_low() -> None:
         "Analisar o manifesto do projeto e produzir síntese gerencial.",
     ):
         decision = policy.select(make_task(objective))
-        assert decision.model == "kimi/k3"
-        assert decision.provider == "kimi"
+        assert decision.model == "moonshot/kimi-k3"
+        assert decision.provider == "moonshot"
         assert decision.tier == "strong"
-        assert decision.thinking == "low"
+        assert decision.thinking == "max"
 
 
 def test_critical_systemic_architecture_uses_k3_high() -> None:
@@ -75,11 +75,11 @@ def test_critical_systemic_architecture_uses_k3_high() -> None:
         )
     )
 
-    assert decision.model == "kimi/k3"
+    assert decision.model == "moonshot/kimi-k3"
     assert decision.tier == "strong"
     assert decision.reason == "critical-systemic-orchestration"
-    assert decision.thinking == "high"
-    assert decision.thinking_reason == "critical-systemic-high-reasoning"
+    assert decision.thinking == "max"
+    assert decision.thinking_reason == "critical-systemic-max-reasoning"
 
 
 def test_code_review_and_code_level_architecture_use_k27() -> None:
@@ -228,7 +228,7 @@ def test_operational_fallback_switches_k3_to_k27() -> None:
     assert fallback.model == "moonshot/kimi-k2.7-code"
     assert fallback.provider == "moonshot"
     assert fallback.thinking is None
-    assert fallback.escalated_from == "kimi/k3"
+    assert fallback.escalated_from == "moonshot/kimi-k3"
 
 
 def test_operational_fallback_switches_k27_to_luna() -> None:

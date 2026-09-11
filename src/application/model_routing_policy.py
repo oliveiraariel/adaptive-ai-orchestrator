@@ -24,23 +24,23 @@ class ModelRoutingPolicy:
     """Deterministic role-aware routing for Adaptive/OpenClaw.
 
     Active policy:
-    - Kimi K3 handles orchestration, project discovery, planning, governance,
+    - Moonshot Kimi K3 handles orchestration, project discovery, planning, governance,
       synthesis and systemic/high-level architecture;
     - Kimi K2.7 Code handles code-specialist work, code-level architecture,
       complex implementation, review, retries and remediation;
     - GPT-5.6 Luna handles routine/mechanical work and routine first-pass code;
-    - K3 defaults to low reasoning and escalates to high only for explicitly
-      critical systemic work;
+    - the direct Moonshot K3 route uses provider-required max reasoning for
+      orchestration and critical systemic work;
     - Luna runs at medium reasoning;
     - K2.7 Code keeps provider-native reasoning;
     - GPT-5.6 Sol is excluded from automatic routing.
     """
 
-    strong_model: str = "kimi/k3"
+    strong_model: str = "moonshot/kimi-k3"
     economy_model: str = "openai/gpt-5.6-luna"
     code_specialist_model: str = "moonshot/kimi-k2.7-code"
-    strong_thinking: str = "low"
-    critical_thinking: str = "high"
+    strong_thinking: str = "max"
+    critical_thinking: str = "max"
     code_thinking: str = "medium"
     routine_thinking: str = "medium"
     disabled_models: tuple[str, ...] = ("openai/gpt-5.6-sol",)
@@ -59,7 +59,7 @@ class ModelRoutingPolicy:
         return cls(
             strong_model=os.environ.get(
                 "ADAPTIVE_STRONG_MODEL",
-                "kimi/k3",
+                "moonshot/kimi-k3",
             ),
             economy_model=os.environ.get(
                 "ADAPTIVE_ECONOMY_MODEL",
@@ -71,11 +71,11 @@ class ModelRoutingPolicy:
             ),
             strong_thinking=os.environ.get(
                 "ADAPTIVE_STRONG_THINKING",
-                "low",
+                "max",
             ),
             critical_thinking=os.environ.get(
                 "ADAPTIVE_CRITICAL_THINKING",
-                "high",
+                "max",
             ),
             code_thinking=os.environ.get(
                 "ADAPTIVE_CODE_THINKING",
@@ -154,9 +154,9 @@ class ModelRoutingPolicy:
                     else self.strong_thinking
                 ),
                 thinking_reason=(
-                    "critical-systemic-high-reasoning"
+                    "critical-systemic-max-reasoning"
                     if critical_systemic
-                    else "orchestrator-low-reasoning"
+                    else "orchestrator-max-reasoning"
                 ),
             )
 
@@ -239,7 +239,7 @@ class ModelRoutingPolicy:
             thinking_reason = "provider-native-code-specialist-reasoning"
         elif target.strip().casefold() == strong:
             thinking = self.strong_thinking
-            thinking_reason = "operational-fallback-orchestrator-low-reasoning"
+            thinking_reason = "operational-fallback-orchestrator-max-reasoning"
         else:
             thinking = self.routine_thinking
             thinking_reason = "operational-fallback-medium-reasoning"
@@ -302,7 +302,7 @@ class ModelRoutingPolicy:
         if requested is not None:
             return requested, "explicit-thinking-override"
         if model.strip().casefold() == self.strong_model.strip().casefold():
-            return self.strong_thinking, "orchestrator-model-low-reasoning"
+            return self.strong_thinking, "orchestrator-model-max-reasoning"
         if model.strip().casefold() == self.economy_model.strip().casefold():
             return self.routine_thinking, "economy-model-medium-reasoning"
         if strong_responsibility:

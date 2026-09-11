@@ -8,11 +8,11 @@ and the economy model handles routine execution.
 
 The active automatic policy is:
 
-- **Kimi K3** (`kimi/k3`) for orchestration, project discovery, planning,
+- **Kimi K3** (`moonshot/kimi-k3`) for orchestration, project discovery, planning,
   decomposition, governance, synthesis/fan-in and systemic/high-level
   architecture;
-- **Kimi K3 defaults to `low` reasoning** and escalates to `high` only for
-  explicitly critical systemic work;
+- **Moonshot Kimi K3 uses `max` reasoning** on the direct Moonshot route;
+  OpenClaw 2026.9.4 enforces this provider contract;
 - **Kimi K2.7 Code** (`moonshot/kimi-k2.7-code`) for code review, code-level
   architecture, complex implementation, substantial refactors, retries and
   remediation;
@@ -20,7 +20,7 @@ The active automatic policy is:
   routine first-pass code/tests at `medium` reasoning;
 - **GPT-5.6 Sol is excluded from automatic Adaptive routing by default**.
 
-The OpenClaw owner session may also be pinned manually to `kimi/k3` with
+The OpenClaw owner session may also be pinned manually to `moonshot/kimi-k3` with
 `low` reasoning. That owner-session choice is distinct from worker routing,
 but it intentionally matches the default orchestration role.
 
@@ -28,9 +28,9 @@ but it intentionally matches the default orchestration role.
 
 | Responsibility | Default model | Thinking |
 | --- | --- | --- |
-| Owner/orchestrator, project discovery, planning, decomposition, governance, synthesis/fan-in | `kimi/k3` | `low` |
-| Systemic/high-level architecture and broad project analysis | `kimi/k3` | `low` |
-| Critical systemic decision, high-stakes analysis, security architecture | `kimi/k3` | `high` |
+| Owner/orchestrator, project discovery, planning, decomposition, governance, synthesis/fan-in | `moonshot/kimi-k3` | `max` |
+| Systemic/high-level architecture and broad project analysis | `moonshot/kimi-k3` | `max` |
+| Critical systemic decision, high-stakes analysis, security architecture | `moonshot/kimi-k3` | `max` |
 | Code review or architecture applied directly to code | `moonshot/kimi-k2.7-code` | provider-native |
 | Complex first-pass implementation or tests | `moonshot/kimi-k2.7-code` | provider-native |
 | Retry, remediation, failing tests, substantial refactor | `moonshot/kimi-k2.7-code` | provider-native |
@@ -96,7 +96,7 @@ The runtime applies rules in this order:
 2. route explicit code-review/code-level-architecture responsibilities to
    K2.7 Code;
 3. route orchestration/planning/governance/systemic architecture to K3;
-4. elevate K3 from `low` to `high` for explicitly critical systemic work;
+4. retain critical-systemic classification while Moonshot K3 remains at provider-required `max`;
 5. route code/test retry or remediation to K2.7 Code;
 6. route complex first-pass code/test to K2.7 Code;
 7. route routine first-pass code/test to Luna / `medium`;
@@ -122,12 +122,12 @@ separate controls.
 Current defaults:
 
 ```text
-ADAPTIVE_STRONG_MODEL=kimi/k3
+ADAPTIVE_STRONG_MODEL=moonshot/kimi-k3
 ADAPTIVE_ECONOMY_MODEL=openai/gpt-5.6-luna
 ADAPTIVE_CODE_SPECIALIST_MODEL=moonshot/kimi-k2.7-code
 
-ADAPTIVE_STRONG_THINKING=low
-ADAPTIVE_CRITICAL_THINKING=high
+ADAPTIVE_STRONG_THINKING=max
+ADAPTIVE_CRITICAL_THINKING=max
 ADAPTIVE_CODE_THINKING=medium
 ADAPTIVE_ROUTINE_THINKING=medium
 
@@ -163,8 +163,8 @@ failover target, failure reason, runtime attempt and final runtime status.
 The policy optimizes for:
 
 ```text
-global understanding / orchestration -> K3 low
-critical systemic work              -> K3 high
+global understanding / orchestration -> Moonshot K3 max
+critical systemic work              -> Moonshot K3 max
 deep code work                      -> K2.7 Code
 routine work                        -> Luna medium
 operational failure                 -> one role-compatible fallback
