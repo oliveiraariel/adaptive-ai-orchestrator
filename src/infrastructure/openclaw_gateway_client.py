@@ -7,7 +7,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
+from application.incident_classifier import IncidentClassifier
+from application.provider_health_policy import ProviderHealthPolicy
+from application.remediation_policy import RemediationPolicy
 from infrastructure.openclaw_adapter import OpenClawClient
+from infrastructure.provider_telemetry_store import ProviderTelemetryStore
 
 try:
     from websockets.sync.client import ClientConnection, connect
