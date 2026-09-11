@@ -417,3 +417,233 @@ def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
     finally:
         server.shutdown()
         thread.join(timeout=1)
+
+
+
+def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        )
+    )
+    patched_models: list[str] = []
+    agent_calls: list[dict] = []
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        if method == "sessions.patch":
+            patched_models.append(params["model"])
+            return {"ok": True}
+        if method == "agent":
+            agent_calls.append(params)
+            return {
+                "runId": f"run-{len(agent_calls)}",
+                "acceptedAt": 123,
+            }
+        if method == "agent.wait":
+            if params["runId"] == "run-1":
+                return {
+                    "status": "error",
+                    "error": "You have no credits remaining. Add credits to continue.",
+                }
+            return {
+                "status": "ok",
+                "startedAt": 100,
+                "endedAt": 200,
+                "stopReason": "stop",
+            }
+        if method == "chat.history":
+            return {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "KIMI_RECOVERED"}],
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    external = client.submit(
+        {
+            "task_id": "task-billing-failover",
+            "work_unit_id": "wu-billing-failover",
+            "objective": "Implementar repository PHP simples.",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "openai/gpt-5.6-luna",
+                "provider": "openai",
+                "thinking": "medium",
+                "policy_constraints": [],
+            },
+        }
+    )
+
+    result = client.retrieve_result(external)
+
+    assert result["output"] == "KIMI_RECOVERED"
+    assert result["model_failover"] == {
+        "triggered": True,
+        "reason": "billing",
+        "from_model": "openai/gpt-5.6-luna",
+        "to_model": "moonshot/kimi-k2.7-code",
+        "to_provider": "moonshot",
+        "runtime_attempt": 2,
+    }
+    assert patched_models == [
+        "openai/gpt-5.6-luna",
+        "moonshot/kimi-k2.7-code",
+    ]
+    assert agent_calls[1]["idempotencyKey"].endswith(
+        ":runtime-fallback:2"
+    )
+    fallback_message = json.loads(agent_calls[1]["message"])
+    assert "automatic operational failover" in fallback_message["context"][-1]
+    assert fallback_message["configuration"]["thinking"] is None
+    assert client.get_status(external) == "COMPLETED"
+
+
+def test_gateway_automatically_fails_over_kimi_to_luna_on_rate_limit(monkeypatch) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        )
+    )
+    patched_models: list[str] = []
+    agent_calls: list[dict] = []
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        if method == "sessions.patch":
+            patched_models.append(params["model"])
+            return {"ok": True}
+        if method == "agent":
+            agent_calls.append(params)
+            return {
+                "runId": f"run-{len(agent_calls)}",
+                "acceptedAt": 123,
+            }
+        if method == "agent.wait":
+            if params["runId"] == "run-1":
+                return {
+                    "status": "error",
+                    "error": "429 rate limit exceeded",
+                }
+            return {
+                "status": "ok",
+                "startedAt": 100,
+                "endedAt": 200,
+                "stopReason": "stop",
+            }
+        if method == "chat.history":
+            return {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "LUNA_RECOVERED"}],
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    external = client.submit(
+        {
+            "task_id": "task-rate-failover",
+            "work_unit_id": "wu-rate-failover",
+            "objective": "Definir arquitetura.",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "moonshot/kimi-k2.7-code",
+                "provider": "moonshot",
+                "thinking": None,
+                "policy_constraints": [],
+            },
+        }
+    )
+
+    result = client.retrieve_result(external)
+
+    assert result["output"] == "LUNA_RECOVERED"
+    assert result["model_failover"]["reason"] == "rate_limit"
+    assert result["model_failover"]["to_model"] == "openai/gpt-5.6-luna"
+    assert patched_models == [
+        "moonshot/kimi-k2.7-code",
+        "openai/gpt-5.6-luna",
+    ]
+    fallback_message = json.loads(agent_calls[1]["message"])
+    assert fallback_message["configuration"]["thinking"] == "medium"
+
+
+def test_gateway_does_not_fail_over_for_unclassified_semantic_failure(monkeypatch) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        )
+    )
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        if method == "sessions.patch":
+            return {"ok": True}
+        if method == "agent":
+            return {"runId": "run-1", "acceptedAt": 123}
+        if method == "agent.wait":
+            return {
+                "status": "error",
+                "error": "acceptance criteria not satisfied",
+            }
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    external = client.submit(
+        {
+            "task_id": "task-semantic-failure",
+            "work_unit_id": "wu-semantic-failure",
+            "objective": "Implementar repository PHP simples.",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "openai/gpt-5.6-luna",
+                "provider": "openai",
+                "thinking": "medium",
+                "policy_constraints": [],
+            },
+        }
+    )
+
+    try:
+        client.retrieve_result(external)
+    except OpenClawGatewayError as exc:
+        assert "acceptance criteria not satisfied" in str(exc)
+    else:
+        raise AssertionError("Expected unclassified failure to remain terminal.")
