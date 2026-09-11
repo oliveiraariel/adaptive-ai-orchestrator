@@ -537,7 +537,7 @@ def test_gateway_automatically_fails_over_kimi_to_luna_on_rate_limit(monkeypatch
             if params["runId"] == "run-1":
                 return {
                     "status": "error",
-                    "error": "429 rate limit exceeded",
+                    "error": "provider slow down retry later",
                 }
             return {
                 "status": "ok",
