@@ -232,6 +232,8 @@ class OpenClawAdapter(AgentRuntime):
 
         if state is not None:
             if failover is not None:
+                incident = failover.get("incident")
+                remediation = failover.get("remediation")
                 self._observability.emit(
                     "model_failover",
                     orchestration_id=state.orchestration_id,
@@ -243,6 +245,9 @@ class OpenClawAdapter(AgentRuntime):
                     provider=effective_provider,
                     reason=failover.get("reason"),
                     runtime_attempt=failover.get("runtime_attempt"),
+                    incident=incident if isinstance(incident, dict) else None,
+                    remediation=remediation if isinstance(remediation, dict) else None,
+                    circuit_state=failover.get("circuit_state"),
                 )
                 self._audit.append(
                     {
@@ -257,6 +262,21 @@ class OpenClawAdapter(AgentRuntime):
                         "to_provider": effective_provider,
                         "failure_reason": failover.get("reason"),
                         "runtime_attempt": failover.get("runtime_attempt"),
+                        **(
+                            {"incident": failover.get("incident")}
+                            if isinstance(failover.get("incident"), dict)
+                            else {}
+                        ),
+                        **(
+                            {"remediation": failover.get("remediation")}
+                            if isinstance(failover.get("remediation"), dict)
+                            else {}
+                        ),
+                        **(
+                            {"circuit_state": failover.get("circuit_state")}
+                            if isinstance(failover.get("circuit_state"), str)
+                            else {}
+                        ),
                     }
                 )
 
