@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "purpose": "Governed reusable problem-solving strategies learned from observed successful recoveries. Lessons guide planning but never override project facts, security, governance, or human-only decisions.",
+  "promotion_policy": {
+    "rule": "Observed strategies become approved lessons only after the recovery is evidenced, generalized, reviewed, and covered by deterministic tests.",
+    "no_blind_self_modification": true
+  },
+  "lessons": [
+    {
+      "id": "resolve-blockers-before-retrying-implementation",
+      "status": "approved",
+      "title": "Resolve architectural or contract blockers before another implementation attempt",
+      "triggers": [
+        "blocked",
+        "blocker",
+        "cannot implement safely",
+        "cannot proceed safely",
+        "architecture",
+        "architectural",
+        "contract",
+        "decision needed",
+        "repeated attempt",
+        "retry",
+        "bloqueado",
+        "bloqueador",
+        "não pode ser implementada com segurança",
+        "arquitetura",
+        "contrato",
+        "decisão",
+        "nova tentativa"
+      ],
+      "strategy": "When implementation repeatedly stops on unresolved architecture, contract, or business-rule uncertainty, stop implementation retries. Create a read-only decision/research Work Unit that reconciles canonical sources, classifies blockers, reuses existing decisions, proposes only minimal technical choices, and escalates only genuine new business decisions. Resume implementation only after an explicit implementation contract exists.",
+      "steps": [
+        "Reconcile the blocker against canonical requirements, architecture, handoff/state, tests, and current implementation.",
+        "List every blocker explicitly instead of retrying the same implementation path.",
+        "Classify each blocker as existing project decision, missing technical materialization, genuine business ambiguity, or environment/tool limitation.",
+        "Apply existing project decisions without asking the user again.",
+        "For purely technical gaps, choose the smallest safe option compatible with current architecture.",
+        "For genuine business ambiguity, stop and ask a bounded question with a small set of options and impacts.",
+        "Produce a decision matrix and an unambiguous implementation contract.",
+        "Only then create the implementation Work Unit."
+      ],
+      "safeguards": [
+        "Do not modify implementation files during the blocker-resolution Work Unit unless explicitly authorized.",
+        "Do not invent business rules to force progress.",
+        "Preserve a checkpoint before risky implementation resumes."
+      ],
+      "success_signals": [
+        "Previously repeated implementation attempts stop cycling.",
+        "All blockers have an explicit state and disposition.",
+        "The next implementation Work Unit can proceed without speculative architecture."
+      ]
+    },
+    {
+      "id": "recover-structured-planning-by-minimizing-the-graph",
+      "status": "approved",
+      "title": "Recover malformed planner output with one bounded Work Unit",
+      "triggers": [
+        "Planner returned invalid JSON",
+        "ProjectPlanningError",
+        "invalid JSON",
+        "malformed JSON",
+        "planning failed",
+        "planner failure",
+        "planejamento falhou",
+        "json inválido"
+      ],
+      "strategy": "When the structured planner fails to emit valid schema data, do not repeat the same broad plan unchanged. Retry once with a smaller planning surface: one bounded Work Unit, strict schema, read-only reconciliation first when uncertainty exists, and no speculative graph expansion.",
+      "steps": [
+        "Preserve the repository state; do not fall back to ungoverned direct execution.",
+        "Reduce the requested plan to one small independently verifiable Work Unit.",
+        "Require strict JSON only and validate it before dispatch.",
+        "If uncertainty is part of the failure, make the first Work Unit read-only discovery/decision work.",
+        "After that Work Unit is accepted, plan the next unit from the updated persisted state.",
+        "If the simplified structured plan fails again, stop and surface the planning defect instead of retrying indefinitely."
+      ],
+      "safeguards": [
+        "Never bypass the bridge/governed execution path merely because planning failed.",
+        "Do not create a large monolithic fallback Work Unit."
+      ],
+      "success_signals": [
+        "The planner returns schema-valid JSON.",
+        "A small governed Work Unit is created and can advance the project safely."
+      ]
+    }
+  ]
+}
