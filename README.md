@@ -92,6 +92,32 @@ governed troubleshooting knowledge lives in
 
 See [`docs/runtime-intelligence.md`](docs/runtime-intelligence.md).
 
+## Experience-guided problem solving
+
+Adaptive also carries governed **problem-solving experience** into project planning.
+Validated decomposition/recovery strategies live in
+[`knowledge/problem-solving-strategies.json`](knowledge/problem-solving-strategies.json)
+and are injected only when relevant to the current objective/state.
+
+The first validated strategies encode two execution lessons:
+
+- when implementation is repeatedly blocked by unresolved ambiguity, stop
+  speculative retries and create a bounded read-only decision/research Work Unit
+  that reconciles canonical sources, classifies blockers, produces a decision
+  contract, and only then resumes implementation;
+- when strict planner JSON fails, retry once with a much smaller structured plan
+  rather than repeating the same broad request unchanged.
+
+Accepted workers can also emit a sanitized `ADAPTIVE_LEARNING_CANDIDATE`
+signal when a non-obvious reusable tactic materially unlocks progress. Candidates
+are stored outside Git in
+`~/.local/state/adaptive-ai-orchestrator/problem-solving-candidates.jsonl`.
+A single observation is never treated as permanent truth; repeated independent
+accepted observations may become **provisional advisory guidance**, while
+repository-promoted strategies remain the validated source of knowledge.
+
+See [`docs/problem-solving-learning.md`](docs/problem-solving-learning.md).
+
 For model/provider/auth policy changes, use the
 [policy activation runbook](docs/policy-activation-runbook.md). It separates
 Adaptive worker routing from OpenClaw owner-session auth/account state and
