@@ -82,7 +82,7 @@ class ModelRoutingPolicy:
             ),
             critical_thinking=os.environ.get(
                 "ADAPTIVE_CRITICAL_THINKING",
-                "max",
+                "low",
             ),
             code_thinking=os.environ.get(
                 "ADAPTIVE_CODE_THINKING",
@@ -90,7 +90,17 @@ class ModelRoutingPolicy:
             ),
             routine_thinking=os.environ.get(
                 "ADAPTIVE_ROUTINE_THINKING",
-                "medium",
+                "low",
+            ),
+            economy_auth_profile=(
+                os.environ.get("ADAPTIVE_OPENAI_OAUTH_PROFILE") or None
+            ),
+            code_specialist_auth_profile=(
+                os.environ.get(
+                    "ADAPTIVE_KIMI_AUTH_PROFILE",
+                    "moonshot:api-key",
+                )
+                or None
             ),
             disabled_models=disabled_models,
         )
@@ -128,7 +138,10 @@ class ModelRoutingPolicy:
             return ModelRoutingDecision(
                 model=explicit_model,
                 provider=configuration.provider or self._provider(explicit_model),
-                auth_profile=configuration.auth_profile,
+                auth_profile=(
+                    configuration.auth_profile
+                    or self._auth_profile_for_model(explicit_model)
+                ),
                 tier="explicit",
                 reason="explicit-model-override",
                 attempt=attempt,
@@ -246,7 +259,7 @@ class ModelRoutingPolicy:
             thinking_reason = "provider-native-code-specialist-reasoning"
         elif target.strip().casefold() == strong:
             thinking = self.strong_thinking
-            thinking_reason = "operational-fallback-orchestrator-max-reasoning"
+            thinking_reason = "operational-fallback-orchestrator-low-reasoning"
         else:
             thinking = self.routine_thinking
             thinking_reason = "operational-fallback-low-reasoning"
@@ -316,7 +329,7 @@ class ModelRoutingPolicy:
         if requested is not None:
             return requested, "explicit-thinking-override"
         if model.strip().casefold() == self.strong_model.strip().casefold():
-            return self.strong_thinking, "orchestrator-model-max-reasoning"
+            return self.strong_thinking, "orchestrator-model-low-or-provider-native"
         if model.strip().casefold() == self.economy_model.strip().casefold():
             return self.routine_thinking, "economy-model-low-reasoning"
         if strong_responsibility:
