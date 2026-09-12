@@ -148,6 +148,59 @@
         "Open a temporary in-memory circuit after repeated retryable failures or immediately for non-retryable structural incidents.",
         "Use cooldown and a half-open probe; never silently rewrite permanent routing policy."
       ]
+    },
+    {
+      "id": "adaptive-policy-activation-owner-auth-order",
+      "providers": [
+        "openclaw",
+        "openai",
+        "adaptive"
+      ],
+      "symptom": [
+        "Adaptive policy selects GPT-5.6 Luna OAuth but a manually created OpenClaw owner session fails with OpenAI API billing/no credits",
+        "model is correct but auth resolves to an OpenAI API-key profile"
+      ],
+      "diagnosis": "Adaptive worker routing and a manually created OpenClaw owner session are different control planes. ADAPTIVE_OPENAI_OAUTH_PROFILE is propagated when Adaptive dispatches work, but it does not by itself change OpenClaw's per-agent auth order for a new owner session. With automatic account selection, OpenClaw can choose another eligible profile such as an API-key backup. An existing session-level auth pin can also override normal provider order.",
+      "remediation": [
+        "Inspect the target agent's OpenAI profiles with `openclaw models auth list --provider openai --agent <agent>`.",
+        "Set the target agent's OpenAI auth order explicitly to the intended OAuth profile with `openclaw models auth order set --provider openai --agent <agent> <oauth-profile-id>`.",
+        "Verify with `openclaw models auth order get --provider openai --agent <agent>` before opening the owner session.",
+        "Apply the Adaptive environment policy, restart the gateway, and validate ModelRoutingPolicy.from_env().",
+        "If a previous owner session was pinned to the wrong account/profile, open a fresh session rather than assuming auth order will replace the pin.",
+        "Run a minimal non-tool smoke test, then `/model status`, and confirm the active auth profile reports OAuth before sending a large project prompt."
+      ],
+      "activation_order": [
+        "update-adaptive-code",
+        "inspect-auth-profiles",
+        "set-auth-order",
+        "verify-auth-order",
+        "apply-adaptive-env",
+        "restart-gateway",
+        "validate-adaptive-policy",
+        "start-fresh-owner-session-if-needed",
+        "smoke-test",
+        "verify-model-status",
+        "start-project-work"
+      ],
+      "safety": "Do not print raw tokens or API keys. Auth profile IDs are configuration identifiers, not secret material."
+    },
+    {
+      "id": "policy-change-two-control-planes",
+      "providers": [
+        "openclaw",
+        "adaptive"
+      ],
+      "symptom": [
+        "policy code and environment validate correctly but the owner session still behaves differently",
+        "workers use the intended route while a manually selected owner session uses another model/account"
+      ],
+      "diagnosis": "Adaptive-dispatched workers and a manually-created OpenClaw owner session are different control planes. A policy change can affect worker routing without automatically changing an already-running or manually-created owner session. Model routing, auth routing, session pins, gateway state and environment activation must be validated separately.",
+      "remediation": [
+        "Treat worker policy activation and owner-session activation as separate verification steps.",
+        "For workers, validate the Adaptive policy and environment.",
+        "For the owner session, validate model, reasoning level and auth profile in OpenClaw.",
+        "Do not declare a policy change complete until both control planes pass a smoke test."
+      ]
     }
   ]
 }

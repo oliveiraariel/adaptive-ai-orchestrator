@@ -92,6 +92,11 @@ governed troubleshooting knowledge lives in
 
 See [`docs/runtime-intelligence.md`](docs/runtime-intelligence.md).
 
+For model/provider/auth policy changes, use the
+[policy activation runbook](docs/policy-activation-runbook.md). It separates
+Adaptive worker routing from OpenClaw owner-session auth/account state and
+requires an auth-order check plus smoke test before project work resumes.
+
 The current automatic model policy is intentionally economy-first:
 
 ```text
