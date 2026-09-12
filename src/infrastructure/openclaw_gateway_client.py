@@ -160,7 +160,22 @@ class OpenClawGatewayClient(OpenClawClient):
         }
         model = configuration.get("model")
         provider = configuration.get("provider")
+        auth_profile = configuration.get("auth_profile")
         thinking = configuration.get("thinking")
+        policy_constraints = tuple(
+            str(item)
+            for item in (configuration.get("policy_constraints") or ())
+        )
+        requires_openai_oauth = (
+            "adaptive-auth-product:openai-oauth" in policy_constraints
+        )
+        if requires_openai_oauth and not (
+            isinstance(auth_profile, str) and auth_profile.strip()
+        ):
+            raise OpenClawGatewayError(
+                "Adaptive Luna routing requires an explicit OpenAI OAuth auth "
+                "profile. Set ADAPTIVE_OPENAI_OAUTH_PROFILE before dispatch."
+            )
 
         if isinstance(thinking, str) and thinking.strip():
             # The Gateway `agent` RPC accepts a turn-level `thinking` value.
@@ -173,6 +188,9 @@ class OpenClawGatewayClient(OpenClawClient):
 
             if "/" not in model_ref and provider:
                 model_ref = f"{provider}/{model_ref}"
+
+            if isinstance(auth_profile, str) and auth_profile.strip():
+                model_ref = f"{model_ref}@{auth_profile.strip()}"
 
             self._rpc(
                 "sessions.patch",
@@ -366,7 +384,7 @@ class OpenClawGatewayClient(OpenClawClient):
         ).strip()
         strong_model = os.environ.get(
             "ADAPTIVE_STRONG_MODEL",
-            "moonshot/kimi-k3",
+            "moonshot/kimi-k2.7-code",
         ).strip()
         specialist_model = os.environ.get(
             "ADAPTIVE_CODE_SPECIALIST_MODEL",
@@ -376,18 +394,21 @@ class OpenClawGatewayClient(OpenClawClient):
             item.strip().casefold()
             for item in os.environ.get(
                 "ADAPTIVE_DISABLED_MODELS",
-                "openai/gpt-5.6-sol",
+                "moonshot/kimi-k3,openai/gpt-5.6-sol",
             ).split(",")
             if item.strip()
         }
 
         normalized = current_model.casefold()
-        if normalized == economy_model.casefold():
-            fallback_model = specialist_model
-        elif normalized == strong_model.casefold():
-            fallback_model = specialist_model
-        elif normalized == specialist_model.casefold():
+        if normalized in {
+            strong_model.casefold(),
+            specialist_model.casefold(),
+        }:
             fallback_model = economy_model
+        elif normalized == economy_model.casefold():
+            # Cost-safe policy: Luna does not automatically escalate to a paid
+            # Moonshot route for medium/low-complexity work.
+            return None
         else:
             return None
 
@@ -403,6 +424,21 @@ class OpenClawGatewayClient(OpenClawClient):
         fallback_configuration["provider"] = self._provider_from_model(
             fallback_model
         )
+        if fallback_model.casefold() == economy_model.casefold():
+            fallback_configuration["auth_profile"] = (
+                os.environ.get("ADAPTIVE_OPENAI_OAUTH_PROFILE") or None
+            )
+        elif fallback_model.casefold() in {
+            strong_model.casefold(),
+            specialist_model.casefold(),
+        }:
+            fallback_configuration["auth_profile"] = (
+                os.environ.get(
+                    "ADAPTIVE_KIMI_AUTH_PROFILE",
+                    "moonshot:api-key",
+                )
+                or None
+            )
         if fallback_model.casefold() in {
             "moonshot/kimi-k2.7-code",
             "moonshot/kimi-k2.7-code-highspeed",
@@ -411,12 +447,12 @@ class OpenClawGatewayClient(OpenClawClient):
         elif fallback_model.casefold() == strong_model.casefold():
             fallback_configuration["thinking"] = os.environ.get(
                 "ADAPTIVE_STRONG_THINKING",
-                "max",
+                "low",
             )
         else:
             fallback_configuration["thinking"] = os.environ.get(
                 "ADAPTIVE_ROUTINE_THINKING",
-                "medium",
+                "low",
             )
         constraints = list(
             fallback_configuration.get("policy_constraints") or ()
@@ -428,6 +464,8 @@ class OpenClawGatewayClient(OpenClawClient):
                 f"adaptive-failover-to:{fallback_model}",
             )
         )
+        if fallback_model.casefold() == economy_model.casefold():
+            constraints.append("adaptive-auth-product:openai-oauth")
         fallback_configuration["policy_constraints"] = constraints
 
         context = list(run.task_payload.get("context") or ())
