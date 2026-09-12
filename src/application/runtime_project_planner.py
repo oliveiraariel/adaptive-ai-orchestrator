@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from application.problem_solving_knowledge import ProblemSolvingKnowledge
 from application.run_orchestration import RunOrchestration, RunOrchestrationRequest
 from domain.project_execution_plan import (
     PlannedDependency,
@@ -64,16 +65,28 @@ class RuntimeProjectPlanner:
         *,
         runner: RunOrchestration,
         skill_profiles: Sequence[SkillProfile],
+        problem_solving_knowledge: ProblemSolvingKnowledge | None = None,
     ) -> None:
         self._runner = runner
         self._skill_profiles = tuple(skill_profiles)
+        self._problem_solving_knowledge = (
+            problem_solving_knowledge
+            if problem_solving_knowledge is not None
+            else ProblemSolvingKnowledge.from_default_repository_file()
+        )
 
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
+        prompt = self._build_initial_prompt(request)
         result = self._run_planner(
             request=request,
-            objective=self._build_initial_prompt(request),
+            objective=prompt,
         )
-        return self.parse(result, max_work_units=request.max_work_units)
+        return self._parse_with_recovery(
+            request=request,
+            result=result,
+            original_prompt=prompt,
+            mode="initial",
+        )
 
     def replan(
         self,
@@ -91,15 +104,85 @@ class RuntimeProjectPlanner:
 
         if not state_summary.strip():
             raise ProjectPlanningError("Replanning requires a non-empty state summary.")
+        prompt = self._build_replan_prompt(
+            request=request,
+            current_plan=current_plan,
+            state_summary=state_summary,
+        )
         result = self._run_planner(
             request=request,
-            objective=self._build_replan_prompt(
-                request=request,
-                current_plan=current_plan,
-                state_summary=state_summary,
-            ),
+            objective=prompt,
         )
-        return self.parse(result, max_work_units=request.max_work_units)
+        return self._parse_with_recovery(
+            request=request,
+            result=result,
+            original_prompt=prompt,
+            mode="replan",
+        )
+
+    def _parse_with_recovery(
+        self,
+        *,
+        request: ProjectPlanningRequest,
+        result: str,
+        original_prompt: str,
+        mode: str,
+    ) -> ProjectExecutionPlan:
+        try:
+            return self.parse(result, max_work_units=request.max_work_units)
+        except ProjectPlanningError as exc:
+            recovery_prompt = self._build_planning_recovery_prompt(
+                request=request,
+                original_prompt=original_prompt,
+                failed_output=result,
+                failure=str(exc),
+                mode=mode,
+            )
+            repaired = self._run_planner(
+                request=request,
+                objective=recovery_prompt,
+            )
+            return self.parse(repaired, max_work_units=request.max_work_units)
+
+    def _build_planning_recovery_prompt(
+        self,
+        *,
+        request: ProjectPlanningRequest,
+        original_prompt: str,
+        failed_output: str,
+        failure: str,
+        mode: str,
+    ) -> str:
+        if mode == "replan":
+            bounded_rule = (
+                "Preserve every existing Work Unit id and meaning from the original "
+                "replanning request. Add at most ONE genuinely necessary new Work Unit "
+                "during this repair attempt."
+            )
+        else:
+            bounded_rule = (
+                "Reduce the planning surface. Prefer exactly ONE small, independently "
+                "verifiable Work Unit for the next safe step instead of rebuilding a "
+                "large graph. If unresolved uncertainty is the blocker, make that unit "
+                "read-only DECISION or RESEARCH work."
+            )
+
+        guidance = self._problem_solving_guidance(request)
+        return (
+            "The previous Adaptive planning response failed structured validation. "
+            "Do not repeat the same broad response unchanged. Repair the plan using "
+            "the smallest safe planning surface.\n\n"
+            f"VALIDATION FAILURE:\n{failure}\n\n"
+            f"RECOVERY RULE:\n{bounded_rule}\n\n"
+            "Preserve repository state. Planning remains read-only. Do not bypass "
+            "governed execution merely because planning failed. Return strict JSON "
+            "matching the required schema and nothing else.\n\n"
+            f"{guidance + chr(10) + chr(10) if guidance else ''}"
+            "PREVIOUS OUTPUT (diagnostic excerpt only):\n"
+            f"{failed_output[:12000]}\n\n"
+            "ORIGINAL PLANNING REQUEST:\n"
+            f"{original_prompt}"
+        )
 
     def _run_planner(
         self,
@@ -139,6 +222,7 @@ class RuntimeProjectPlanner:
             f"MAX WORK UNITS: {request.max_work_units}\n"
             f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
             f"{self._planning_rules()}\n\n"
+            f"{self._guidance_section(request)}"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
             "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
             f"{self._schema_json()}"
@@ -171,10 +255,40 @@ class RuntimeProjectPlanner:
             "- Prefer direct fan-in/integration or verification work over duplicating already completed analysis.\n"
             "- If no new Work Unit is truly necessary, return the current plan unchanged.\n"
             f"{self._planning_rules()}\n\n"
+            f"{self._guidance_section(request, state_summary=state_summary)}"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
             "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
             f"{self._schema_json()}"
         )
+
+    def _problem_solving_guidance(
+        self,
+        request: ProjectPlanningRequest,
+        *,
+        state_summary: str = "",
+    ) -> str:
+        evidence = "\n".join(
+            (
+                request.objective,
+                request.scope,
+                *request.context,
+                *request.constraints,
+                state_summary,
+            )
+        )
+        return self._problem_solving_knowledge.prompt_block(evidence)
+
+    def _guidance_section(
+        self,
+        request: ProjectPlanningRequest,
+        *,
+        state_summary: str = "",
+    ) -> str:
+        guidance = self._problem_solving_guidance(
+            request,
+            state_summary=state_summary,
+        )
+        return f"{guidance}\n\n" if guidance else ""
 
     @staticmethod
     def _planning_rules() -> str:
@@ -183,6 +297,7 @@ class RuntimeProjectPlanner:
             "- Respect project governance, gates, approved architecture and facts in context.\n"
             "- Do not invent requirements merely to complete the graph.\n"
             "- Use project-discovery/research/decision units only when uncertainty materially blocks work.\n"
+            "- If implementation repeatedly stops on unresolved architecture, contract, or business-rule uncertainty, STOP implementation retries. Create a read-only DECISION/RESEARCH Work Unit that reconciles canonical sources, classifies blockers, reuses existing decisions, escalates only genuine new business decisions, and produces an explicit implementation contract before implementation resumes.\n"
             "- Do not serialize frontend and backend by habit. Add a blocking edge only for a real prerequisite.\n"
             "- Once a contract/interface is stable enough, allow independent backend, frontend, testing, review, or other units to share the ready frontier.\n"
             "- Parallel work may be backend/backend, frontend/frontend, frontend/backend, research/research, or other combinations.\n"
