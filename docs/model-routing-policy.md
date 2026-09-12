@@ -4,8 +4,8 @@
 
 Adaptive uses a cost-aware, role-aware policy with two automatic model families:
 
-- **Kimi K2.7 Code** for high-complexity work while the Moonshot route is funded
-  and operational;
+- **Kimi K2.7 Code** for high-complexity work while automatic Kimi routing is
+  enabled and the Moonshot route is funded/operational;
 - **GPT-5.6 Luna via OpenAI OAuth** for medium/low-complexity work and as the
   cost-safe fallback when K2.7 cannot run.
 
@@ -135,9 +135,26 @@ K3 and Sol are never automatic fallback candidates.
 
 ## "K2.7 only when balance/availability exists"
 
-Adaptive does not query a Moonshot billing dashboard before every task.
+Automatic Kimi eligibility has an explicit operator-controlled switch:
 
-Instead:
+```text
+ADAPTIVE_KIMI_ENABLED=1
+```
+
+When it is set to `0`, `false`, `no` or `off`, high-complexity automatic
+routing goes directly to GPT-5.6 Luna OAuth Low without first calling Moonshot.
+
+This is the recommended setting while the Kimi account has no usable balance:
+
+```text
+ADAPTIVE_KIMI_ENABLED=0
+```
+
+After the operator restores Kimi balance, set it back to `1` to make K2.7 the
+high-complexity primary again.
+
+When Kimi is enabled, Adaptive still does not query a Moonshot billing dashboard
+before every task. Instead:
 
 1. high-complexity work selects K2.7;
 2. Runtime Intelligence classifies provider failures;
@@ -177,6 +194,7 @@ ADAPTIVE_ROUTINE_THINKING=low
 
 ADAPTIVE_KIMI_AUTH_PROFILE=moonshot:api-key
 ADAPTIVE_OPENAI_OAUTH_PROFILE=<required local OpenClaw OAuth profile id>
+ADAPTIVE_KIMI_ENABLED=1
 
 ADAPTIVE_DISABLED_MODELS=moonshot/kimi-k3,openai/gpt-5.6-sol
 ```
@@ -244,8 +262,9 @@ Provider incident telemetry remains at:
 
 ```text
 high complexity
-    -> K2.7 Code when healthy/funded
-    -> Luna OAuth Low on operational failure
+    -> K2.7 Code when ADAPTIVE_KIMI_ENABLED=1 and healthy/funded
+    -> Luna OAuth Low when Kimi is explicitly disabled
+    -> Luna OAuth Low on K2.7 operational failure
 
 medium / low complexity
     -> Luna OAuth Low

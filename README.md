@@ -96,7 +96,8 @@ The current automatic model policy is intentionally economy-first:
 
 ```text
 high complexity
-  -> moonshot/kimi-k2.7-code
+  -> moonshot/kimi-k2.7-code when ADAPTIVE_KIMI_ENABLED=1
+  -> openai/gpt-5.6-luna via explicit OAuth, low reasoning when Kimi is disabled
   -> fallback: openai/gpt-5.6-luna via explicit OAuth, low reasoning
 
 medium / low complexity

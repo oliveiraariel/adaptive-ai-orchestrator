@@ -253,6 +253,7 @@ def test_environment_can_override_policy_models_thinking_auth_and_disabled_model
     monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-custom")
     monkeypatch.setenv("ADAPTIVE_KIMI_AUTH_PROFILE", "moonshot:kimi-custom")
     monkeypatch.setenv("ADAPTIVE_DISABLED_MODELS", "vendor/off-1,vendor/off-2")
+    monkeypatch.setenv("ADAPTIVE_KIMI_ENABLED", "false")
 
     routing = ModelRoutingPolicy.from_env()
 
@@ -265,4 +266,64 @@ def test_environment_can_override_policy_models_thinking_auth_and_disabled_model
     assert routing.routine_thinking == "low"
     assert routing.economy_auth_profile == "openai:oauth-custom"
     assert routing.code_specialist_auth_profile == "moonshot:kimi-custom"
+    assert routing.kimi_enabled is False
     assert routing.disabled_models == ("vendor/off-1", "vendor/off-2")
+
+
+def test_kimi_disabled_routes_high_complexity_directly_to_luna_low_oauth() -> None:
+    routing = ModelRoutingPolicy(
+        economy_auth_profile=OAUTH_PROFILE,
+        kimi_enabled=False,
+    )
+
+    for objective in (
+        "Definir arquitetura sistêmica da aplicação.",
+        "Implementar transferência financeira com transação e rollback.",
+        "Perform code review for the backend implementation.",
+    ):
+        decision = routing.select(make_task(objective))
+        assert decision.model == "openai/gpt-5.6-luna"
+        assert decision.provider == "openai"
+        assert decision.auth_profile == OAUTH_PROFILE
+        assert decision.tier == "economy-fallback"
+        assert decision.thinking == "low"
+        assert decision.reason.startswith("kimi-disabled-")
+        assert decision.thinking_reason == "high-complexity-luna-low-kimi-disabled"
+        assert decision.escalated_from == "moonshot/kimi-k2.7-code"
+
+
+def test_kimi_disabled_still_allows_explicit_manual_k27_override() -> None:
+    routing = ModelRoutingPolicy(
+        economy_auth_profile=OAUTH_PROFILE,
+        kimi_enabled=False,
+    )
+
+    decision = routing.select(
+        make_task(
+            "Manual K2.7 diagnostic.",
+            model="moonshot/kimi-k2.7-code",
+            provider="moonshot",
+        )
+    )
+
+    assert decision.model == "moonshot/kimi-k2.7-code"
+    assert decision.tier == "explicit"
+    assert decision.thinking is None
+
+
+def test_environment_can_disable_kimi_automatic_routing(monkeypatch) -> None:
+    monkeypatch.setenv("ADAPTIVE_KIMI_ENABLED", "0")
+    routing = ModelRoutingPolicy.from_env()
+
+    assert routing.kimi_enabled is False
+
+
+def test_environment_rejects_invalid_kimi_enabled_value(monkeypatch) -> None:
+    monkeypatch.setenv("ADAPTIVE_KIMI_ENABLED", "sometimes")
+
+    try:
+        ModelRoutingPolicy.from_env()
+    except ValueError as exc:
+        assert "ADAPTIVE_KIMI_ENABLED" in str(exc)
+    else:
+        raise AssertionError("Expected invalid Kimi availability flag to fail.")
