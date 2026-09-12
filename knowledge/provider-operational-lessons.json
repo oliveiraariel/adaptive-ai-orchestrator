@@ -194,7 +194,7 @@
         "policy code and environment validate correctly but the owner session still behaves differently",
         "workers use the intended route while a manually selected owner session uses another model/account"
       ],
-      "diagnosis": "A policy change can affect Adaptive-dispatched workers without automatically changing an already-running or manually-created OpenClaw owner session. Model routing, auth routing, session pins, gateway state and environment activation must be validated separately.",
+      "diagnosis": "Adaptive-dispatched workers and a manually-created OpenClaw owner session are different control planes. A policy change can affect worker routing without automatically changing an already-running or manually-created owner session. Model routing, auth routing, session pins, gateway state and environment activation must be validated separately.",
       "remediation": [
         "Treat worker policy activation and owner-session activation as separate verification steps.",
         "For workers, validate the Adaptive policy and environment.",
