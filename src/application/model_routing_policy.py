@@ -179,7 +179,7 @@ class ModelRoutingPolicy:
                 else "explicit-code-remediation"
             )
             return self._high_complexity_decision(
-                tier=tier,
+                tier="code-specialist",
                 reason=reason,
                 attempt=attempt,
                 escalated_from=self.economy_model,
@@ -278,7 +278,7 @@ class ModelRoutingPolicy:
         if self.kimi_enabled:
             return self._decision(
                 self.code_specialist_model,
-                tier="code-specialist",
+                tier=tier,
                 reason=reason,
                 attempt=attempt,
                 thinking=None,
