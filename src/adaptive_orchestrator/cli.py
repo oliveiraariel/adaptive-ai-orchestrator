@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from application.observability import JsonlObservabilitySink
+from application.observability import JsonlObservabilitySink, canonical_observability_path
 from pathlib import Path
 from typing import Sequence
 
@@ -283,10 +283,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 human_approved=args.human_approved,
                 plan=plan,
             ),
-            observability=(
-                JsonlObservabilitySink(os.environ["ADAPTIVE_OBSERVABILITY_LOG"])
-                if os.environ.get("ADAPTIVE_OBSERVABILITY_LOG") else None
-            ),
+            observability=JsonlObservabilitySink(canonical_observability_path()),
         )
     except (
         OSError,
@@ -368,10 +365,7 @@ def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:
 
 
 def _runtime(args: argparse.Namespace) -> OpenClawAdapter:
-    observability = (
-        JsonlObservabilitySink(os.environ["ADAPTIVE_OBSERVABILITY_LOG"])
-        if os.environ.get("ADAPTIVE_OBSERVABILITY_LOG") else None
-    )
+    observability = JsonlObservabilitySink(canonical_observability_path())
     config = GatewayConfig(
         url=args.gateway_url,
         token=os.environ.get("OPENCLAW_GATEWAY_TOKEN"),

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
 from datetime import datetime, timezone
 from uuid import uuid4
+
+
+def canonical_observability_path() -> Path:
+    """Return the shared persistent telemetry path, with an optional override."""
+    override = os.environ.get("ADAPTIVE_OBSERVABILITY_LOG")
+    if override:
+        return Path(override).expanduser()
+    state_home = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    return Path(state_home).expanduser() / "adaptive-ai-orchestrator" / "observability.jsonl"
 
 
 class ObservabilitySink(Protocol):

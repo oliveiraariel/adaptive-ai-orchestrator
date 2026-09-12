@@ -1,5 +1,18 @@
 # Adaptive AI Orchestrator
 
+## Runtime observability
+
+Normal CLI executions used by the OpenClaw bridge automatically publish the
+allowlisted lifecycle telemetry to the shared persistent JSONL source:
+
+`~/.local/state/adaptive-ai-orchestrator/observability.jsonl`
+
+The location follows `${XDG_STATE_HOME}/adaptive-ai-orchestrator/observability.jsonl`
+when `XDG_STATE_HOME` is set. `ADAPTIVE_OBSERVABILITY_LOG` remains an optional
+development, test, or diagnostic override. No shell activation or manual export
+is required for the normal bridge composition root. The sink excludes prompts,
+transcripts, reasoning, raw results, credentials, and arbitrary file content.
+
 An adaptive AI orchestration system for analyzing projects, decomposing work, coordinating agents, selecting appropriate AI models and resources, evaluating results, replanning execution, and preserving project continuity.
 
 The **Adaptive AI Orchestrator** is a software system — not a single agent, skill, or model router — designed to provide a structured orchestration layer between developers, AI agents, skills, models, tools, and external agent runtimes.
