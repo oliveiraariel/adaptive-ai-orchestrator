@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "purpose": "Governed reusable problem-solving strategies learned from successful Adaptive executions. Validated strategies may guide planning; runtime candidates remain advisory until repeated or promoted.",
+  "strategies": [
+    {
+      "id": "resolve-blockers-before-implementation",
+      "status": "validated",
+      "title": "Resolve ambiguity with an analysis-only Work Unit before speculative implementation",
+      "triggers": [
+        "blocked",
+        "blocker",
+        "ambiguous",
+        "ambiguity",
+        "architecture",
+        "architectural",
+        "cannot implement safely",
+        "decision needed",
+        "unresolved decision",
+        "contract incomplete",
+        "speculative implementation"
+      ],
+      "guidance": [
+        "Stop retrying implementation when the same unresolved blocker remains.",
+        "Create one read-only DECISION or RESEARCH Work Unit focused only on resolving blockers.",
+        "Reconcile canonical requirements, use cases, architecture, handoff and existing implementation before proposing anything new.",
+        "Classify each blocker as: existing project decision, technical decision not yet materialized, genuine business-rule ambiguity, or environment/tooling limitation.",
+        "Apply existing decisions directly; choose the smallest safe technical option when it does not change business behavior; ask the human only for genuine business decisions.",
+        "Produce an explicit decision matrix and implementation contract, then resume code in a separate bounded Work Unit."
+      ],
+      "safety": [
+        "Do not invent business rules to unblock implementation.",
+        "Do not modify implementation files during the blocker-resolution Work Unit unless explicitly authorized.",
+        "Preserve checkpoints before resuming risky implementation."
+      ],
+      "evidence": [
+        "2026-09-12: a repeatedly blocked backend restoration task became implementable after an analysis-only Work Unit reconciled canonical documents, classified blockers, consolidated the technical contract and confirmed that no new business decision was required."
+      ]
+    },
+    {
+      "id": "simplify-after-structured-planning-failure",
+      "status": "validated",
+      "title": "Reduce planning scope after malformed structured planner output",
+      "triggers": [
+        "planner returned invalid json",
+        "projectplanningerror",
+        "invalid json",
+        "planning failed",
+        "structured output failure"
+      ],
+      "guidance": [
+        "Do not repeat the same broad planning request unchanged.",
+        "Retry once with a smaller objective and exactly one bounded Work Unit.",
+        "Prefer a read-only reconciliation or blocker-resolution Work Unit when uncertainty is the cause.",
+        "Validate the structured plan before any repository mutation.",
+        "If the simplified retry also fails, stop safely and preserve the last checkpoint instead of bypassing the orchestrator."
+      ],
+      "safety": [
+        "Never fall back to ungoverned direct execution when project policy requires the bridge.",
+        "Do not treat malformed planner output as authorization to relax schema validation."
+      ],
+      "evidence": [
+        "2026-09-12: repeated ProjectPlanningError/invalid JSON failures stopped after replanning was reduced to one small Work Unit and the unresolved blocker was isolated first."
+      ]
+    }
+  ]
+}
