@@ -47,6 +47,7 @@ class ModelRoutingPolicy:
     routine_thinking: str = "low"
     economy_auth_profile: str | None = None
     code_specialist_auth_profile: str | None = "moonshot:api-key"
+    kimi_enabled: bool = True
     disabled_models: tuple[str, ...] = (
         "moonshot/kimi-k3",
         "openai/gpt-5.6-sol",
@@ -102,6 +103,10 @@ class ModelRoutingPolicy:
                 )
                 or None
             ),
+            kimi_enabled=cls._env_enabled(
+                os.environ.get("ADAPTIVE_KIMI_ENABLED"),
+                default=True,
+            ),
             disabled_models=disabled_models,
         )
 
@@ -150,35 +155,19 @@ class ModelRoutingPolicy:
             )
 
         if code_specialist_responsibility:
-            return self._decision(
-                self.code_specialist_model,
-                tier="code-specialist",
+            return self._high_complexity_decision(
                 reason="code-review-or-code-level-architecture",
                 attempt=attempt,
-                thinking=None,
-                thinking_reason="provider-native-code-specialist-reasoning",
             )
 
         if strong_responsibility:
-            return self._decision(
-                self.strong_model,
-                tier="strong",
+            return self._high_complexity_decision(
                 reason=(
                     "critical-systemic-orchestration"
                     if critical_systemic
                     else "orchestration-planning-or-systemic-architecture"
                 ),
                 attempt=attempt,
-                thinking=(
-                    self.critical_thinking
-                    if critical_systemic
-                    else self.strong_thinking
-                ),
-                thinking_reason=(
-                    "critical-systemic-provider-native-or-low"
-                    if critical_systemic
-                    else "orchestrator-provider-native-or-low"
-                ),
             )
 
         if code_or_test and (attempt >= 2 or remedial):
@@ -187,24 +176,16 @@ class ModelRoutingPolicy:
                 if attempt >= 2
                 else "explicit-code-remediation"
             )
-            return self._decision(
-                self.code_specialist_model,
-                tier="code-specialist",
+            return self._high_complexity_decision(
                 reason=reason,
                 attempt=attempt,
-                thinking=None,
-                thinking_reason="provider-native-code-specialist-reasoning",
                 escalated_from=self.economy_model,
             )
 
         if complex_code:
-            return self._decision(
-                self.code_specialist_model,
-                tier="code-specialist",
+            return self._high_complexity_decision(
                 reason="complex-code-or-test-first-attempt",
                 attempt=attempt,
-                thinking=None,
-                thinking_reason="provider-native-code-specialist-reasoning",
             )
 
         if code_or_test:
@@ -282,6 +263,34 @@ class ModelRoutingPolicy:
             for item in self.disabled_models
         }
 
+    def _high_complexity_decision(
+        self,
+        *,
+        reason: str,
+        attempt: int,
+        escalated_from: str | None = None,
+    ) -> ModelRoutingDecision:
+        if self.kimi_enabled:
+            return self._decision(
+                self.code_specialist_model,
+                tier="code-specialist",
+                reason=reason,
+                attempt=attempt,
+                thinking=None,
+                thinking_reason="provider-native-code-specialist-reasoning",
+                escalated_from=escalated_from,
+            )
+
+        return self._decision(
+            self.economy_model,
+            tier="economy-fallback",
+            reason=f"kimi-disabled-{reason}",
+            attempt=attempt,
+            thinking=self.routine_thinking,
+            thinking_reason="high-complexity-luna-low-kimi-disabled",
+            escalated_from=self.code_specialist_model,
+        )
+
     def _decision(
         self,
         model: str,
@@ -356,6 +365,20 @@ class ModelRoutingPolicy:
         }:
             return self.code_specialist_auth_profile
         return None
+
+    @staticmethod
+    def _env_enabled(value: str | None, *, default: bool) -> bool:
+        if value is None:
+            return default
+        normalized = value.strip().casefold()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(
+            "ADAPTIVE_KIMI_ENABLED must be one of "
+            "1/0, true/false, yes/no, on/off."
+        )
 
     @staticmethod
     def _provider(model: str) -> str:
