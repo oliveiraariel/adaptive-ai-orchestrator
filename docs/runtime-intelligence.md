@@ -362,6 +362,17 @@ knowledge/provider-operational-lessons.json
 They are operational knowledge, not executable permission to mutate security,
 billing, routing or provider configuration.
 
+## Policy activation runbook
+
+Provider/model policy changes have two activation surfaces: Adaptive-dispatched
+workers and manually-created OpenClaw owner sessions. A worker policy can be
+correct while the owner session still resolves a different account/profile.
+
+Use [Policy Activation Runbook](policy-activation-runbook.md) whenever model,
+provider, auth-product, reasoning or cost policy changes. The runbook requires
+explicit auth-order verification, a minimal smoke test and `/model status`
+before project work resumes.
+
 ## Safety boundaries
 
 Adaptive Runtime Intelligence must not:
