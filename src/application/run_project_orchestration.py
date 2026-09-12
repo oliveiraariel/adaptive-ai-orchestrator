@@ -23,6 +23,10 @@ from application.execution_coordinator import (
 )
 from application.finalize_execution import FinalizeExecution, FinalizeExecutionRequest
 from application.plan_work import PlanWork, PlanWorkRequest
+from application.problem_solving_learning import (
+    LEARNING_MARKER,
+    ProblemSolvingLearningStore,
+)
 from application.runtime_project_planner import (
     ProjectPlanner,
     ProjectPlanningRequest,
@@ -146,6 +150,7 @@ class RunProjectOrchestration:
 
     RUNTIME_NAME = "openclaw"
     REPLAN_MARKER = "ADAPTIVE_REPLAN_REQUIRED"
+    LEARNING_MARKER = LEARNING_MARKER
 
     def __init__(
         self,
@@ -154,6 +159,7 @@ class RunProjectOrchestration:
         claim_registry: ClaimRegistry,
         planner: ProjectPlanner,
         skill_profiles: Sequence[SkillProfile],
+        learning_store: ProblemSolvingLearningStore | None = None,
     ) -> None:
         self._runtime = runtime
         self._claims = claim_registry
@@ -161,6 +167,7 @@ class RunProjectOrchestration:
         self._skill_profiles = tuple(skill_profiles)
         self._skill_resolver = SkillResolver(self._skill_profiles)
         self._readiness = WorkUnitReadinessEvaluator()
+        self._learning_store = learning_store or ProblemSolvingLearningStore.from_env()
 
     def execute(
         self,
@@ -344,6 +351,7 @@ class RunProjectOrchestration:
                     work_unit=work_units[work_unit_id],
                     skills=skill_sets[work_unit_id],
                     dependencies=dependencies,
+                    orchestration_id=orchestration_id,
                     attempts=attempts[work_unit_id],
                     max_attempts=request.max_attempts_per_work_unit,
                 )
@@ -632,6 +640,7 @@ class RunProjectOrchestration:
             "Work only inside the delegated objective and declared scope. Do not expand authority.",
             "Return a concise result describing artifacts changed/produced, verification actually performed, blockers, and any next dependency-relevant fact.",
             f"If genuinely necessary new work is discovered that is not represented by this Work Unit, include the literal marker {self.REPLAN_MARKER}: followed by a concise reason. Do not use the marker for optional improvements.",
+            self._learning_signal_constraint(),
         )
         if spec.write_paths:
             constraints = (
@@ -743,6 +752,12 @@ class RunProjectOrchestration:
             EvaluationVerdict.ACCEPTED,
             EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
         }
+        if accepted and output:
+            self._learning_store.record_worker_signal(
+                output,
+                orchestration_id=orchestration_id,
+                work_unit_id=outcome.work_unit_id,
+            )
         return (
             WorkUnitExecutionRecord(
                 work_unit_id=outcome.work_unit_id,
@@ -759,6 +774,17 @@ class RunProjectOrchestration:
                 reason="accepted" if accepted else "evaluation-returned",
             ),
             accepted and self.REPLAN_MARKER in output,
+        )
+
+    def _learning_signal_constraint(self) -> str:
+        return (
+            "If a non-obvious, reusable problem-solving or decomposition strategy "
+            "materially turned a blocker into progress, append exactly one final "
+            f"single-line {self.LEARNING_MARKER} JSON object with keys "
+            "strategy_id, trigger, action, result. Use a stable lowercase-hyphen "
+            "strategy_id. Do not emit this marker for ordinary success. Never put "
+            "prompts, source code, user data, secrets, credentials, model reasoning, "
+            "or raw tool output in the learning signal."
         )
 
     @staticmethod
