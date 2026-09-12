@@ -156,12 +156,14 @@ class ModelRoutingPolicy:
 
         if code_specialist_responsibility:
             return self._high_complexity_decision(
+                tier="code-specialist",
                 reason="code-review-or-code-level-architecture",
                 attempt=attempt,
             )
 
         if strong_responsibility:
             return self._high_complexity_decision(
+                tier="strong",
                 reason=(
                     "critical-systemic-orchestration"
                     if critical_systemic
@@ -177,6 +179,7 @@ class ModelRoutingPolicy:
                 else "explicit-code-remediation"
             )
             return self._high_complexity_decision(
+                tier=tier,
                 reason=reason,
                 attempt=attempt,
                 escalated_from=self.economy_model,
@@ -184,6 +187,7 @@ class ModelRoutingPolicy:
 
         if complex_code:
             return self._high_complexity_decision(
+                tier="code-specialist",
                 reason="complex-code-or-test-first-attempt",
                 attempt=attempt,
             )
@@ -266,6 +270,7 @@ class ModelRoutingPolicy:
     def _high_complexity_decision(
         self,
         *,
+        tier: str,
         reason: str,
         attempt: int,
         escalated_from: str | None = None,
