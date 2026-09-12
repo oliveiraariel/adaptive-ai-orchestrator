@@ -11,6 +11,7 @@ from domain.task_package import TaskPackage
 class ModelRoutingDecision:
     model: str
     provider: str
+    auth_profile: str | None
     tier: str
     reason: str
     attempt: int
@@ -23,33 +24,39 @@ class ModelRoutingDecision:
 class ModelRoutingPolicy:
     """Deterministic role-aware routing for Adaptive/OpenClaw.
 
-    Active policy:
-    - Moonshot Kimi K3 handles orchestration, project discovery, planning, governance,
-      synthesis and systemic/high-level architecture;
-    - Kimi K2.7 Code handles code-specialist work, code-level architecture,
-      complex implementation, review, retries and remediation;
-    - GPT-5.6 Luna handles routine/mechanical work and routine first-pass code;
-    - the direct Moonshot K3 route uses provider-required max reasoning for
-      orchestration and critical systemic work;
-    - Luna runs at medium reasoning;
+    Active economy-first policy:
+    - Kimi K2.7 Code is the automatic high-complexity model for orchestration,
+      systemic analysis, complex code, review, retries and remediation while the
+      Moonshot route is funded and healthy;
+    - GPT-5.6 Luna is the automatic medium/low-complexity model and the fallback
+      for K2.7 operational failures;
+    - Luna runs at low reasoning and is expected to use an explicit OpenAI OAuth
+      auth profile so ChatGPT-plan usage is not silently replaced by paid API-key
+      billing;
     - K2.7 Code keeps provider-native reasoning;
-    - GPT-5.6 Sol is excluded from automatic routing.
+    - Kimi K3 and GPT-5.6 Sol remain manually available but are excluded from
+      automatic routing.
     """
 
-    strong_model: str = "moonshot/kimi-k3"
+    strong_model: str = "moonshot/kimi-k2.7-code"
     economy_model: str = "openai/gpt-5.6-luna"
     code_specialist_model: str = "moonshot/kimi-k2.7-code"
-    strong_thinking: str = "max"
-    critical_thinking: str = "max"
-    code_thinking: str = "medium"
-    routine_thinking: str = "medium"
-    disabled_models: tuple[str, ...] = ("openai/gpt-5.6-sol",)
+    strong_thinking: str = "low"
+    critical_thinking: str = "low"
+    code_thinking: str = "low"
+    routine_thinking: str = "low"
+    economy_auth_profile: str | None = None
+    code_specialist_auth_profile: str | None = "moonshot:api-key"
+    disabled_models: tuple[str, ...] = (
+        "moonshot/kimi-k3",
+        "openai/gpt-5.6-sol",
+    )
 
     @classmethod
     def from_env(cls) -> "ModelRoutingPolicy":
         disabled = os.environ.get(
             "ADAPTIVE_DISABLED_MODELS",
-            "openai/gpt-5.6-sol",
+            "moonshot/kimi-k3,openai/gpt-5.6-sol",
         )
         disabled_models = tuple(
             item.strip()
@@ -59,7 +66,7 @@ class ModelRoutingPolicy:
         return cls(
             strong_model=os.environ.get(
                 "ADAPTIVE_STRONG_MODEL",
-                "moonshot/kimi-k3",
+                "moonshot/kimi-k2.7-code",
             ),
             economy_model=os.environ.get(
                 "ADAPTIVE_ECONOMY_MODEL",
@@ -71,7 +78,7 @@ class ModelRoutingPolicy:
             ),
             strong_thinking=os.environ.get(
                 "ADAPTIVE_STRONG_THINKING",
-                "max",
+                "low",
             ),
             critical_thinking=os.environ.get(
                 "ADAPTIVE_CRITICAL_THINKING",
@@ -79,7 +86,7 @@ class ModelRoutingPolicy:
             ),
             code_thinking=os.environ.get(
                 "ADAPTIVE_CODE_THINKING",
-                "medium",
+                "low",
             ),
             routine_thinking=os.environ.get(
                 "ADAPTIVE_ROUTINE_THINKING",
@@ -121,6 +128,7 @@ class ModelRoutingPolicy:
             return ModelRoutingDecision(
                 model=explicit_model,
                 provider=configuration.provider or self._provider(explicit_model),
+                auth_profile=configuration.auth_profile,
                 tier="explicit",
                 reason="explicit-model-override",
                 attempt=attempt,
@@ -154,9 +162,9 @@ class ModelRoutingPolicy:
                     else self.strong_thinking
                 ),
                 thinking_reason=(
-                    "critical-systemic-max-reasoning"
+                    "critical-systemic-provider-native-or-low"
                     if critical_systemic
-                    else "orchestrator-max-reasoning"
+                    else "orchestrator-provider-native-or-low"
                 ),
             )
 
@@ -193,7 +201,7 @@ class ModelRoutingPolicy:
                 reason="routine-code-or-test-first-attempt",
                 attempt=attempt,
                 thinking=self.code_thinking,
-                thinking_reason="routine-code-medium-reasoning",
+                thinking_reason="routine-code-low-reasoning",
             )
 
         return self._decision(
@@ -202,7 +210,7 @@ class ModelRoutingPolicy:
             reason="routine-or-mechanical-work",
             attempt=attempt,
             thinking=self.routine_thinking,
-            thinking_reason="routine-non-code-medium-reasoning",
+            thinking_reason="routine-non-code-low-reasoning",
         )
 
     def fallback_for(
@@ -211,23 +219,22 @@ class ModelRoutingPolicy:
         *,
         failure_reason: str,
     ) -> ModelRoutingDecision | None:
-        """Return the next role-compatible model for operational failover.
+        """Return the cost-safe operational fallback.
 
-        Routine Luna work falls back to K2.7 Code. K3 orchestration falls back
-        to K2.7 Code. Direct K2.7 Code work falls back to Luna. Disabled models
-        are never selected as fallback candidates.
+        High-complexity K2.7 work may fall back to Luna Low/OAuth. Luna work
+        does not automatically escalate to a paid Moonshot route: medium/low
+        work remains cost-safe and surfaces its operational failure instead.
+        Disabled premium models are never automatic fallback candidates.
         """
         normalized = decision.model.strip().casefold()
         economy = self.economy_model.strip().casefold()
         strong = self.strong_model.strip().casefold()
         specialist = self.code_specialist_model.strip().casefold()
 
-        if normalized == economy:
-            target = self.code_specialist_model
-        elif normalized == strong:
-            target = self.code_specialist_model
-        elif normalized == specialist:
+        if normalized in {strong, specialist}:
             target = self.economy_model
+        elif normalized == economy:
+            return None
         else:
             return None
 
@@ -242,10 +249,11 @@ class ModelRoutingPolicy:
             thinking_reason = "operational-fallback-orchestrator-max-reasoning"
         else:
             thinking = self.routine_thinking
-            thinking_reason = "operational-fallback-medium-reasoning"
+            thinking_reason = "operational-fallback-low-reasoning"
         return ModelRoutingDecision(
             model=target,
             provider=self._provider(target),
+            auth_profile=self._auth_profile_for_model(target),
             tier="fallback",
             reason=f"operational-fallback-after-{failure_reason}",
             attempt=decision.attempt,
@@ -271,6 +279,7 @@ class ModelRoutingPolicy:
         thinking: str | None,
         thinking_reason: str,
         escalated_from: str | None = None,
+        auth_profile: str | None = None,
     ) -> ModelRoutingDecision:
         if self.is_disabled(model):
             raise ValueError(f"Adaptive model routing selected disabled model: {model}")
@@ -281,6 +290,11 @@ class ModelRoutingPolicy:
         return ModelRoutingDecision(
             model=model,
             provider=self._provider(model),
+            auth_profile=(
+                auth_profile
+                if auth_profile is not None
+                else self._auth_profile_for_model(model)
+            ),
             tier=tier,
             reason=reason,
             attempt=attempt,
@@ -304,12 +318,12 @@ class ModelRoutingPolicy:
         if model.strip().casefold() == self.strong_model.strip().casefold():
             return self.strong_thinking, "orchestrator-model-max-reasoning"
         if model.strip().casefold() == self.economy_model.strip().casefold():
-            return self.routine_thinking, "economy-model-medium-reasoning"
+            return self.routine_thinking, "economy-model-low-reasoning"
         if strong_responsibility:
             return self.strong_thinking, "strong-responsibility-model-policy"
         if code_or_test:
-            return self.code_thinking, "routine-code-medium-reasoning"
-        return self.routine_thinking, "routine-non-code-medium-reasoning"
+            return self.code_thinking, "routine-code-low-reasoning"
+        return self.routine_thinking, "routine-non-code-low-reasoning"
 
     @staticmethod
     def _uses_provider_native_thinking(model: str) -> bool:
@@ -318,6 +332,17 @@ class ModelRoutingPolicy:
             "moonshot/kimi-k2.7-code",
             "moonshot/kimi-k2.7-code-highspeed",
         }
+
+    def _auth_profile_for_model(self, model: str) -> str | None:
+        normalized = model.strip().casefold()
+        if normalized == self.economy_model.strip().casefold():
+            return self.economy_auth_profile
+        if normalized in {
+            self.strong_model.strip().casefold(),
+            self.code_specialist_model.strip().casefold(),
+        }:
+            return self.code_specialist_auth_profile
+        return None
 
     @staticmethod
     def _provider(model: str) -> str:
