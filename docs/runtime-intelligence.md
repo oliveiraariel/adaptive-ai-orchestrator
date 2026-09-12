@@ -302,25 +302,37 @@ Adaptive flags this as `context-window-mismatch` so operators inspect:
 
 ## Current model policy
 
-The Runtime Intelligence layer is subordinate to the existing role-aware
+The Runtime Intelligence layer is subordinate to the active economy-first
 routing policy:
 
 ```text
-owner/orchestration/systemic architecture
-    -> moonshot/kimi-k3
-    -> max
-
-complex code/review/remediation
+high complexity / orchestration / systemic architecture
     -> moonshot/kimi-k2.7-code
     -> provider-native reasoning
+    -> paid Moonshot route only while healthy/funded
 
-routine work
+medium / low complexity
     -> openai/gpt-5.6-luna
-    -> medium
+    -> low
+    -> explicit OpenAI OAuth profile
 
+K2.7 operational failure
+    -> openai/gpt-5.6-luna
+    -> low / OAuth
+
+Luna operational failure
+    -> surface failure
+    -> no automatic escalation to paid Kimi
+
+moonshot/kimi-k3
 openai/gpt-5.6-sol
     -> manual only / excluded from automatic routing
 ```
+
+A policy-routed Luna dispatch is marked with
+`adaptive-auth-product:openai-oauth`. If no explicit OAuth auth profile is
+configured, the Gateway fails before dispatch rather than silently selecting a
+paid OpenAI Platform API-key profile.
 
 ## Governed operational learning
 
