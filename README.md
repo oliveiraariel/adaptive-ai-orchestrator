@@ -92,6 +92,24 @@ governed troubleshooting knowledge lives in
 
 See [`docs/runtime-intelligence.md`](docs/runtime-intelligence.md).
 
+The current automatic model policy is intentionally economy-first:
+
+```text
+high complexity
+  -> moonshot/kimi-k2.7-code
+  -> fallback: openai/gpt-5.6-luna via explicit OAuth, low reasoning
+
+medium / low complexity
+  -> openai/gpt-5.6-luna via explicit OAuth, low reasoning
+
+manual-only premium models
+  -> moonshot/kimi-k3
+  -> openai/gpt-5.6-sol
+```
+
+Adaptive-routed Luna work fails closed when the configured OpenAI OAuth profile
+is missing, preventing accidental fallback to a paid OpenAI Platform API key.
+
 ## Core Idea
 
 The project follows a workflow similar to:
