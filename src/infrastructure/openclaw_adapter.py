@@ -79,10 +79,19 @@ class OpenClawAdapter(AgentRuntime):
             if decision.thinking is not None
             else "adaptive-thinking-level:provider-native"
         )
+        auth_constraint = (
+            "adaptive-auth-product:openai-oauth"
+            if (
+                decision.provider == "openai"
+                and decision.model == "openai/gpt-5.6-luna"
+            )
+            else "adaptive-auth-product:provider-default"
+        )
         routed_configuration = replace(
             configuration,
             model=decision.model,
             provider=decision.provider,
+            auth_profile=decision.auth_profile,
             thinking=decision.thinking,
             policy_constraints=(
                 *configuration.policy_constraints,
@@ -90,6 +99,7 @@ class OpenClawAdapter(AgentRuntime):
                 f"adaptive-model-routing-reason:{decision.reason}",
                 thinking_constraint,
                 f"adaptive-thinking-routing-reason:{decision.thinking_reason}",
+                auth_constraint,
             ),
         )
 
@@ -108,6 +118,15 @@ class OpenClawAdapter(AgentRuntime):
                 "attempt": decision.attempt,
                 "thinking": decision.thinking,
                 "thinking_reason": decision.thinking_reason,
+                "auth_profile_configured": decision.auth_profile is not None,
+                "auth_product": (
+                    "openai-oauth"
+                    if (
+                        decision.provider == "openai"
+                        and decision.model == "openai/gpt-5.6-luna"
+                    )
+                    else "provider-default"
+                ),
                 "escalated_from": decision.escalated_from,
             }
         )
@@ -135,6 +154,15 @@ class OpenClawAdapter(AgentRuntime):
             execution_id=execution.id, external_id=external_id,
             model=decision.model, provider=decision.provider,
             thinking=decision.thinking,
+            auth_profile_configured=decision.auth_profile is not None,
+            auth_product=(
+                "openai-oauth"
+                if (
+                    decision.provider == "openai"
+                    and decision.model == "openai/gpt-5.6-luna"
+                )
+                else "provider-default"
+            ),
             attempt=decision.attempt, skills=list(configuration.skills),
         )
         self._audit.append(
@@ -442,6 +470,7 @@ class OpenClawAdapter(AgentRuntime):
                 "skills": effective_configuration.skills,
                 "model": effective_configuration.model,
                 "provider": effective_configuration.provider,
+                "auth_profile": effective_configuration.auth_profile,
                 "thinking": effective_configuration.thinking,
                 "tools": effective_configuration.tools,
                 "runtime": effective_configuration.runtime,

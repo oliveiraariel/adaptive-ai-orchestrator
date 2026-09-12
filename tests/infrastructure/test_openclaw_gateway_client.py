@@ -420,7 +420,8 @@ def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
 
 
 
-def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -> None:
+
+def test_gateway_does_not_escalate_luna_to_paid_kimi_on_billing(monkeypatch) -> None:
     client = OpenClawGatewayClient(
         GatewayConfig(
             archive_completed_sessions=False,
@@ -436,30 +437,11 @@ def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -
             return {"ok": True}
         if method == "agent":
             agent_calls.append(params)
-            return {
-                "runId": f"run-{len(agent_calls)}",
-                "acceptedAt": 123,
-            }
+            return {"runId": "run-1", "acceptedAt": 123}
         if method == "agent.wait":
-            if params["runId"] == "run-1":
-                return {
-                    "status": "error",
-                    "error": "You have no credits remaining. Add credits to continue.",
-                }
             return {
-                "status": "ok",
-                "startedAt": 100,
-                "endedAt": 200,
-                "stopReason": "stop",
-            }
-        if method == "chat.history":
-            return {
-                "messages": [
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": "KIMI_RECOVERED"}],
-                    }
-                ]
+                "status": "error",
+                "error": "You have no credits remaining. Add credits to continue.",
             }
         raise AssertionError(f"Unexpected RPC method: {method}")
 
@@ -467,9 +449,9 @@ def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -
 
     external = client.submit(
         {
-            "task_id": "task-billing-failover",
-            "work_unit_id": "wu-billing-failover",
-            "objective": "Implementar repository PHP simples.",
+            "task_id": "task-luna-billing",
+            "work_unit_id": "wu-luna-billing",
+            "objective": "Organizar documentação simples.",
             "scope": "",
             "context": [],
             "inputs": [],
@@ -483,39 +465,24 @@ def test_gateway_automatically_fails_over_luna_to_kimi_on_billing(monkeypatch) -
                 "agent": "sgfp",
                 "model": "openai/gpt-5.6-luna",
                 "provider": "openai",
-                "thinking": "medium",
+                "thinking": "low",
                 "policy_constraints": [],
             },
         }
     )
 
-    result = client.retrieve_result(external)
+    try:
+        client.retrieve_result(external)
+    except OpenClawGatewayError as exc:
+        assert "no credits remaining" in str(exc)
+    else:
+        raise AssertionError("Expected Luna billing failure to remain terminal.")
 
-    assert result["output"] == "KIMI_RECOVERED"
-    failover = result["model_failover"]
-    assert failover["triggered"] is True
-    assert failover["reason"] == "billing"
-    assert failover["from_model"] == "openai/gpt-5.6-luna"
-    assert failover["to_model"] == "moonshot/kimi-k2.7-code"
-    assert failover["to_provider"] == "moonshot"
-    assert failover["runtime_attempt"] == 2
-    assert failover["incident"]["category"] == "billing"
-    assert failover["incident"]["subtype"] == "insufficient_funds"
-    assert failover["remediation"]["allow_same_model_retry"] is False
-    assert patched_models == [
-        "openai/gpt-5.6-luna",
-        "moonshot/kimi-k2.7-code",
-    ]
-    assert agent_calls[1]["idempotencyKey"].endswith(
-        ":runtime-fallback:2"
-    )
-    fallback_message = json.loads(agent_calls[1]["message"])
-    assert "automatic operational failover" in fallback_message["context"][-1]
-    assert fallback_message["configuration"]["thinking"] is None
-    assert client.get_status(external) == "COMPLETED"
+    assert patched_models == ["openai/gpt-5.6-luna"]
+    assert len(agent_calls) == 1
 
 
-def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -> None:
+def test_gateway_k3_has_no_automatic_fallback(monkeypatch) -> None:
     client = OpenClawGatewayClient(
         GatewayConfig(
             archive_completed_sessions=False,
@@ -523,38 +490,17 @@ def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -
         )
     )
     patched_models: list[str] = []
-    agent_calls: list[dict] = []
 
     def fake_rpc(method: str, params: dict) -> dict:
         if method == "sessions.patch":
             patched_models.append(params["model"])
             return {"ok": True}
         if method == "agent":
-            agent_calls.append(params)
-            return {
-                "runId": f"run-{len(agent_calls)}",
-                "acceptedAt": 123,
-            }
+            return {"runId": "run-1", "acceptedAt": 123}
         if method == "agent.wait":
-            if params["runId"] == "run-1":
-                return {
-                    "status": "error",
-                    "error": "provider slow down retry later",
-                }
             return {
-                "status": "ok",
-                "startedAt": 100,
-                "endedAt": 200,
-                "stopReason": "stop",
-            }
-        if method == "chat.history":
-            return {
-                "messages": [
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": "K27_RECOVERED"}],
-                    }
-                ]
+                "status": "error",
+                "error": "provider slow down retry later",
             }
         raise AssertionError(f"Unexpected RPC method: {method}")
 
@@ -562,9 +508,9 @@ def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -
 
     external = client.submit(
         {
-            "task_id": "task-k3-rate-failover",
-            "work_unit_id": "wu-k3-rate-failover",
-            "objective": "Definir arquitetura sistêmica.",
+            "task_id": "task-k3-disabled-route",
+            "work_unit_id": "wu-k3-disabled-route",
+            "objective": "Manual K3 diagnostic.",
             "scope": "",
             "context": [],
             "inputs": [],
@@ -584,23 +530,20 @@ def test_gateway_automatically_fails_over_k3_to_k27_on_rate_limit(monkeypatch) -
         }
     )
 
-    result = client.retrieve_result(external)
+    try:
+        client.retrieve_result(external)
+    except OpenClawGatewayError as exc:
+        assert "slow down" in str(exc)
+    else:
+        raise AssertionError("Expected manual K3 failure to remain terminal.")
 
-    assert result["output"] == "K27_RECOVERED"
-    assert result["model_failover"]["reason"] == "rate_limit"
-    assert result["model_failover"]["from_model"] == "moonshot/kimi-k3"
-    assert result["model_failover"]["incident"]["category"] == "quota"
-    assert result["model_failover"]["incident"]["subtype"] == "provider_rate_limit_unknown"
-    assert result["model_failover"]["to_model"] == "moonshot/kimi-k2.7-code"
-    assert patched_models == [
-        "moonshot/kimi-k3",
-        "moonshot/kimi-k2.7-code",
-    ]
-    fallback_message = json.loads(agent_calls[1]["message"])
-    assert fallback_message["configuration"]["thinking"] is None
+    assert patched_models == ["moonshot/kimi-k3"]
 
 
-def test_gateway_automatically_fails_over_kimi_to_luna_on_rate_limit(monkeypatch) -> None:
+def test_gateway_automatically_fails_over_k27_to_luna_oauth_on_rate_limit(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-test")
     client = OpenClawGatewayClient(
         GatewayConfig(
             archive_completed_sessions=False,
@@ -663,6 +606,7 @@ def test_gateway_automatically_fails_over_kimi_to_luna_on_rate_limit(monkeypatch
                 "agent": "sgfp",
                 "model": "moonshot/kimi-k2.7-code",
                 "provider": "moonshot",
+                "auth_profile": "moonshot:api-key",
                 "thinking": None,
                 "policy_constraints": [],
             },
@@ -675,12 +619,15 @@ def test_gateway_automatically_fails_over_kimi_to_luna_on_rate_limit(monkeypatch
     assert result["model_failover"]["reason"] == "rate_limit"
     assert result["model_failover"]["to_model"] == "openai/gpt-5.6-luna"
     assert patched_models == [
-        "moonshot/kimi-k2.7-code",
-        "openai/gpt-5.6-luna",
+        "moonshot/kimi-k2.7-code@moonshot:api-key",
+        "openai/gpt-5.6-luna@openai:oauth-test",
     ]
     fallback_message = json.loads(agent_calls[1]["message"])
-    assert fallback_message["configuration"]["thinking"] == "medium"
-
+    assert fallback_message["configuration"]["thinking"] == "low"
+    assert fallback_message["configuration"]["auth_profile"] == "openai:oauth-test"
+    assert "adaptive-auth-product:openai-oauth" in (
+        fallback_message["configuration"]["policy_constraints"]
+    )
 
 def test_gateway_does_not_fail_over_for_unclassified_semantic_failure(monkeypatch) -> None:
     client = OpenClawGatewayClient(
@@ -736,9 +683,14 @@ def test_gateway_does_not_fail_over_for_unclassified_semantic_failure(monkeypatc
         raise AssertionError("Expected unclassified failure to remain terminal.")
 
 
-def test_gateway_classifies_daily_budget_as_non_retryable_quota_and_fails_over(monkeypatch, tmp_path) -> None:
+
+def test_gateway_classifies_daily_budget_and_fails_over_k27_to_luna_oauth(
+    monkeypatch,
+    tmp_path,
+) -> None:
     from infrastructure.provider_telemetry_store import ProviderTelemetryStore
 
+    monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-test")
     client = OpenClawGatewayClient(
         GatewayConfig(
             archive_completed_sessions=False,
@@ -785,7 +737,7 @@ def test_gateway_classifies_daily_budget_as_non_retryable_quota_and_fails_over(m
         {
             "task_id": "task-daily-budget",
             "work_unit_id": "wu-daily-budget",
-            "objective": "Definir arquitetura sistêmica.",
+            "objective": "Implementação complexa.",
             "scope": "",
             "context": [],
             "inputs": [],
@@ -797,9 +749,10 @@ def test_gateway_classifies_daily_budget_as_non_retryable_quota_and_fails_over(m
             "acceptance_criteria": ["runtime-completed"],
             "configuration": {
                 "agent": "sgfp",
-                "model": "moonshot/kimi-k3",
+                "model": "moonshot/kimi-k2.7-code",
                 "provider": "moonshot",
-                "thinking": "max",
+                "auth_profile": "moonshot:api-key",
+                "thinking": None,
                 "policy_constraints": [],
             },
         }
@@ -816,9 +769,107 @@ def test_gateway_classifies_daily_budget_as_non_retryable_quota_and_fails_over(m
     assert failover["remediation"]["fallback_allowed"] is True
     assert failover["circuit_state"] == "open"
     assert patched_models == [
-        "moonshot/kimi-k3",
-        "moonshot/kimi-k2.7-code",
+        "moonshot/kimi-k2.7-code@moonshot:api-key",
+        "openai/gpt-5.6-luna@openai:oauth-test",
     ]
     telemetry = (tmp_path / "incidents.jsonl").read_text(encoding="utf-8")
     assert "daily_usage_window" in telemetry
     assert "Project daily usage limit reached" not in telemetry
+
+
+
+def test_gateway_requires_explicit_oauth_profile_for_adaptive_luna(monkeypatch) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        )
+    )
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        raise AssertionError(f"RPC should not be called: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    try:
+        client.submit(
+            {
+                "task_id": "task-oauth-required",
+                "work_unit_id": "wu-oauth-required",
+                "objective": "Routine work.",
+                "scope": "",
+                "context": [],
+                "inputs": [],
+                "artifacts": [],
+                "decisions": [],
+                "dependencies": [],
+                "constraints": [],
+                "expected_output": ["done"],
+                "acceptance_criteria": ["runtime-completed"],
+                "configuration": {
+                    "agent": "sgfp",
+                    "model": "openai/gpt-5.6-luna",
+                    "provider": "openai",
+                    "auth_profile": None,
+                    "thinking": "low",
+                    "policy_constraints": [
+                        "adaptive-auth-product:openai-oauth",
+                    ],
+                },
+            }
+        )
+    except OpenClawGatewayError as exc:
+        assert "ADAPTIVE_OPENAI_OAUTH_PROFILE" in str(exc)
+    else:
+        raise AssertionError("Expected missing OAuth profile to fail closed.")
+
+
+def test_gateway_patches_luna_with_explicit_oauth_profile(monkeypatch) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+        )
+    )
+    patched_models: list[str] = []
+
+    def fake_rpc(method: str, params: dict) -> dict:
+        if method == "sessions.patch":
+            patched_models.append(params["model"])
+            return {"ok": True}
+        if method == "agent":
+            return {"runId": "run-oauth", "acceptedAt": 123}
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+
+    client.submit(
+        {
+            "task_id": "task-oauth",
+            "work_unit_id": "wu-oauth",
+            "objective": "Routine work.",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "openai/gpt-5.6-luna",
+                "provider": "openai",
+                "auth_profile": "openai:oauth-work",
+                "thinking": "low",
+                "policy_constraints": [
+                    "adaptive-auth-product:openai-oauth",
+                ],
+            },
+        }
+    )
+
+    assert patched_models == [
+        "openai/gpt-5.6-luna@openai:oauth-work",
+    ]
