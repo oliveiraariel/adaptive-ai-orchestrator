@@ -6,7 +6,7 @@ from adaptive_orchestrator import cli
 class FakeGatewayClient:
     last_config = None
 
-    def __init__(self, config):
+    def __init__(self, config, **kwargs):
         type(self).last_config = config
 
     def submit(self, task_payload):
