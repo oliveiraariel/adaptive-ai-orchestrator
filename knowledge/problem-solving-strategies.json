@@ -61,6 +61,128 @@
       "evidence": [
         "2026-09-12: repeated ProjectPlanningError/invalid JSON failures stopped after replanning was reduced to one small Work Unit and the unresolved blocker was isolated first."
       ]
+    },
+    {
+      "id": "trace-machine-result-before-retrying",
+      "status": "validated",
+      "title": "Trace result integrity across transport boundaries before retrying the work",
+      "triggers": [
+        "truncated",
+        "machine result",
+        "machine-result",
+        "terminalreply",
+        "terminal reply",
+        "chat.history",
+        "progress channel",
+        "invalid json after execution",
+        "result unavailable",
+        "result transport"
+      ],
+      "guidance": [
+        "Do not assume that a terminal-looking field or conversation history is the authoritative machine result.",
+        "Trace the same execution across producer, transport, persistence, and consumer boundaries before changing the task or model.",
+        "At each boundary compare stable identity, byte/character length, completion markers, and SHA-256 when available.",
+        "Treat progress output and terminal summaries as presentation channels unless integrity is explicitly proven.",
+        "If corruption or truncation occurs after the worker produced a complete result, fix result transport instead of retrying the original work."
+      ],
+      "safety": [
+        "Do not reconstruct a missing machine result from a truncated presentation channel.",
+        "Do not relax parser/schema validation to make corrupted transport appear valid.",
+        "Do not increase a human-facing progress limit as a substitute for an authoritative result channel."
+      ],
+      "evidence": [
+        "2026-09-13: a planner JSON failure was traced from complete model output to OpenClaw progress formatting, where an 8000-character presentation limit appended ...(truncated)...; terminalReply was later proven to be a short visible summary rather than the original payload."
+      ]
+    },
+    {
+      "id": "separate-control-plane-from-result-plane",
+      "status": "validated",
+      "title": "Keep execution control messages small and move large agent results through durable artifacts",
+      "triggers": [
+        "agent to agent",
+        "agent-to-agent",
+        "large result",
+        "large payload",
+        "context limit",
+        "message limit",
+        "result store",
+        "fan-in",
+        "dependency result",
+        "artifact handoff"
+      ],
+      "guidance": [
+        "Use the agent runtime for dispatch, liveness, progress, cancellation, and short terminal summaries.",
+        "Publish authoritative worker output to a durable result store before declaring completion.",
+        "Pass stable result references between dependent Work Units instead of copying large payloads into prompts or chat messages.",
+        "Use manifest-last publication with execution identity, completeness, byte length, and SHA-256 so consumers can verify integrity before use.",
+        "Keep project-owned runtime results inside the governed project boundary rather than mixing them with orchestrator-owned global state."
+      ],
+      "safety": [
+        "Do not treat chat history as a durable inter-agent message bus.",
+        "Do not commit runtime result artifacts to the project repository.",
+        "Do not allow result paths to escape the governed project result root."
+      ],
+      "evidence": [
+        "2026-09-13: Adaptive adopted <project>/.adaptive/runs/<orchestration>/<work-unit>/<execution>/ with result.txt, summary.md, and manifest.json, then changed dependency fan-in to pass manifest references instead of large inline results."
+      ]
+    },
+    {
+      "id": "reconcile-same-run-before-redispatch",
+      "status": "validated",
+      "title": "Preserve run identity and reconcile observation timeouts before redispatching work",
+      "triggers": [
+        "wait timeout",
+        "agent.wait",
+        "run id",
+        "runid",
+        "same run",
+        "reconciliation",
+        "execution timeout",
+        "result timeout"
+      ],
+      "guidance": [
+        "Persist run identity immediately after dispatch and before the first wait.",
+        "Distinguish a wait/observation timeout from execution failure; a timed-out wait may leave the run active.",
+        "Reconcile the same run within a bounded global budget before creating another execution.",
+        "Do not redispatch solely because result retrieval or observation failed.",
+        "Record the ordering of run state, terminal receipt, result persistence, and result availability when diagnosing lifecycle races."
+      ],
+      "safety": [
+        "Bound reconciliation attempts and preserve the circuit breaker.",
+        "Use explicit abort/cancel operations only when cancellation is intended.",
+        "Never create duplicate side-effecting work until the previous run state is known."
+      ],
+      "evidence": [
+        "2026-09-13: OpenClaw agent.wait was verified to use per-call wait windows; timeout does not itself cancel the run, cancellation is separate, and the client already treats intermediate wait timeout as RUNNING."
+      ]
+    },
+    {
+      "id": "validate-transport-with-staged-payloads",
+      "status": "validated",
+      "title": "Use staged SMALL/MEDIUM/LARGE payload tests with stop gates to isolate transport defects",
+      "triggers": [
+        "small medium large",
+        "transport validation",
+        "payload size",
+        "8000",
+        "12000",
+        "truncation boundary",
+        "end-to-end validation"
+      ],
+      "guidance": [
+        "Start with a small deterministic payload, then a medium payload near the suspected boundary, then a large payload beyond it.",
+        "Embed unique BEGIN and END markers and record length/hash so completeness can be proven independently of semantic content.",
+        "Stop escalation when MEDIUM fails; diagnose that boundary before running LARGE.",
+        "Use the real production transport path for the final proof, not only deterministic unit mocks.",
+        "Keep the project under test read-only until the transport channel itself has passed."
+      ],
+      "safety": [
+        "Do not use production project mutations to diagnose a transport layer.",
+        "Do not declare robustness from unit tests alone when the real runtime contract has not been exercised."
+      ],
+      "evidence": [
+        "2026-09-13: SMALL succeeded through agent.wait, MEDIUM exposed that terminalReply was only a 237-character summary for a 5266-character source payload, and LARGE was intentionally withheld until the transport architecture was corrected."
+      ]
     }
   ]
 }
