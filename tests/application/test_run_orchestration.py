@@ -106,9 +106,11 @@ def test_run_orchestration_publishes_usage_on_terminal_event() -> None:
 
 
 def test_run_orchestration_blocks_unauthorized_side_effect() -> None:
+    observability = RecordingObservability()
     runner = RunOrchestration(
         runtime=FakeRuntime(),
         claim_registry=InMemoryClaimRegistry(),
+        observability=observability,
     )
 
     with pytest.raises(RunOrchestrationError, match="policy:DENY"):
@@ -118,3 +120,34 @@ def test_run_orchestration_blocks_unauthorized_side_effect() -> None:
                 requested_side_effects=("filesystem-write",),
             )
         )
+
+    assert observability.events[-1][0] == "orchestration_completed"
+    assert observability.events[-1][1]["status"] == "BLOCKED"
+    assert observability.events[-1][1]["failure_category"] == "dispatch"
+
+
+class FailingResultRuntime(FakeRuntime):
+    def retrieve_result(self, execution):
+        raise RuntimeError("transport interrupted")
+
+
+def test_run_orchestration_emits_terminal_failure_on_runtime_result_error() -> None:
+    observability = RecordingObservability()
+    runner = RunOrchestration(
+        runtime=FailingResultRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        observability=observability,
+    )
+
+    with pytest.raises(RunOrchestrationError, match="Runtime result retrieval failed"):
+        runner.execute(RunOrchestrationRequest(objective="Fail after dispatch."))
+
+    terminal = [
+        fields
+        for event_type, fields in observability.events
+        if event_type == "orchestration_completed"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["status"] == "FAILED"
+    assert terminal[0]["failure_category"] == "runtime"
+    assert terminal[0]["failure_code"] == "runtime_result_retrieval_failed"
