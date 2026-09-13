@@ -1,6 +1,7 @@
 import hashlib
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -163,7 +164,7 @@ def test_project_local_store_excludes_adaptive_state_from_git_without_editing_gi
         capture_output=True,
         text=True,
     ).stdout.strip()
-    exclude_path = project / exclude if not __import__("pathlib").Path(exclude).is_absolute() else __import__("pathlib").Path(exclude)
+    exclude_path = project / exclude if not Path(exclude).is_absolute() else Path(exclude)
 
     assert "/.adaptive/" in exclude_path.read_text(encoding="utf-8")
     assert tracked_gitignore.read_text(encoding="utf-8") == before
