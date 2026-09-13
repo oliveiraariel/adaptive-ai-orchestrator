@@ -13,6 +13,7 @@ from application.provider_health_policy import ProviderHealthPolicy
 from application.remediation_policy import RemediationPolicy
 from infrastructure.openclaw_adapter import OpenClawClient
 from infrastructure.provider_telemetry_store import ProviderTelemetryStore
+from infrastructure.result_store import FileResultStore, ResultStoreError, ResultStoreTarget
 
 try:
     from websockets.sync.client import ClientConnection, connect
@@ -56,6 +57,7 @@ class GatewayRun:
     session_key: str
     task_payload: dict[str, Any] = field(default_factory=dict)
     runtime_attempt: int = 1
+    result_target: ResultStoreTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ class OpenClawGatewayClient(OpenClawClient):
         remediation_policy: RemediationPolicy | None = None,
         provider_health_policy: ProviderHealthPolicy | None = None,
         provider_telemetry: ProviderTelemetryStore | None = None,
+        result_store: FileResultStore | None = None,
     ) -> None:
         if _IMPORT_ERROR is not None:
             raise OpenClawGatewayError(
@@ -133,6 +136,7 @@ class OpenClawGatewayClient(OpenClawClient):
         self._remediation_policy = remediation_policy or RemediationPolicy()
         self._provider_health = provider_health_policy or ProviderHealthPolicy()
         self._provider_telemetry = provider_telemetry or ProviderTelemetryStore()
+        self._result_store = result_store or FileResultStore()
 
     def submit(self, task_payload: dict) -> str:
         return self._submit_task(task_payload, runtime_attempt=1)
@@ -144,6 +148,15 @@ class OpenClawGatewayClient(OpenClawClient):
         runtime_attempt: int,
     ) -> str:
         task_id = str(task_payload["task_id"])
+        orchestration_id = str(task_payload.get("orchestration_id") or task_id)
+        work_unit_id = str(task_payload["work_unit_id"])
+        execution_id = uuid.uuid4().hex
+        result_target = self._result_store.prepare_target(
+            orchestration_id=orchestration_id,
+            work_unit_id=work_unit_id,
+            execution_id=execution_id,
+        )
+        task_payload = self._with_result_store_contract(task_payload, result_target)
         configuration = task_payload["configuration"]
         agent_id = str(configuration["agent"])
         session_key = f"agent:{agent_id}:orchestrator:{task_id}"
@@ -215,6 +228,7 @@ class OpenClawGatewayClient(OpenClawClient):
             session_key=session_key,
             task_payload=dict(task_payload),
             runtime_attempt=runtime_attempt,
+            result_target=result_target,
         )
         return external_id
 
@@ -311,16 +325,45 @@ class OpenClawGatewayClient(OpenClawClient):
             error = result.get("error") or "OpenClaw agent run failed."
             raise OpenClawGatewayError(str(error))
 
-        history = self._rpc(
-            "chat.history",
-            {"sessionKey": run.session_key},
-        )
+        output: str
+        metadata: dict[str, Any] = {}
+        result_transport: dict[str, object]
 
-        # Capture everything Adaptive needs before changing the OpenClaw session
-        # lifecycle. Archive is preservation, not deletion, but history capture
-        # remains the explicit safety boundary for automatic cleanup.
-        output = self._extract_assistant_text(history)
-        metadata = self._extract_assistant_metadata(history)
+        stored = None
+        if run.result_target is not None:
+            try:
+                stored = self._result_store.read_result(run.result_target)
+            except ResultStoreError as exc:
+                raise OpenClawGatewayError(
+                    f"Adaptive result store rejected worker result: {exc}"
+                ) from exc
+
+        if stored is not None:
+            output = stored.content
+            result_transport = {
+                "source": "adaptive-result-store",
+                "authoritative": True,
+                "result_ref": str(run.result_target.manifest_path),
+                "result_sha256": stored.sha256,
+                "result_bytes": stored.byte_length,
+                "complete": True,
+            }
+        else:
+            history = self._rpc(
+                "chat.history",
+                {"sessionKey": run.session_key},
+            )
+
+            # Backwards compatibility only. chat.history is a human/progress
+            # representation and can be truncated by OpenClaw. New workers are
+            # instructed to publish authoritative results through Result Store.
+            output = self._extract_assistant_text(history)
+            metadata = self._extract_assistant_metadata(history)
+            result_transport = {
+                "source": "chat-history-fallback",
+                "authoritative": False,
+                "complete": False,
+            }
 
         lifecycle: dict[str, object] | None = None
         if self._archive_completed_sessions:
@@ -333,6 +376,7 @@ class OpenClawGatewayClient(OpenClawClient):
             **result,
             "output": output,
             **metadata,
+            "result_transport": result_transport,
             **({"session_lifecycle": lifecycle} if lifecycle is not None else {}),
         }
 
@@ -423,6 +467,18 @@ class OpenClawGatewayClient(OpenClawClient):
             # become unavailable solely because the auxiliary incident log
             # cannot be written.
             pass
+
+    def _with_result_store_contract(
+        self,
+        task_payload: dict[str, Any],
+        target: ResultStoreTarget,
+    ) -> dict[str, Any]:
+        payload = dict(task_payload)
+        constraints = list(payload.get("constraints") or ())
+        constraints.append(self._result_store.worker_instructions(target))
+        payload["constraints"] = constraints
+        payload["result_store"] = target.as_payload()
+        return payload
 
     @staticmethod
     def _provider_from_model(model: str) -> str:
@@ -833,6 +889,7 @@ class OpenClawGatewayClient(OpenClawClient):
                 "configuration": task_payload["configuration"],
                 "expected_output": task_payload["expected_output"],
                 "acceptance_criteria": task_payload["acceptance_criteria"],
+                "result_store": task_payload.get("result_store"),
             },
             ensure_ascii=False,
             separators=(",", ":"),
