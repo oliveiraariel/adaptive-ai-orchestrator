@@ -113,6 +113,8 @@ class WorkUnitExecutionRecord:
     runtime_status: str | None = None
     verdict: str | None = None
     output: str = ""
+    result_ref: str | None = None
+    result_authoritative: bool = False
     reason: str = ""
 
 
@@ -198,6 +200,7 @@ class RunProjectOrchestration:
 
         attempts = {work_unit_id: 0 for work_unit_id in work_units}
         outputs: dict[str, str] = {}
+        output_refs: dict[str, str] = {}
         revision_feedback: dict[str, str] = {}
         records: list[WorkUnitExecutionRecord] = []
         wave_records: list[ParallelWaveRecord] = []
@@ -261,6 +264,7 @@ class RunProjectOrchestration:
                     skills=skill_sets[work_unit_id],
                     dependencies=dependencies,
                     outputs=outputs,
+                    output_refs=output_refs,
                     revision_feedback=revision_feedback.get(work_unit_id, ""),
                     request=request,
                 )
@@ -357,6 +361,12 @@ class RunProjectOrchestration:
                 records.append(record)
                 if record.output:
                     outputs[work_unit_id] = record.output
+                if (
+                    record.verdict == EvaluationVerdict.ACCEPTED.value
+                    and record.result_authoritative
+                    and record.result_ref
+                ):
+                    output_refs[work_unit_id] = record.result_ref
                 if record.verdict != EvaluationVerdict.ACCEPTED.value:
                     revision_feedback[work_unit_id] = (
                         record.output or record.reason or "Previous result was not accepted."
@@ -377,6 +387,7 @@ class RunProjectOrchestration:
                     work_units=work_units,
                     dependencies=dependencies,
                     outputs=outputs,
+                    output_refs=output_refs,
                     request=request,
                 )
                 if new_ids:
@@ -593,6 +604,7 @@ class RunProjectOrchestration:
         skills: tuple[str, ...],
         dependencies: Sequence[Dependency],
         outputs: dict[str, str],
+        output_refs: dict[str, str],
         revision_feedback: str,
         request: ProjectOrchestrationRequest,
     ) -> WorkAssignment:
@@ -619,13 +631,29 @@ class RunProjectOrchestration:
         ]
         if spec.write_paths:
             context.append("Authorized write scope for this Work Unit: " + ", ".join(spec.write_paths))
+
+        dependency_artifacts: list[str] = []
         for source_id in dependency_sources:
+            result_ref = output_refs.get(source_id)
+            if result_ref:
+                dependency_artifacts.append(result_ref)
+                context.append(
+                    "Accepted dependency result from "
+                    f"{source_id} is available by reference at manifest: {result_ref}. "
+                    "Read that manifest and the referenced result_file from the same "
+                    "execution directory when the dependency details are needed. "
+                    "The dependency payload is intentionally not copied into this "
+                    "conversation context."
+                )
+                continue
             if source_id not in outputs:
                 continue
             text = outputs[source_id]
             if len(text) > request.dependency_context_chars:
                 text = text[: request.dependency_context_chars] + "\n[dependency output truncated]"
-            context.append(f"Accepted dependency result from {source_id}:\n{text}")
+            context.append(
+                f"Legacy inline dependency result from {source_id}:\n{text}"
+            )
         if revision_feedback:
             feedback = revision_feedback[: request.dependency_context_chars]
             context.append(f"Revision feedback from previous attempt:\n{feedback}")
@@ -655,6 +683,7 @@ class RunProjectOrchestration:
             scope=spec.scope,
             context=tuple(context),
             inputs=spec.inputs,
+            artifacts=tuple(dependency_artifacts),
             dependencies=dependency_sources,
             constraints=constraints,
             configuration=configuration,
@@ -713,6 +742,7 @@ class RunProjectOrchestration:
             raw_result = {"status": "completed"}
 
         output = self._extract_output(raw_result)
+        result_ref, result_authoritative = self._extract_result_reference(raw_result)
         completion = parse_worker_completion(output)
         result_status = (
             ResultPackageStatus.SUCCEEDED
@@ -802,6 +832,8 @@ class RunProjectOrchestration:
                 runtime_status=runtime_status.value,
                 verdict=verdict.value,
                 output=output,
+                result_ref=result_ref,
+                result_authoritative=result_authoritative,
                 reason=reason,
             ),
             accepted and self.REPLAN_MARKER in output,
@@ -850,10 +882,11 @@ class RunProjectOrchestration:
         work_units: dict[str, WorkUnit],
         dependencies: list[Dependency],
         outputs: dict[str, str],
+        output_refs: dict[str, str],
         request: ProjectOrchestrationRequest,
     ) -> tuple[ProjectExecutionPlan, tuple[str, ...]]:
         replan = getattr(self._planner, "replan")
-        state_summary = self._state_summary(work_units, outputs)
+        state_summary = self._state_summary(work_units, outputs, output_refs)
         revised = replan(planner_request, current_plan, state_summary)
 
         new_specs = [spec for spec in revised.work_units if spec.id not in specs]
@@ -904,17 +937,38 @@ class RunProjectOrchestration:
     def _state_summary(
         work_units: dict[str, WorkUnit],
         outputs: dict[str, str],
+        output_refs: dict[str, str] | None = None,
     ) -> str:
+        refs = output_refs or {}
         lines = []
         for work_unit_id in sorted(work_units):
             work_unit = work_units[work_unit_id]
-            output = outputs.get(work_unit_id, "")
-            if len(output) > 2000:
-                output = output[:2000] + " [truncated]"
+            result_ref = refs.get(work_unit_id)
+            if result_ref:
+                output_description = f"authoritative_result_ref={result_ref!r}"
+            else:
+                output = outputs.get(work_unit_id, "")
+                if len(output) > 2000:
+                    output = output[:2000] + " [truncated]"
+                output_description = f"output={output!r}"
             lines.append(
-                f"{work_unit_id}: state={work_unit.state.value}; output={output!r}"
+                f"{work_unit_id}: state={work_unit.state.value}; {output_description}"
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _extract_result_reference(raw_result: object) -> tuple[str | None, bool]:
+        if not isinstance(raw_result, dict):
+            return None, False
+        transport = raw_result.get("result_transport")
+        if not isinstance(transport, dict):
+            return None, False
+        authoritative = transport.get("authoritative") is True
+        complete = transport.get("complete") is True
+        result_ref = transport.get("result_ref")
+        if authoritative and complete and isinstance(result_ref, str) and result_ref.strip():
+            return result_ref, True
+        return None, False
 
     @staticmethod
     def _extract_output(raw_result: object) -> str:
