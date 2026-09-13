@@ -9,6 +9,7 @@ from infrastructure.openclaw_gateway_client import (
     OpenClawGatewayClient,
     OpenClawGatewayError,
 )
+from infrastructure.result_store import FileResultStore
 
 
 def start_gateway(responses: dict[str, dict], *, protocol: int = 4):
@@ -870,3 +871,79 @@ def test_gateway_patches_luna_with_explicit_oauth_profile(monkeypatch) -> None:
     assert patched_models == [
         "openai/gpt-5.6-luna@openai:oauth-work",
     ]
+
+
+def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path) -> None:
+    responses = {
+        "agent": {"runId": "run-store", "acceptedAt": 123},
+        "agent.wait": {
+            "status": "ok",
+            "startedAt": 100,
+            "endedAt": 200,
+            "stopReason": "stop",
+        },
+        "chat.history": {
+            "sessionKey": "agent:agent-001:orchestrator:task-store",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "SHOULD_NOT_BE_USED"}],
+                }
+            ],
+        },
+    }
+    url, holder, server, thread = start_gateway(responses)
+    store = FileResultStore(tmp_path)
+
+    try:
+        client = OpenClawGatewayClient(
+            GatewayConfig(
+                url=url,
+                archive_completed_sessions=False,
+            ),
+            result_store=store,
+        )
+        external = client.submit({
+            "task_id": "task-store",
+            "orchestration_id": "orch-store",
+            "work_unit_id": "wu-store",
+            "objective": "produce a large result",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["large result"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {"agent": "agent-001"},
+        })
+
+        target = client._runs[external].result_target
+        assert target is not None
+        content = '{"marker":"BEGIN","payload":"' + ("x" * 12000) + '","end":"END"}'
+        store.publish(target, content=content, summary="large result stored")
+
+        result = client.retrieve_result(external)
+
+        assert result["output"] == content
+        assert result["result_transport"]["source"] == "adaptive-result-store"
+        assert result["result_transport"]["authoritative"] is True
+        assert result["result_transport"]["result_bytes"] > 12000
+        assert result["result_transport"]["complete"] is True
+
+        methods = [request["method"] for request in holder["requests"]]
+        assert methods == ["agent", "agent.wait"]
+
+        agent_request = holder["requests"][0]
+        message = json.loads(agent_request["params"]["message"])
+        assert message["result_store"]["orchestration_id"] == "orch-store"
+        assert message["result_store"]["work_unit_id"] == "wu-store"
+        assert any(
+            "authoritative-result contract" in item
+            for item in message["constraints"]
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
