@@ -27,6 +27,10 @@ from application.execution_coordinator import (
 )
 from application.finalize_execution import FinalizeExecution, FinalizeExecutionRequest
 from application.plan_work import PlanWork, PlanWorkRequest
+from application.problem_solving_learning import (
+    LEARNING_MARKER,
+    ProblemSolvingLearningStore,
+)
 from application.runtime_project_planner import (
     ProjectPlanner,
     ProjectPlanningRequest,
@@ -153,6 +157,7 @@ class RunProjectOrchestration:
 
     RUNTIME_NAME = "openclaw"
     REPLAN_MARKER = "ADAPTIVE_REPLAN_REQUIRED"
+    LEARNING_MARKER = LEARNING_MARKER
 
     def __init__(
         self,
@@ -161,6 +166,7 @@ class RunProjectOrchestration:
         claim_registry: ClaimRegistry,
         planner: ProjectPlanner,
         skill_profiles: Sequence[SkillProfile],
+        learning_store: ProblemSolvingLearningStore | None = None,
     ) -> None:
         self._runtime = runtime
         self._claims = claim_registry
@@ -168,6 +174,7 @@ class RunProjectOrchestration:
         self._skill_profiles = tuple(skill_profiles)
         self._skill_resolver = SkillResolver(self._skill_profiles)
         self._readiness = WorkUnitReadinessEvaluator()
+        self._learning_store = learning_store or ProblemSolvingLearningStore.from_env()
 
     def execute(
         self,
@@ -666,6 +673,7 @@ class RunProjectOrchestration:
             "Missing implementation, wiring, tests, repositories, ports, or transactions that are already inside the authorized objective/scope are work to complete, not blockers. Continue the Work Unit instead of stopping merely because such changes are needed.",
             "Use BLOCKED only for a genuine external stop: HUMAN_DECISION, AUTHORITY, ENVIRONMENT, RUNTIME, or EXTERNAL_DEPENDENCY. Ordinary implementation difficulty is not a blocker.",
             f"If genuinely necessary new work is discovered that is not represented by this Work Unit, include the literal marker {self.REPLAN_MARKER}: followed by a concise reason. Do not use the marker for optional improvements.",
+            self._learning_signal_constraint(),
             "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
         if spec.write_paths:
@@ -819,6 +827,12 @@ class RunProjectOrchestration:
             reason = f"circuit-breaker:max-attempts:{reason}"
 
         accepted = verdict is EvaluationVerdict.ACCEPTED
+        if accepted and output:
+            self._learning_store.record_worker_signal(
+                output,
+                orchestration_id=orchestration_id,
+                work_unit_id=outcome.work_unit_id,
+            )
         return (
             WorkUnitExecutionRecord(
                 work_unit_id=outcome.work_unit_id,
@@ -837,6 +851,17 @@ class RunProjectOrchestration:
                 reason=reason,
             ),
             accepted and self.REPLAN_MARKER in output,
+        )
+
+    def _learning_signal_constraint(self) -> str:
+        return (
+            "If a non-obvious, reusable problem-solving or decomposition strategy "
+            "materially turned a blocker into progress, append exactly one final "
+            f"single-line {self.LEARNING_MARKER} JSON object with keys "
+            "strategy_id, trigger, action, result. Use a stable lowercase-hyphen "
+            "strategy_id. Do not emit this marker for ordinary success. Never put "
+            "prompts, source code, user data, secrets, credentials, model reasoning, "
+            "or raw tool output in the learning signal."
         )
 
     @staticmethod

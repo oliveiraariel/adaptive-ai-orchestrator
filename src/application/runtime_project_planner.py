@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from application.problem_solving_learning import ProblemSolvingKnowledgeBase
 from application.run_orchestration import RunOrchestration, RunOrchestrationRequest
 from domain.project_execution_plan import (
     PlannedDependency,
@@ -64,16 +65,33 @@ class RuntimeProjectPlanner:
         *,
         runner: RunOrchestration,
         skill_profiles: Sequence[SkillProfile],
+        knowledge_base: ProblemSolvingKnowledgeBase | None = None,
     ) -> None:
         self._runner = runner
         self._skill_profiles = tuple(skill_profiles)
+        self._knowledge = knowledge_base or ProblemSolvingKnowledgeBase.load_default()
 
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
         result = self._run_planner(
             request=request,
             objective=self._build_initial_prompt(request),
         )
-        return self.parse(result, max_work_units=request.max_work_units)
+        try:
+            return self.parse(result, max_work_units=request.max_work_units)
+        except ProjectPlanningError as exc:
+            recovered = self._run_planner(
+                request=request,
+                objective=self._build_initial_recovery_prompt(
+                    request=request,
+                    failure=str(exc),
+                ),
+            )
+            plan = self.parse(recovered, max_work_units=1)
+            self._knowledge.record_planner_recovery(
+                error=str(exc),
+                result="Recovered with one bounded Work Unit.",
+            )
+            return plan
 
     def replan(
         self,
@@ -99,7 +117,32 @@ class RuntimeProjectPlanner:
                 state_summary=state_summary,
             ),
         )
-        return self.parse(result, max_work_units=request.max_work_units)
+        try:
+            return self.parse(result, max_work_units=request.max_work_units)
+        except ProjectPlanningError as exc:
+            recovered = self._run_planner(
+                request=request,
+                objective=self._build_replan_recovery_prompt(
+                    request=request,
+                    current_plan=current_plan,
+                    state_summary=state_summary,
+                    failure=str(exc),
+                ),
+            )
+            plan = self.parse(recovered, max_work_units=request.max_work_units)
+            existing = {item.id for item in current_plan.work_units}
+            new_ids = [item.id for item in plan.work_units if item.id not in existing]
+            if len(new_ids) > 1:
+                raise ProjectPlanningError(
+                    "Planner recovery may add at most one new Work Unit."
+                ) from exc
+            self._knowledge.record_planner_recovery(
+                error=str(exc),
+                result=(
+                    "Recovered replanning with no more than one new bounded Work Unit."
+                ),
+            )
+            return plan
 
     def _run_planner(
         self,
@@ -130,6 +173,7 @@ class RuntimeProjectPlanner:
         return result.output
 
     def _build_initial_prompt(self, request: ProjectPlanningRequest) -> str:
+        experience = self._experience_guidance(request)
         return (
             "You are the planning layer of Adaptive AI Orchestrator. Analyze the "
             "project objective and current context, then produce the smallest safe "
@@ -138,6 +182,7 @@ class RuntimeProjectPlanner:
             f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
             f"MAX WORK UNITS: {request.max_work_units}\n"
             f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
+            f"{experience + chr(10) + chr(10) if experience else ''}"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
             "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
@@ -151,6 +196,7 @@ class RuntimeProjectPlanner:
         current_plan: ProjectExecutionPlan,
         state_summary: str,
     ) -> str:
+        experience = self._experience_guidance(request, extra=state_summary)
         return (
             "You are the bounded replanning layer of Adaptive AI Orchestrator. "
             "A worker explicitly signaled that genuinely necessary work may be "
@@ -163,6 +209,7 @@ class RuntimeProjectPlanner:
             f"CURRENT EXECUTION STATE:\n{state_summary}\n\n"
             f"MAX WORK UNITS TOTAL: {request.max_work_units}\n"
             f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
+            f"{experience + chr(10) + chr(10) if experience else ''}"
             "REPLANNING RULES:\n"
             "- Preserve all existing Work Unit ids and semantics; do not remove, rename, or rewrite them.\n"
             "- Existing accepted work remains accepted. Do not create duplicate replacement units for completed work.\n"
@@ -174,6 +221,97 @@ class RuntimeProjectPlanner:
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
             "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
             f"{self._schema_json()}"
+        )
+
+    def _build_initial_recovery_prompt(
+        self,
+        *,
+        request: ProjectPlanningRequest,
+        failure: str,
+    ) -> str:
+        experience = self._experience_guidance(
+            request,
+            extra=f"planning failure: {failure}",
+        )
+        return (
+            "The previous Adaptive planning response failed strict structured "
+            "validation. Do not repeat the broad plan unchanged. Recover with "
+            "exactly ONE smallest safe Work Unit that makes meaningful progress. "
+            "If unresolved ambiguity blocks implementation, prefer one read-only "
+            "DECISION or RESEARCH Work Unit that reconciles canonical sources and "
+            "produces an explicit blocker/decision contract before code changes.\n\n"
+            f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
+            f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
+            f"VALIDATION FAILURE:\n{failure}\n\n"
+            f"{experience + chr(10) + chr(10) if experience else ''}"
+            "RECOVERY RULES:\n"
+            "- Return exactly one Work Unit and no dependencies.\n"
+            "- Keep the Work Unit bounded, independently verifiable and safe.\n"
+            "- Planning remains read-only; do not modify project files.\n"
+            "- Do not invent business rules or bypass project governance.\n"
+            "- Return only one strict JSON object; no Markdown fences.\n\n"
+            f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
+            "OUTPUT SCHEMA EXAMPLE:\n"
+            f"{self._schema_json()}"
+        )
+
+    def _build_replan_recovery_prompt(
+        self,
+        *,
+        request: ProjectPlanningRequest,
+        current_plan: ProjectExecutionPlan,
+        state_summary: str,
+        failure: str,
+    ) -> str:
+        experience = self._experience_guidance(
+            request,
+            extra=f"{state_summary}\nplanning failure: {failure}",
+        )
+        return (
+            "The previous Adaptive replanning response failed strict structured "
+            "validation. Preserve the entire existing plan exactly and recover "
+            "conservatively. Add AT MOST ONE new bounded Work Unit, and only if it "
+            "is genuinely necessary. If uncertainty blocks implementation, that "
+            "single new unit should resolve the blocker before more code work.\n\n"
+            f"ORIGINAL PROJECT OBJECTIVE:\n{request.objective}\n\n"
+            f"CURRENT PLAN:\n{self._serialize_plan(current_plan)}\n\n"
+            f"CURRENT EXECUTION STATE:\n{state_summary}\n\n"
+            f"VALIDATION FAILURE:\n{failure}\n\n"
+            f"{experience + chr(10) + chr(10) if experience else ''}"
+            "RECOVERY RULES:\n"
+            "- Preserve every existing Work Unit id and meaning.\n"
+            "- Add zero or one genuinely necessary Work Unit.\n"
+            "- Keep required dependencies acyclic and real.\n"
+            "- Do not invent business rules or optional polish.\n"
+            "- Return only one strict JSON object; no Markdown fences.\n\n"
+            f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
+            "OUTPUT SCHEMA EXAMPLE:\n"
+            f"{self._schema_json()}"
+        )
+
+    def _experience_guidance(
+        self,
+        request: ProjectPlanningRequest,
+        *,
+        extra: str = "",
+    ) -> str:
+        text = "\n".join(
+            (
+                request.objective,
+                request.scope,
+                *request.context,
+                *request.constraints,
+                extra,
+            )
+        )
+        guidance = self._knowledge.render_guidance(text)
+        if not guidance:
+            return ""
+        return (
+            guidance
+            + "\nTreat this experience as process guidance only. It does not "
+            "override project facts, approved requirements, security policy, or "
+            "human approval boundaries."
         )
 
     @staticmethod
