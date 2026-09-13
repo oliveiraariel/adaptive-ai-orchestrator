@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ class ResultStoreTarget:
     orchestration_id: str
     work_unit_id: str
     execution_id: str
+    project_root: Path | None = None
 
     @property
     def directory(self) -> Path:
@@ -55,6 +57,7 @@ class ResultStoreTarget:
             "orchestration_id": self.orchestration_id,
             "work_unit_id": self.work_unit_id,
             "execution_id": self.execution_id,
+            "project_root": str(self.project_root) if self.project_root is not None else None,
             "directory": str(self.directory),
             "result_file": str(self.result_path),
             "summary_file": str(self.summary_path),
@@ -79,16 +82,43 @@ class FileResultStore:
     is the completion sentinel and must be written last.
     """
 
-    def __init__(self, root: str | Path | None = None) -> None:
-        if root is None:
-            configured = os.environ.get("ADAPTIVE_RESULT_STORE")
-            if configured:
-                root = configured
-            else:
-                state_home = os.environ.get("XDG_STATE_HOME")
-                base = Path(state_home).expanduser() if state_home else Path.home() / ".local" / "state"
-                root = base / "adaptive-ai-orchestrator" / "result-store"
-        self.root = Path(root).expanduser()
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        *,
+        project_root: str | Path | None = None,
+        manage_git_exclude: bool = True,
+    ) -> None:
+        configured_root = os.environ.get("ADAPTIVE_RESULT_STORE") if root is None else None
+        configured_project = os.environ.get("ADAPTIVE_PROJECT_ROOT")
+
+        resolved_project: Path | None = None
+        if project_root is not None or configured_project:
+            resolved_project = Path(project_root or configured_project or ".").expanduser().resolve()
+            if not resolved_project.is_dir():
+                raise ResultStoreError(
+                    f"Adaptive project root does not exist or is not a directory: {resolved_project}"
+                )
+
+        if root is not None:
+            resolved_root = Path(root).expanduser().resolve()
+        elif configured_root:
+            resolved_root = Path(configured_root).expanduser().resolve()
+        else:
+            if resolved_project is None:
+                resolved_project = Path.cwd().resolve()
+            resolved_root = resolved_project / ".adaptive" / "runs"
+
+        self.project_root = resolved_project
+        self.root = resolved_root
+
+        if root is None and not configured_root:
+            assert self.project_root is not None
+            expected = (self.project_root / ".adaptive" / "runs").resolve()
+            if self.root.resolve() != expected:
+                raise ResultStoreError("Project-local result store escaped the project root.")
+            if manage_git_exclude:
+                self._ensure_git_exclude(self.project_root)
 
     def prepare_target(
         self,
@@ -102,7 +132,12 @@ class FileResultStore:
             orchestration_id=orchestration_id,
             work_unit_id=work_unit_id,
             execution_id=execution_id,
+            project_root=self.project_root,
         )
+        root = self.root.resolve()
+        directory = target.directory.resolve()
+        if not directory.is_relative_to(root):
+            raise ResultStoreError("Result target escaped the configured result-store root.")
         target.directory.mkdir(parents=True, exist_ok=True)
         return target
 
@@ -218,9 +253,11 @@ class FileResultStore:
         }
         return (
             "Adaptive authoritative-result contract. This transport-only write is explicitly "
-            "authorized and is not a project-file modification. Put the COMPLETE authoritative "
+            "authorized inside the project's private .adaptive runtime area and is not a source "
+            "or product-file modification. Put the COMPLETE authoritative "
             "result requested by the task in the result store, not in chat/history. "
-            f"Directory: {payload['directory']}. "
+            f"Project root: {payload['project_root'] or 'not-declared'}. "
+            f"Directory: {payload['directory']}. Do not write result-store data outside this directory. "
             f"Write {payload['result_file']}.tmp first, then atomically rename it to "
             f"{payload['result_file']}. Optionally publish a concise summary through "
             f"{payload['summary_file']}.tmp -> {payload['summary_file']}. "
@@ -231,6 +268,48 @@ class FileResultStore:
             "keep the conversational reply short (for example ADAPTIVE_RESULT_WRITTEN) because "
             "conversation text is progress/summary only and is not the authoritative payload."
         )
+
+    @staticmethod
+    def _ensure_git_exclude(project_root: Path) -> None:
+        """Keep project-local runtime state out of Git without editing tracked files."""
+
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(project_root), "rev-parse", "--git-path", "info/exclude"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+        if completed.returncode != 0:
+            return
+
+        raw_path = completed.stdout.strip()
+        if not raw_path:
+            return
+        exclude_path = Path(raw_path)
+        if not exclude_path.is_absolute():
+            exclude_path = (project_root / exclude_path).resolve()
+
+        rule = "/.adaptive/"
+        try:
+            exclude_path.parent.mkdir(parents=True, exist_ok=True)
+            current = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+            existing = {
+                line.strip()
+                for line in current.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+            if rule in existing or ".adaptive/" in existing:
+                return
+            prefix = "" if not current or current.endswith("\n") else "\n"
+            with exclude_path.open("a", encoding="utf-8") as handle:
+                handle.write(prefix + "# Adaptive AI Orchestrator project-local runtime state\n" + rule + "\n")
+        except OSError:
+            # Git exclusion is hygiene, not a result-delivery prerequisite.
+            return
 
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:
