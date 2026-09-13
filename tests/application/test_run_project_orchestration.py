@@ -403,3 +403,104 @@ def test_replan_signal_adds_new_required_work_then_resumes_frontier() -> None:
     assert result.replan_count == 1
     assert actual_planner.replan_calls == 1
     assert result.completed_work_unit_ids == ("discover", "necessary-followup")
+
+def test_worker_partial_footer_cannot_complete_and_trips_attempt_circuit_breaker() -> None:
+    plan = ProjectExecutionPlan(
+        summary="partial completion must remain open",
+        work_units=(wu("partial-worker"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "partial-worker": (
+                "Implemented only one requested item.\n"
+                "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: remaining acceptance item"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=1)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert result.completed_work_unit_ids == ()
+    assert result.blocked_work_unit_ids == ("partial-worker",)
+    assert result.records[-1].verdict == "RETURNED"
+    assert result.records[-1].reason == "circuit-breaker:max-attempts:worker-partial"
+
+
+def test_worker_genuine_human_blocker_stops_without_false_completion() -> None:
+    plan = ProjectExecutionPlan(
+        summary="human decision blocker",
+        work_units=(wu("decision-boundary"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "decision-boundary": (
+                "Need an irreversible business decision.\n"
+                "ADAPTIVE_WORK_STATUS: BLOCKED\n"
+                "ADAPTIVE_BLOCKER_TYPE: HUMAN_DECISION\n"
+                "ADAPTIVE_UNMET_CRITERIA: choose deletion semantics"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=2)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert result.completed_work_unit_ids == ()
+    assert len(runtime.tasks) == 1
+    assert result.records[-1].verdict == "BLOCKED"
+    assert result.records[-1].reason == "worker-blocked:HUMAN_DECISION"
+
+
+def test_unsubstantiated_worker_blocker_is_retried_then_circuit_broken() -> None:
+    plan = ProjectExecutionPlan(
+        summary="implementation difficulty is not blocker",
+        work_units=(wu("implementation-worker"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "implementation-worker": (
+                "A repository dependency must be wired.\n"
+                "ADAPTIVE_WORK_STATUS: BLOCKED\n"
+                "ADAPTIVE_BLOCKER_TYPE: IMPLEMENTATION\n"
+                "ADAPTIVE_UNMET_CRITERIA: add repository wiring"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=2)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert len(runtime.tasks) == 2
+    assert result.records[0].status == "REVISION_REQUIRED"
+    assert result.records[0].reason == "worker-blocker-unsubstantiated"
+    assert result.records[-1].reason == (
+        "circuit-breaker:max-attempts:worker-blocker-unsubstantiated"
+    )
+
+
+def test_worker_assignment_requires_structured_completion_footer() -> None:
+    plan = ProjectExecutionPlan(
+        summary="completion footer contract",
+        work_units=(wu("footer-worker"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "footer-worker": (
+                "done\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=1)
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    task = next(task for task in runtime.tasks if task.work_unit_id == "footer-worker")
+    constraints = "\n".join(task.constraints)
+    assert "ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED" in constraints
+    assert "Missing implementation, wiring, tests" in constraints
