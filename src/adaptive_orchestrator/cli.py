@@ -397,6 +397,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                         "runtime_status": record.runtime_status,
                         "verdict": record.verdict,
                         "output": record.output,
+                        "result_ref": record.result_ref,
+                        "result_authoritative": record.result_authoritative,
                         "reason": record.reason,
                     }
                     for record in result.records
