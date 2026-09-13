@@ -89,8 +89,16 @@ class FileResultStore:
         project_root: str | Path | None = None,
         manage_git_exclude: bool = True,
     ) -> None:
-        configured_root = os.environ.get("ADAPTIVE_RESULT_STORE") if root is None else None
-        configured_project = os.environ.get("ADAPTIVE_PROJECT_ROOT")
+        configured_root = (
+            os.environ.get("ADAPTIVE_RESULT_STORE")
+            if root is None and project_root is None
+            else None
+        )
+        configured_project = (
+            os.environ.get("ADAPTIVE_PROJECT_ROOT")
+            if root is None and project_root is None
+            else None
+        )
 
         resolved_project: Path | None = None
         if project_root is not None or configured_project:
