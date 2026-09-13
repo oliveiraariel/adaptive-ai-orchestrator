@@ -86,6 +86,37 @@ The result tree is organized by **orchestration -> Work Unit -> execution**, not
 by agent name. A retry therefore receives another execution directory while the
 previous attempt remains available for audit/recovery.
 
+## Dependency fan-in by reference
+
+Accepted Work Units that were recovered from the authoritative Result Store carry
+their `manifest.json` path as a stable result reference.
+
+When a downstream Work Unit depends on such a result, Adaptive does **not** copy
+the dependency payload into the next agent conversation. Instead it sends a
+small dependency reference and exposes the manifest path through
+`TaskPackage.artifacts`:
+
+```text
+Worker A
+  -> result.txt + manifest.json
+  -> Orchestrator validates result
+  -> dependency reference only
+  -> Worker B reads manifest/result_file when needed
+```
+
+This removes dependency-result size from the agent-to-agent message transport.
+A 5 KB, 50 KB or larger result is represented in the downstream context by the
+same small reference.
+
+For compatibility with runtimes that have not adopted Result Store publication,
+Adaptive retains a bounded legacy inline fallback controlled by
+`dependency_context_chars`. The fallback is explicitly labeled legacy and is
+not the preferred machine-result channel.
+
+Replanning state summaries follow the same principle: when an authoritative
+result reference exists, the planner receives the reference rather than a copied
+result body.
+
 ## Authority and integrity
 
 The manifest is the completion sentinel. Adaptive accepts a stored result only
