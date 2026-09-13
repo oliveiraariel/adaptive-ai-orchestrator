@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 
 import pytest
 
@@ -92,3 +93,77 @@ def test_result_store_sanitizes_directory_segments_without_changing_manifest_ide
     recovered = store.read_result(target)
     assert recovered is not None
     assert recovered.manifest["orchestration_id"] == "../orch unsafe"
+
+
+def test_project_local_store_defaults_to_project_adaptive_runs(tmp_path) -> None:
+    project = tmp_path / "project-a"
+    project.mkdir()
+
+    store = FileResultStore(project_root=project, manage_git_exclude=False)
+    target = store.prepare_target(
+        orchestration_id="orch-local",
+        work_unit_id="wu-local",
+        execution_id="exec-local",
+    )
+
+    assert store.project_root == project.resolve()
+    assert store.root == project.resolve() / ".adaptive" / "runs"
+    assert target.directory.is_relative_to(project.resolve() / ".adaptive" / "runs")
+    assert target.as_payload()["project_root"] == str(project.resolve())
+
+
+def test_project_local_stores_are_isolated_between_projects(tmp_path) -> None:
+    project_a = tmp_path / "project-a"
+    project_b = tmp_path / "project-b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    store_a = FileResultStore(project_root=project_a, manage_git_exclude=False)
+    store_b = FileResultStore(project_root=project_b, manage_git_exclude=False)
+
+    target_a = store_a.prepare_target(
+        orchestration_id="same-orch",
+        work_unit_id="same-wu",
+        execution_id="same-exec",
+    )
+    target_b = store_b.prepare_target(
+        orchestration_id="same-orch",
+        work_unit_id="same-wu",
+        execution_id="same-exec",
+    )
+
+    store_a.publish(target_a, content="project-a-result")
+    store_b.publish(target_b, content="project-b-result")
+
+    assert target_a.result_path != target_b.result_path
+    assert store_a.read_result(target_a).content == "project-a-result"
+    assert store_b.read_result(target_b).content == "project-b-result"
+    assert not target_a.result_path.is_relative_to(project_b)
+    assert not target_b.result_path.is_relative_to(project_a)
+
+
+def test_project_local_store_excludes_adaptive_state_from_git_without_editing_gitignore(tmp_path) -> None:
+    project = tmp_path / "repo"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    tracked_gitignore = project / ".gitignore"
+    tracked_gitignore.write_text("*.pyc\n", encoding="utf-8")
+    before = tracked_gitignore.read_text(encoding="utf-8")
+
+    store = FileResultStore(project_root=project)
+    store.prepare_target(
+        orchestration_id="orch",
+        work_unit_id="wu",
+        execution_id="exec",
+    )
+
+    exclude = subprocess.run(
+        ["git", "-C", str(project), "rev-parse", "--git-path", "info/exclude"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    exclude_path = project / exclude if not __import__("pathlib").Path(exclude).is_absolute() else __import__("pathlib").Path(exclude)
+
+    assert "/.adaptive/" in exclude_path.read_text(encoding="utf-8")
+    assert tracked_gitignore.read_text(encoding="utf-8") == before
