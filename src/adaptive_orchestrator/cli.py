@@ -189,10 +189,10 @@ def _doctor(gateway_url: str) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     policy = _execution_policy(args)
-    runtime = _runtime(args)
     observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
 
     try:
+        runtime = _runtime(args)
         result = RunOrchestration(
             runtime=runtime,
             claim_registry=InMemoryClaimRegistry(),
@@ -485,7 +485,7 @@ def _safe_failure_category(exc: Exception) -> str:
         return "runtime"
     if isinstance(exc, (SkillRegistryError, SkillResolutionError)):
         return "configuration"
-    if isinstance(exc, OSError):
+    if isinstance(exc, (OSError, ResultStoreError)):
         return "environment"
     if isinstance(exc, ValueError):
         return "validation"
@@ -508,6 +508,8 @@ def _safe_failure_code(exc: Exception) -> str:
         return "skill_registry_failed"
     if isinstance(exc, SkillResolutionError):
         return "skill_resolution_failed"
+    if isinstance(exc, ResultStoreError):
+        return "result_store_failed"
     if isinstance(exc, OSError):
         return "environment_io_failed"
     if isinstance(exc, ValueError):
