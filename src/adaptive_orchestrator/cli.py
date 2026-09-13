@@ -214,10 +214,7 @@ def _run(args: argparse.Namespace) -> int:
     ) as exc:
         return _print_error(exc)
 
-    accepted = result.verdict in {
-        EvaluationVerdict.ACCEPTED,
-        EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
-    }
+    accepted = result.verdict is EvaluationVerdict.ACCEPTED
     observability.emit(
         "work_unit_status_changed",
         orchestration_id=result.task_id.removeprefix("task:"),
@@ -318,15 +315,29 @@ def _orchestrate(args: argparse.Namespace) -> int:
         OpenClawGatewayError,
         ValueError,
     ) as exc:
-        if isinstance(exc, (ProjectPlanningError, ProjectOrchestrationError)):
-            observability.emit(
-                "orchestration_completed", orchestration_id=orchestration_id,
-                status="FAILED", failure_category="planning",
-                failure_code=_safe_failure_code(exc),
-            )
+        observability.emit(
+            "orchestration_completed",
+            orchestration_id=orchestration_id,
+            status="FAILED",
+            failure_category=_safe_failure_category(exc),
+            failure_code=_safe_failure_code(exc),
+        )
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    stop_reasons = sorted(
+        {
+            record.reason
+            for record in result.records
+            if record.status == "BLOCKED" and record.reason
+        }
+    )
+    requires_human_decision = any(
+        reason.startswith("circuit-breaker:")
+        or reason.startswith("worker-blocked:HUMAN_DECISION")
+        or reason.startswith("worker-blocked:AUTHORITY")
+        for reason in stop_reasons
+    )
     print(
         json.dumps(
             {
@@ -340,6 +351,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
+                "stop_reasons": stop_reasons,
+                "requires_human_decision": requires_human_decision,
                 "dispatch_generations": [
                     {
                         "generation": wave.wave,
@@ -445,13 +458,41 @@ def _print_error(exc: Exception) -> int:
     return 1
 
 
+def _safe_failure_category(exc: Exception) -> str:
+    if isinstance(exc, (ProjectPlanningError, ProjectOrchestrationError)):
+        return "planning"
+    if isinstance(exc, (OpenClawGatewayError, RunOrchestrationError)):
+        return "runtime"
+    if isinstance(exc, (SkillRegistryError, SkillResolutionError)):
+        return "configuration"
+    if isinstance(exc, OSError):
+        return "environment"
+    if isinstance(exc, ValueError):
+        return "validation"
+    return "unknown"
+
+
 def _safe_failure_code(exc: Exception) -> str:
     message = str(exc).lower()
-    if "json" in message:
-        return "planner_invalid_json"
-    if "plan" in message:
-        return "planner_invalid_plan"
-    return "planner_failed"
+    if isinstance(exc, (ProjectPlanningError, ProjectOrchestrationError)):
+        if "json" in message:
+            return "planner_invalid_json"
+        if "plan" in message:
+            return "planner_invalid_plan"
+        return "planner_failed"
+    if isinstance(exc, OpenClawGatewayError):
+        return "openclaw_gateway_failed"
+    if isinstance(exc, RunOrchestrationError):
+        return "orchestration_runtime_failed"
+    if isinstance(exc, SkillRegistryError):
+        return "skill_registry_failed"
+    if isinstance(exc, SkillResolutionError):
+        return "skill_resolution_failed"
+    if isinstance(exc, OSError):
+        return "environment_io_failed"
+    if isinstance(exc, ValueError):
+        return "validation_failed"
+    return "unknown_failure"
 
 
 if __name__ == "__main__":

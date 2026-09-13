@@ -116,3 +116,19 @@ def test_evaluate_result_requires_criteria() -> None:
         assert "criterion" in str(exc)
     else:
         raise AssertionError("Expected criteria validation error.")
+
+def test_partial_result_is_never_accepted_as_terminal() -> None:
+    result = make_result(
+        evidence=("runtime-completed",),
+        status=ResultPackageStatus.PARTIAL,
+    )
+
+    evaluation = EvaluateResult().execute(
+        EvaluateResultRequest(
+            result_package=result,
+            criteria=("runtime-completed",),
+            evaluator_id="evaluator-001",
+        )
+    ).evaluation
+
+    assert evaluation.verdict is EvaluationVerdict.RETURNED
