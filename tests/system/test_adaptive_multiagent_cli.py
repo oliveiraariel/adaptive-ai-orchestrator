@@ -7,7 +7,7 @@ class MultiFakeGatewayClient:
     last_config = None
     counter = 0
 
-    def __init__(self, config):
+    def __init__(self, config, **kwargs):
         type(self).last_config = config
 
     def submit(self, task_payload):
@@ -84,7 +84,7 @@ def test_cli_orchestrate_executes_static_parallel_plan(monkeypatch, tmp_path, ca
     assert payload["waves"][0]["selected_work_unit_ids"] == ["a", "b"]
 
 class PlannerFailureGatewayClient:
-    def __init__(self, config):
+    def __init__(self, config, **kwargs):
         self.config = config
 
     def submit(self, task_payload):
