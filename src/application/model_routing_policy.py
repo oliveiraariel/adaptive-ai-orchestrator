@@ -28,8 +28,11 @@ class ModelRoutingPolicy:
     - Kimi K2.7 Code is the automatic high-complexity model for orchestration,
       systemic analysis, complex code, review, retries and remediation while the
       Moonshot route is funded and healthy;
-    - GPT-5.6 Luna is the automatic medium/low-complexity model and the fallback
-      for K2.7 operational failures;
+    - GPT-5.6 Luna is the automatic medium/low-complexity model and the first
+      fallback for K2.7 operational failures;
+    - an optional second Luna OAuth profile can be tried before free Laguna;
+    - Laguna S 2.1 free and Laguna XS 2.1 free are terminal automatic fallbacks
+      for every automatic route before failure is surfaced;
     - Luna runs at low reasoning and is expected to use an explicit OpenAI OAuth
       auth profile so ChatGPT-plan usage is not silently replaced by paid API-key
       billing;
@@ -46,7 +49,11 @@ class ModelRoutingPolicy:
     code_thinking: str = "low"
     routine_thinking: str = "low"
     economy_auth_profile: str | None = None
+    economy_secondary_auth_profile: str | None = None
     code_specialist_auth_profile: str | None = "moonshot:api-key"
+    laguna_model: str = "openrouter/poolside/laguna-s-2.1:free"
+    laguna_emergency_model: str = "openrouter/poolside/laguna-xs-2.1:free"
+    laguna_auth_profile: str | None = None
     kimi_enabled: bool = True
     disabled_models: tuple[str, ...] = (
         "moonshot/kimi-k3",
@@ -96,12 +103,26 @@ class ModelRoutingPolicy:
             economy_auth_profile=(
                 os.environ.get("ADAPTIVE_OPENAI_OAUTH_PROFILE") or None
             ),
+            economy_secondary_auth_profile=(
+                os.environ.get("ADAPTIVE_OPENAI_SECONDARY_OAUTH_PROFILE") or None
+            ),
             code_specialist_auth_profile=(
                 os.environ.get(
                     "ADAPTIVE_KIMI_AUTH_PROFILE",
                     "moonshot:api-key",
                 )
                 or None
+            ),
+            laguna_model=os.environ.get(
+                "ADAPTIVE_LAGUNA_MODEL",
+                "openrouter/poolside/laguna-s-2.1:free",
+            ),
+            laguna_emergency_model=os.environ.get(
+                "ADAPTIVE_LAGUNA_EMERGENCY_MODEL",
+                "openrouter/poolside/laguna-xs-2.1:free",
+            ),
+            laguna_auth_profile=(
+                os.environ.get("ADAPTIVE_OPENROUTER_AUTH_PROFILE") or None
             ),
             kimi_enabled=cls._env_enabled(
                 os.environ.get("ADAPTIVE_KIMI_ENABLED"),
@@ -217,48 +238,61 @@ class ModelRoutingPolicy:
         *,
         failure_reason: str,
     ) -> ModelRoutingDecision | None:
-        """Return the cost-safe operational fallback.
-
-        High-complexity K2.7 work may fall back to Luna Low/OAuth. Luna work
-        does not automatically escalate to a paid Moonshot route: medium/low
-        work remains cost-safe and surfaces its operational failure instead.
-        Disabled premium models are never automatic fallback candidates.
-        """
+        """Return the next bounded cost-safe operational fallback."""
         normalized = decision.model.strip().casefold()
         economy = self.economy_model.strip().casefold()
         strong = self.strong_model.strip().casefold()
         specialist = self.code_specialist_model.strip().casefold()
+        laguna = self.laguna_model.strip().casefold()
+        laguna_xs = self.laguna_emergency_model.strip().casefold()
+
+        candidates: list[tuple[str, str | None]] = []
+        secondary = self.economy_secondary_auth_profile
+        if secondary and secondary == self.economy_auth_profile:
+            secondary = None
 
         if normalized in {strong, specialist}:
-            target = self.economy_model
+            if self.economy_auth_profile:
+                candidates.append((self.economy_model, self.economy_auth_profile))
+            if secondary:
+                candidates.append((self.economy_model, secondary))
+            candidates += [
+                (self.laguna_model, self.laguna_auth_profile),
+                (self.laguna_emergency_model, self.laguna_auth_profile),
+            ]
         elif normalized == economy:
+            if secondary and decision.auth_profile != secondary:
+                candidates.append((self.economy_model, secondary))
+            candidates += [
+                (self.laguna_model, self.laguna_auth_profile),
+                (self.laguna_emergency_model, self.laguna_auth_profile),
+            ]
+        elif normalized == laguna:
+            candidates.append((self.laguna_emergency_model, self.laguna_auth_profile))
+        elif normalized == laguna_xs:
             return None
         else:
             return None
 
-        if target.strip().casefold() == normalized or self.is_disabled(target):
-            return None
+        for target, auth_profile in candidates:
+            if not target or self.is_disabled(target):
+                continue
+            if target.strip().casefold() == normalized and auth_profile == decision.auth_profile:
+                continue
+            thinking = None if self._uses_provider_native_thinking(target) else self.routine_thinking
+            thinking_reason = (
+                "provider-native-code-specialist-reasoning"
+                if thinking is None
+                else "operational-fallback-low-reasoning"
+            )
+            return ModelRoutingDecision(
+                model=target, provider=self._provider(target), auth_profile=auth_profile,
+                tier="fallback", reason=f"operational-fallback-after-{failure_reason}",
+                attempt=decision.attempt, thinking=thinking,
+                thinking_reason=thinking_reason, escalated_from=decision.model,
+            )
+        return None
 
-        if self._uses_provider_native_thinking(target):
-            thinking = None
-            thinking_reason = "provider-native-code-specialist-reasoning"
-        elif target.strip().casefold() == strong:
-            thinking = self.strong_thinking
-            thinking_reason = "operational-fallback-orchestrator-low-reasoning"
-        else:
-            thinking = self.routine_thinking
-            thinking_reason = "operational-fallback-low-reasoning"
-        return ModelRoutingDecision(
-            model=target,
-            provider=self._provider(target),
-            auth_profile=self._auth_profile_for_model(target),
-            tier="fallback",
-            reason=f"operational-fallback-after-{failure_reason}",
-            attempt=decision.attempt,
-            thinking=thinking,
-            thinking_reason=thinking_reason,
-            escalated_from=decision.model,
-        )
 
     def is_disabled(self, model: str) -> bool:
         normalized = model.strip().casefold()
@@ -369,6 +403,11 @@ class ModelRoutingPolicy:
             self.code_specialist_model.strip().casefold(),
         }:
             return self.code_specialist_auth_profile
+        if normalized in {
+            self.laguna_model.strip().casefold(),
+            self.laguna_emergency_model.strip().casefold(),
+        }:
+            return self.laguna_auth_profile
         return None
 
     @staticmethod

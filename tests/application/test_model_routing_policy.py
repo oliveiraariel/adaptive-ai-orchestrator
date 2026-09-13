@@ -231,13 +231,49 @@ def test_operational_fallback_switches_k27_to_luna_low_oauth() -> None:
     assert fallback.escalated_from == "moonshot/kimi-k2.7-code"
 
 
-def test_luna_does_not_auto_escalate_to_paid_kimi() -> None:
+def test_luna_falls_back_to_free_laguna_without_paid_kimi() -> None:
     routing = policy()
     primary = routing.select(make_task("Organizar documentação simples."))
+    laguna = routing.fallback_for(primary, failure_reason="quota")
+    assert laguna is not None
+    assert laguna.model == "openrouter/poolside/laguna-s-2.1:free"
+    emergency = routing.fallback_for(laguna, failure_reason="unavailable")
+    assert emergency is not None
+    assert emergency.model == "openrouter/poolside/laguna-xs-2.1:free"
+    assert routing.fallback_for(emergency, failure_reason="unavailable") is None
 
-    fallback = routing.fallback_for(primary, failure_reason="quota")
 
-    assert fallback is None
+def test_secondary_luna_is_tried_before_laguna() -> None:
+    routing = ModelRoutingPolicy(
+        economy_auth_profile=OAUTH_PROFILE,
+        economy_secondary_auth_profile="openai:oauth-secondary",
+    )
+    primary = routing.select(make_task("Implementar repository PHP simples."))
+    secondary = routing.fallback_for(primary, failure_reason="quota")
+    assert secondary is not None
+    assert secondary.model == "openai/gpt-5.6-luna"
+    assert secondary.auth_profile == "openai:oauth-secondary"
+    laguna = routing.fallback_for(secondary, failure_reason="quota")
+    assert laguna is not None
+    assert laguna.model == "openrouter/poolside/laguna-s-2.1:free"
+
+
+def test_complex_chain_reaches_both_free_laguna_models() -> None:
+    routing = ModelRoutingPolicy(
+        economy_auth_profile=OAUTH_PROFILE,
+        economy_secondary_auth_profile="openai:oauth-secondary",
+        laguna_auth_profile="openrouter:default",
+    )
+    d = routing.select(make_task("Implementar transferência financeira com transação, rollback e autorização."))
+    d = routing.fallback_for(d, failure_reason="quota")
+    assert d is not None and d.auth_profile == OAUTH_PROFILE
+    d = routing.fallback_for(d, failure_reason="quota")
+    assert d is not None and d.auth_profile == "openai:oauth-secondary"
+    d = routing.fallback_for(d, failure_reason="quota")
+    assert d is not None and d.model == "openrouter/poolside/laguna-s-2.1:free"
+    d = routing.fallback_for(d, failure_reason="unavailable")
+    assert d is not None and d.model == "openrouter/poolside/laguna-xs-2.1:free"
+    assert routing.fallback_for(d, failure_reason="unavailable") is None
 
 
 def test_environment_can_override_policy_models_thinking_auth_and_disabled_models(
@@ -316,6 +352,18 @@ def test_environment_can_disable_kimi_automatic_routing(monkeypatch) -> None:
     routing = ModelRoutingPolicy.from_env()
 
     assert routing.kimi_enabled is False
+
+
+def test_environment_can_configure_secondary_luna_and_laguna(monkeypatch) -> None:
+    monkeypatch.setenv("ADAPTIVE_OPENAI_SECONDARY_OAUTH_PROFILE", "openai:oauth-secondary")
+    monkeypatch.setenv("ADAPTIVE_LAGUNA_MODEL", "openrouter/poolside/laguna-s-2.1:free")
+    monkeypatch.setenv("ADAPTIVE_LAGUNA_EMERGENCY_MODEL", "openrouter/poolside/laguna-xs-2.1:free")
+    monkeypatch.setenv("ADAPTIVE_OPENROUTER_AUTH_PROFILE", "openrouter:default")
+    routing = ModelRoutingPolicy.from_env()
+    assert routing.economy_secondary_auth_profile == "openai:oauth-secondary"
+    assert routing.laguna_model == "openrouter/poolside/laguna-s-2.1:free"
+    assert routing.laguna_emergency_model == "openrouter/poolside/laguna-xs-2.1:free"
+    assert routing.laguna_auth_profile == "openrouter:default"
 
 
 def test_environment_rejects_invalid_kimi_enabled_value(monkeypatch) -> None:
