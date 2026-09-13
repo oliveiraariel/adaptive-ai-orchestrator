@@ -179,9 +179,9 @@ def test_repeated_independent_successes_become_provisional_guidance(tmp_path: Pa
     assert "resolve-contract-first" in guidance
 
 
-def test_default_knowledge_guides_machine_result_transport_diagnosis() -> None:
+def test_default_knowledge_guides_machine_result_transport_diagnosis(tmp_path: Path) -> None:
     base = ProblemSolvingKnowledgeBase.load_default(
-        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning.jsonl"))
+        learning_store=ProblemSolvingLearningStore(tmp_path / "transport-learning.jsonl")
     )
 
     guidance = base.render_guidance(
@@ -193,9 +193,9 @@ def test_default_knowledge_guides_machine_result_transport_diagnosis() -> None:
     assert "progress output and terminal summaries" in guidance
 
 
-def test_default_knowledge_guides_reference_based_agent_handoff() -> None:
+def test_default_knowledge_guides_reference_based_agent_handoff(tmp_path: Path) -> None:
     base = ProblemSolvingKnowledgeBase.load_default(
-        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning-2.jsonl"))
+        learning_store=ProblemSolvingLearningStore(tmp_path / "handoff-learning.jsonl")
     )
 
     guidance = base.render_guidance(
@@ -207,9 +207,9 @@ def test_default_knowledge_guides_reference_based_agent_handoff() -> None:
     assert "project boundary" in guidance
 
 
-def test_default_knowledge_guides_same_run_reconciliation() -> None:
+def test_default_knowledge_guides_same_run_reconciliation(tmp_path: Path) -> None:
     base = ProblemSolvingKnowledgeBase.load_default(
-        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning-3.jsonl"))
+        learning_store=ProblemSolvingLearningStore(tmp_path / "reconcile-learning.jsonl")
     )
 
     guidance = base.render_guidance(
@@ -221,9 +221,9 @@ def test_default_knowledge_guides_same_run_reconciliation() -> None:
     assert "Do not redispatch solely" in guidance
 
 
-def test_default_knowledge_guides_staged_transport_validation() -> None:
+def test_default_knowledge_guides_staged_transport_validation(tmp_path: Path) -> None:
     base = ProblemSolvingKnowledgeBase.load_default(
-        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning-4.jsonl"))
+        learning_store=ProblemSolvingLearningStore(tmp_path / "staged-learning.jsonl")
     )
 
     guidance = base.render_guidance(
