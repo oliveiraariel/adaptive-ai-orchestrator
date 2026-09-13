@@ -52,7 +52,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         observability: ObservabilitySink | None = None,
     ) -> ProjectOrchestrationResult:
         observability = observability or NullObservabilitySink()
-        orchestration_id = uuid4().hex
+        orchestration_id = request.orchestration_id or uuid4().hex
         planning_request = ProjectPlanningRequest(
             objective=request.objective,
             scope=request.scope,

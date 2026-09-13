@@ -61,6 +61,7 @@ class ProjectRunStatus(str, Enum):
 @dataclass(frozen=True)
 class ProjectOrchestrationRequest:
     objective: str
+    orchestration_id: str | None = None
     agent: str = "main"
     planner_agent: str | None = None
     scope: str = ""

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from uuid import uuid4
 from application.observability import JsonlObservabilitySink, canonical_observability_path
 from pathlib import Path
 from typing import Sequence
@@ -81,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--objective", required=True)
+    parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--skill", action="append", default=[])
     parser.add_argument("--model")
@@ -99,6 +101,7 @@ def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--objective", required=True)
+    parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
     parser.add_argument("--scope", default="")
@@ -178,11 +181,13 @@ def _doctor(gateway_url: str) -> int:
 def _run(args: argparse.Namespace) -> int:
     policy = _execution_policy(args)
     runtime = _runtime(args)
+    observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
 
     try:
         result = RunOrchestration(
             runtime=runtime,
             claim_registry=InMemoryClaimRegistry(),
+            observability=observability,
         ).execute(
             RunOrchestrationRequest(
                 objective=args.objective,
@@ -213,6 +218,21 @@ def _run(args: argparse.Namespace) -> int:
         EvaluationVerdict.ACCEPTED,
         EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
     }
+    observability.emit(
+        "work_unit_status_changed",
+        orchestration_id=result.task_id.removeprefix("task:"),
+        work_unit_id=result.work_unit_id,
+        execution_id=result.execution_id,
+        external_id=result.external_id,
+        skills=list(args.skill),
+        model=args.model,
+        provider=args.provider,
+        attempt=1,
+        status=result.work_unit_state.value,
+        runtime_status=result.runtime_status.value,
+        verdict=result.verdict.value,
+        usage=RunOrchestration._extract_usage(result.raw_result),
+    )
     print(
         json.dumps(
             {
@@ -235,6 +255,8 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
+    orchestration_id = uuid4().hex
+    observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
     try:
         registry_path = (
             Path(args.skill_registry).expanduser().resolve()
@@ -268,6 +290,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         ).execute(
             ProjectOrchestrationRequest(
                 objective=args.objective,
+                orchestration_id=orchestration_id,
                 agent=args.agent,
                 planner_agent=args.planner_agent,
                 scope=args.scope,
@@ -283,7 +306,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 human_approved=args.human_approved,
                 plan=plan,
             ),
-            observability=JsonlObservabilitySink(canonical_observability_path()),
+            observability=observability,
         )
     except (
         OSError,
@@ -295,6 +318,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
         OpenClawGatewayError,
         ValueError,
     ) as exc:
+        if isinstance(exc, (ProjectPlanningError, ProjectOrchestrationError)):
+            observability.emit(
+                "orchestration_completed", orchestration_id=orchestration_id,
+                status="FAILED", failure_category="planning",
+                failure_code=_safe_failure_code(exc),
+            )
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
@@ -414,6 +443,15 @@ def _print_error(exc: Exception) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def _safe_failure_code(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "json" in message:
+        return "planner_invalid_json"
+    if "plan" in message:
+        return "planner_invalid_plan"
+    return "planner_failed"
 
 
 if __name__ == "__main__":

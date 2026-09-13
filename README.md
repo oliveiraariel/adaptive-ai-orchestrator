@@ -316,3 +316,9 @@ structured result
 The bridge is responsible only for invocation and result transport. Planning, policy, claims, worker count, concurrency, continuous scheduling, fan-in, evaluation and replanning remain owned by Adaptive.
 
 See [`docs/OPENCLAW-INBOUND-BRIDGE.md`](docs/OPENCLAW-INBOUND-BRIDGE.md) for the bridge contract, security model, and validation procedure.
+### Conversation session identity
+
+Use `--session-id` (or `ADAPTIVE_SESSION_ID`) to associate multiple bounded
+executions with one conversational session. The session identifier is
+observability metadata only: each execution still has its own
+`orchestration_id` and emits a terminal lifecycle event when finished.

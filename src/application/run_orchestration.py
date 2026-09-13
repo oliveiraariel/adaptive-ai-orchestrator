@@ -3,6 +3,7 @@ from typing import Tuple
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntime, AgentRuntimeStatus
+from application.observability import ObservabilitySink, NullObservabilitySink
 from application.claim_registry import ClaimRegistry
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
 from application.execution_coordinator import (
@@ -80,9 +81,10 @@ class RunOrchestration:
     delegation, result evaluation, and finalization.
     """
 
-    def __init__(self, *, runtime: AgentRuntime, claim_registry: ClaimRegistry) -> None:
+    def __init__(self, *, runtime: AgentRuntime, claim_registry: ClaimRegistry, observability: ObservabilitySink | None = None) -> None:
         self._runtime = runtime
         self._claim_registry = claim_registry
+        self._observability = observability or NullObservabilitySink()
 
     def execute(self, request: RunOrchestrationRequest) -> RunOrchestrationResult:
         run_id = uuid4().hex
@@ -120,6 +122,11 @@ class RunOrchestration:
             execution_policy=request.execution_policy,
             requested_side_effects=request.requested_side_effects,
         )
+        self._observability.emit("orchestration_started", orchestration_id=run_id)
+        self._observability.emit(
+            "work_unit_created", orchestration_id=run_id, work_unit_id=work_unit_id,
+            role=request.agent, skills=list(request.skills), status="READY",
+        )
 
         dispatched = ExecutionCoordinator(
             runtime=self._runtime,
@@ -151,6 +158,11 @@ class RunOrchestration:
             raise RunOrchestrationError(
                 "ExecutionCoordinator returned an incomplete dispatched outcome."
             )
+        self._observability.emit(
+            "worker_started", orchestration_id=run_id, work_unit_id=work_unit_id,
+            execution_id=outcome.execution.id, external_id=outcome.execution.external_id,
+            role=request.agent, skills=list(request.skills), attempt=1, status="RUNNING",
+        )
 
         try:
             runtime_result = self._runtime.retrieve_result(outcome.execution)
@@ -197,6 +209,17 @@ class RunOrchestration:
                 orchestration_id=run_id,
             )
         )
+        self._observability.emit(
+            "evaluation_finalized", orchestration_id=run_id, work_unit_id=work_unit_id,
+            execution_id=outcome.execution.id, external_id=outcome.execution.external_id,
+            role=request.agent, skills=list(request.skills), attempt=1,
+            status=finalized.work_unit_state.value, verdict=evaluation.verdict.value,
+            usage=self._extract_usage(raw_result),
+        )
+        self._observability.emit(
+            "orchestration_completed", orchestration_id=run_id,
+            status=finalized.work_unit_state.value, verdict=evaluation.verdict.value,
+        )
 
         output = self._extract_output(raw_result)
         return RunOrchestrationResult(
@@ -221,3 +244,29 @@ class RunOrchestration:
         if raw_result is None:
             return ""
         return str(raw_result)
+
+    @staticmethod
+    def _extract_usage(raw_result: object) -> dict[str, int] | None:
+        if not isinstance(raw_result, dict):
+            return None
+        candidate = raw_result.get("usage") or raw_result.get("token_usage")
+        if not isinstance(candidate, dict):
+            return None
+        aliases = {
+            "input_tokens": ("input_tokens", "prompt_tokens", "input"),
+            "output_tokens": ("output_tokens", "completion_tokens", "output"),
+            "cache_read_tokens": ("cache_read_tokens", "cached_input_tokens"),
+            "cache_write_tokens": ("cache_write_tokens", "cached_output_tokens"),
+        }
+        usage = {
+            name: int(value)
+            for name, keys in aliases.items()
+            for key in keys
+            if isinstance(value := candidate.get(key), int) and value >= 0
+        }
+        total = candidate.get("total_tokens")
+        if isinstance(total, int) and total >= 0:
+            usage["total_tokens"] = total
+        elif {"input_tokens", "output_tokens"} <= usage.keys():
+            usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+        return usage or None
