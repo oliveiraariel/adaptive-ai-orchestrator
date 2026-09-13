@@ -456,6 +456,7 @@ class OpenClawAdapter(AgentRuntime):
 
         return {
             "task_id": task.task_id,
+            "orchestration_id": task.orchestration_id,
             "work_unit_id": task.work_unit_id,
             "objective": task.objective,
             "scope": task.scope,

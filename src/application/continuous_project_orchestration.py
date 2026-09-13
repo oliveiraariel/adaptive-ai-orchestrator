@@ -86,6 +86,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
         attempts = {work_unit_id: 0 for work_unit_id in work_units}
         outputs: dict[str, str] = {}
+        output_refs: dict[str, str] = {}
         revision_feedback: dict[str, str] = {}
         records: list[WorkUnitExecutionRecord] = []
         dispatch_records: list[ParallelWaveRecord] = []
@@ -123,6 +124,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             work_units=work_units,
                             dependencies=dependencies,
                             outputs=outputs,
+                            output_refs=output_refs,
                             request=request,
                         )
                         replan_count += 1
@@ -204,6 +206,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 skills=skill_sets[work_unit_id],
                                 dependencies=dependencies,
                                 outputs=outputs,
+                                output_refs=output_refs,
                                 revision_feedback=revision_feedback.get(work_unit_id, ""),
                                 request=request,
                             )
@@ -320,6 +323,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         )
                         if record.output:
                             outputs[work_unit_id] = record.output
+                        if (
+                            record.verdict == EvaluationVerdict.ACCEPTED.value
+                            and record.result_authoritative
+                            and record.result_ref
+                        ):
+                            output_refs[work_unit_id] = record.result_ref
                         if record.verdict != EvaluationVerdict.ACCEPTED.value:
                             revision_feedback[work_unit_id] = (
                                 record.output

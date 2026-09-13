@@ -36,6 +36,7 @@ from infrastructure.openclaw_gateway_client import (
     OpenClawGatewayClient,
     OpenClawGatewayError,
 )
+from infrastructure.result_store import FileResultStore, ResultStoreError
 from infrastructure.skill_registry_loader import (
     SkillRegistryError,
     load_skill_profiles,
@@ -140,6 +141,14 @@ def _add_gateway_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=int(os.environ.get("ADAPTIVE_GATEWAY_WAIT_TIMEOUT_MS", "120000")),
     )
+    parser.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+        help=(
+            "Project root that owns .adaptive/runs. Defaults to ADAPTIVE_PROJECT_ROOT "
+            "or the current working directory."
+        ),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -180,10 +189,10 @@ def _doctor(gateway_url: str) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     policy = _execution_policy(args)
-    runtime = _runtime(args)
     observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
 
     try:
+        runtime = _runtime(args)
         result = RunOrchestration(
             runtime=runtime,
             claim_registry=InMemoryClaimRegistry(),
@@ -211,6 +220,7 @@ def _run(args: argparse.Namespace) -> int:
         RunOrchestrationError,
         OpenClawGatewayError,
         ValueError,
+        ResultStoreError,
     ) as exc:
         return _print_error(exc)
 
@@ -313,6 +323,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         SkillRegistryError,
         SkillResolutionError,
         OpenClawGatewayError,
+        ResultStoreError,
         ValueError,
     ) as exc:
         observability.emit(
@@ -386,6 +397,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                         "runtime_status": record.runtime_status,
                         "verdict": record.verdict,
                         "output": record.output,
+                        "result_ref": record.result_ref,
+                        "result_authoritative": record.result_authoritative,
                         "reason": record.reason,
                     }
                     for record in result.records
@@ -408,13 +421,22 @@ def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:
 
 def _runtime(args: argparse.Namespace) -> OpenClawAdapter:
     observability = JsonlObservabilitySink(canonical_observability_path())
+    project_root = Path(args.project_root).expanduser().resolve()
+    if not project_root.is_dir():
+        raise ValueError(
+            f"Adaptive project root does not exist or is not a directory: {project_root}"
+        )
     config = GatewayConfig(
         url=args.gateway_url,
         token=os.environ.get("OPENCLAW_GATEWAY_TOKEN"),
         password=os.environ.get("OPENCLAW_GATEWAY_PASSWORD"),
         agent_wait_timeout_ms=args.wait_timeout_ms,
     )
-    return OpenClawAdapter(OpenClawGatewayClient(config), observability=observability)
+    result_store = FileResultStore(project_root=project_root)
+    return OpenClawAdapter(
+        OpenClawGatewayClient(config, result_store=result_store),
+        observability=observability,
+    )
 
 
 def _find_skill_registry(*, required: bool) -> Path | None:
@@ -465,7 +487,7 @@ def _safe_failure_category(exc: Exception) -> str:
         return "runtime"
     if isinstance(exc, (SkillRegistryError, SkillResolutionError)):
         return "configuration"
-    if isinstance(exc, OSError):
+    if isinstance(exc, (OSError, ResultStoreError)):
         return "environment"
     if isinstance(exc, ValueError):
         return "validation"
@@ -488,6 +510,8 @@ def _safe_failure_code(exc: Exception) -> str:
         return "skill_registry_failed"
     if isinstance(exc, SkillResolutionError):
         return "skill_resolution_failed"
+    if isinstance(exc, ResultStoreError):
+        return "result_store_failed"
     if isinstance(exc, OSError):
         return "environment_io_failed"
     if isinstance(exc, ValueError):

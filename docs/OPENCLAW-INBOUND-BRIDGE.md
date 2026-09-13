@@ -86,6 +86,7 @@ Important options include:
 
 ```bash
 adaptive-orchestrator orchestrate \
+  --project-root /absolute/path/to/governed-project \
   --objective "Execute the authorized project objective." \
   --agent main \
   --max-concurrency 4
@@ -93,6 +94,7 @@ adaptive-orchestrator orchestrate \
 
 Important project-mode options include:
 
+- `--project-root` — governed project root; worker result handoff is stored under `<project>/.adaptive/runs/`;
 - `--agent` — physical OpenClaw agent/workspace owner for worker sessions;
 - `--planner-agent` — optional distinct planning agent id;
 - `--max-concurrency` — global active-worker cap;
@@ -144,6 +146,24 @@ The bridge and project orchestrator normally omit explicit model/provider overri
 For a single Work Unit, a concrete machine-verifiable literal marker may be supplied with `--accept`.
 
 For project mode, runtime completion is normally the per-worker execution gate, while semantic confidence is established through explicit testing, review, security, integration, or other verification Work Units in the graph. Runtime completion by itself is not semantic proof.
+
+## Project-local result ownership
+
+The inbound bridge should pass the governed project root explicitly. Adaptive
+uses that root for the private runtime tree:
+
+```text
+<project>/.adaptive/runs/<orchestration>/<work-unit>/<execution>/
+```
+
+Workers publish complete machine-readable results there while OpenClaw carries
+only progress and short terminal summaries. The project-local runtime tree is
+excluded through repository-local Git metadata when possible and must not be
+committed.
+
+This keeps SGFP results inside SGFP, another project's results inside that
+project, and global Adaptive state limited to orchestrator-owned telemetry,
+health, locks, and runtime metadata.
 
 ## Safety
 
