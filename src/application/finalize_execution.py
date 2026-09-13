@@ -54,10 +54,7 @@ class FinalizeExecution:
 
         satisfied: list[str] = []
 
-        if request.verdict in {
-            EvaluationVerdict.ACCEPTED,
-            EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
-        }:
+        if request.verdict is EvaluationVerdict.ACCEPTED:
             work_unit.complete()
             for dependency in request.dependencies:
                 if dependency.source_id != work_unit.id.value:
@@ -67,6 +64,7 @@ class FinalizeExecution:
                     f"{dependency.source_id}->{dependency.target_id}"
                 )
         elif request.verdict in {
+            EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
             EvaluationVerdict.RETURNED,
             EvaluationVerdict.REJECTED,
         }:
