@@ -112,7 +112,7 @@ class EvaluateResult:
         unsatisfied_count: int,
         result_status: str,
     ) -> EvaluationVerdict:
-        if result_status == "FAILED":
+        if result_status in {"FAILED", "PARTIAL"}:
             return EvaluationVerdict.RETURNED
 
         if unsatisfied_count == 0 and satisfied_count > 0:
