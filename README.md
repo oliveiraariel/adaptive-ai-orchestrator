@@ -134,6 +134,20 @@ manual-only premium models
 Adaptive-routed Luna work fails closed when the configured OpenAI OAuth profile
 is missing, preventing accidental fallback to a paid OpenAI Platform API key.
 
+## Execution integrity
+
+Field operation exposed several important distinctions that are now part of the executable contract:
+
+- runtime completion is not semantic completion;
+- `ACCEPTED_WITH_CONDITIONS` and worker-reported `PARTIAL` remain non-terminal;
+- project workers emit a compact `ADAPTIVE_WORK_STATUS` / blocker / unmet-criteria footer so unfinished work cannot be silently promoted to complete;
+- missing implementation or wiring that is already authorized is work, not a blocker;
+- repeated unsuccessful attempts trip a bounded circuit-breaker reason instead of creating endless equivalent retries;
+- long independent checklists should be decomposed into finishable, evidence-gated Work Units;
+- stale persisted `RUNNING` state must be reconciled against current runtime/session evidence before redispatch.
+
+The incident-derived rationale and cross-layer lessons are recorded in [`docs/execution-integrity-field-learning-2026-09-13.md`](docs/execution-integrity-field-learning-2026-09-13.md).
+
 ## Core Idea
 
 The project follows a workflow similar to:
