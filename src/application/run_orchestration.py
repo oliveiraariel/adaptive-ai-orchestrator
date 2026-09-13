@@ -128,33 +128,57 @@ class RunOrchestration:
             role=request.agent, skills=list(request.skills), status="READY",
         )
 
-        dispatched = ExecutionCoordinator(
-            runtime=self._runtime,
-            claim_registry=self._claim_registry,
-        ).dispatch_frontier(
-            DispatchFrontierRequest(
-                assignments=(
-                    WorkAssignment(
-                        work_unit=work_unit,
-                        configuration=configuration,
-                        task_package=task_package,
+        try:
+            dispatched = ExecutionCoordinator(
+                runtime=self._runtime,
+                claim_registry=self._claim_registry,
+            ).dispatch_frontier(
+                DispatchFrontierRequest(
+                    assignments=(
+                        WorkAssignment(
+                            work_unit=work_unit,
+                            configuration=configuration,
+                            task_package=task_package,
+                        ),
                     ),
-                ),
-                dependencies=(),
-                claimant_id=request.claimant_id,
-                concurrency_limit=1,
-                human_approved_work_unit_ids=(work_unit_id,)
-                if request.human_approved
-                else (),
+                    dependencies=(),
+                    claimant_id=request.claimant_id,
+                    concurrency_limit=1,
+                    human_approved_work_unit_ids=(work_unit_id,)
+                    if request.human_approved
+                    else (),
+                )
             )
-        )
+        except Exception:
+            self._emit_terminal_failure(
+                run_id,
+                category="dispatch",
+                code="dispatch_frontier_failed",
+            )
+            raise
 
         outcome = dispatched.outcomes[0]
         if outcome.status is not DispatchStatus.DISPATCHED:
+            self._observability.emit(
+                "orchestration_completed",
+                orchestration_id=run_id,
+                status=(
+                    "BLOCKED"
+                    if outcome.status is DispatchStatus.BLOCKED
+                    else "FAILED"
+                ),
+                failure_category="dispatch",
+                failure_code=f"dispatch_{outcome.status.value.casefold()}",
+            )
             raise RunOrchestrationError(
                 f"Work Unit was not dispatched: {outcome.status.value}: {outcome.reason}"
             )
         if outcome.execution is None or outcome.claim is None:
+            self._emit_terminal_failure(
+                run_id,
+                category="dispatch",
+                code="dispatch_incomplete_outcome",
+            )
             raise RunOrchestrationError(
                 "ExecutionCoordinator returned an incomplete dispatched outcome."
             )
@@ -168,6 +192,11 @@ class RunOrchestration:
             runtime_result = self._runtime.retrieve_result(outcome.execution)
         except Exception as exc:
             self._claim_registry.release(outcome.claim)
+            self._emit_terminal_failure(
+                run_id,
+                category="runtime",
+                code="runtime_result_retrieval_failed",
+            )
             raise RunOrchestrationError(
                 f"Runtime result retrieval failed: {exc}"
             ) from exc
@@ -233,6 +262,21 @@ class RunOrchestration:
             output=output,
             raw_result=raw_result,
             evidence=result_package.evidence,
+        )
+
+    def _emit_terminal_failure(
+        self,
+        orchestration_id: str,
+        *,
+        category: str,
+        code: str,
+    ) -> None:
+        self._observability.emit(
+            "orchestration_completed",
+            orchestration_id=orchestration_id,
+            status="FAILED",
+            failure_category=category,
+            failure_code=code,
         )
 
     @staticmethod
