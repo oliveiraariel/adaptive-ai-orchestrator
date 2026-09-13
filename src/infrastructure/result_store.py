@@ -51,7 +51,7 @@ class ResultStoreTarget:
     def manifest_path(self) -> Path:
         return self.directory / "manifest.json"
 
-    def as_payload(self) -> dict[str, str | int]:
+    def as_payload(self) -> dict[str, str | int | None]:
         return {
             "schema_version": 1,
             "orchestration_id": self.orchestration_id,
