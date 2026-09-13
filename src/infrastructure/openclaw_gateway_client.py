@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 from application.incident_classifier import IncidentClassifier
+from application.model_routing_policy import ModelRoutingDecision, ModelRoutingPolicy
 from application.provider_health_policy import ProviderHealthPolicy
 from application.remediation_policy import RemediationPolicy
 from infrastructure.openclaw_adapter import OpenClawClient
@@ -231,97 +232,67 @@ class OpenClawGatewayClient(OpenClawClient):
         return status
 
     def retrieve_result(self, external_id: str) -> object:
-        run = self._get_run(external_id)
+        root_external_id = external_id
+        current_external_id = external_id
+        failover_history: list[dict[str, object]] = []
 
-        try:
-            result = self._retrieve_result_for_run(external_id, run)
-        except OpenClawGatewayError as exc:
-            configuration = run.task_payload.get("configuration")
-            if not isinstance(configuration, dict):
-                raise
-            model = str(configuration.get("model") or "").strip()
-            provider = str(
-                configuration.get("provider")
-                or self._provider_from_model(model)
-            ).strip()
-            incident = self._incident_classifier.classify(
-                exc,
-                provider=provider,
-                model=model,
-            )
-            if incident is None:
-                raise
-
-            remediation = self._remediation_policy.decide(incident)
-            health = self._provider_health.record_failure(
-                incident,
-                cooldown_seconds=remediation.cooldown_seconds,
-            )
-            self._record_incident(run, incident, remediation)
-            if not remediation.fallback_allowed:
-                raise
-
-            reason = incident.failover_reason
-            fallback_payload = self._build_failover_payload(run, reason)
-            if fallback_payload is None:
-                raise
-
-            fallback_external_id = self._submit_task(
-                fallback_payload,
-                runtime_attempt=run.runtime_attempt + 1,
-            )
-            fallback_run = self._get_run(fallback_external_id)
-
+        while True:
+            run = self._get_run(current_external_id)
             try:
-                result = self._retrieve_result_for_run(
-                    fallback_external_id,
-                    fallback_run,
+                result = self._retrieve_result_for_run(current_external_id, run)
+            except OpenClawGatewayError as exc:
+                configuration = run.task_payload.get("configuration")
+                if not isinstance(configuration, dict):
+                    raise
+                model = str(configuration.get("model") or "").strip()
+                provider = str(configuration.get("provider") or self._provider_from_model(model)).strip()
+                incident = self._incident_classifier.classify(exc, provider=provider, model=model)
+                if incident is None:
+                    raise
+                remediation = self._remediation_policy.decide(incident)
+                health = self._provider_health.record_failure(
+                    incident, cooldown_seconds=remediation.cooldown_seconds
                 )
-            except OpenClawGatewayError:
-                raise
-
-            fallback_configuration = fallback_payload["configuration"]
-            fallback_model = str(fallback_configuration.get("model") or "")
-            fallback_provider = str(
-                fallback_configuration.get("provider")
-                or self._provider_from_model(fallback_model)
-            )
-            self._provider_health.record_success(
-                fallback_provider,
-                fallback_model,
-            )
-
-            # Keep callers holding the original ExecutionReference on the
-            # successful runtime candidate. get_status/cancel continue to work
-            # without changing the application-level execution id.
-            self._runs[external_id] = fallback_run
-
-            if isinstance(result, dict):
-                result = dict(result)
-                original_model = str(configuration.get("model") or "")
-                result["model_failover"] = {
-                    "triggered": True,
-                    "reason": reason,
-                    "from_model": original_model,
-                    "to_model": fallback_configuration.get("model"),
-                    "to_provider": fallback_configuration.get("provider"),
-                    "runtime_attempt": fallback_run.runtime_attempt,
+                self._record_incident(run, incident, remediation)
+                if not remediation.fallback_allowed:
+                    raise
+                payload = self._build_failover_payload(run, incident.failover_reason)
+                if payload is None:
+                    raise
+                next_id = self._submit_task(payload, runtime_attempt=run.runtime_attempt + 1)
+                next_run = self._get_run(next_id)
+                fc = payload["configuration"]
+                failover_history.append({
+                    "reason": incident.failover_reason,
+                    "from_model": model, "from_provider": provider,
+                    "to_model": fc.get("model"), "to_provider": fc.get("provider"),
+                    "runtime_attempt": next_run.runtime_attempt,
                     "incident": incident.as_payload(),
                     "remediation": remediation.as_payload(),
                     "circuit_state": health.state,
-                }
-            return result
-        else:
+                })
+                self._runs[root_external_id] = next_run
+                current_external_id = next_id
+                continue
+
             configuration = run.task_payload.get("configuration")
             if isinstance(configuration, dict):
                 model = str(configuration.get("model") or "").strip()
-                provider = str(
-                    configuration.get("provider")
-                    or self._provider_from_model(model)
-                ).strip()
+                provider = str(configuration.get("provider") or self._provider_from_model(model)).strip()
                 if model:
                     self._provider_health.record_success(provider, model)
+            self._runs[root_external_id] = run
+            if failover_history and isinstance(result, dict):
+                result = dict(result)
+                summary = dict(failover_history[-1])
+                summary["triggered"] = True
+                summary["from_model"] = failover_history[0]["from_model"]
+                summary["from_provider"] = failover_history[0]["from_provider"]
+                summary["attempts"] = len(failover_history)
+                summary["history"] = list(failover_history)
+                result["model_failover"] = summary
             return result
+
 
     def _retrieve_result_for_run(
         self,
@@ -370,120 +341,57 @@ class OpenClawGatewayClient(OpenClawClient):
         run: GatewayRun,
         reason: str | None,
     ) -> dict[str, Any] | None:
-        if reason is None or run.runtime_attempt >= 2:
+        if reason is None:
             return None
-
         configuration = run.task_payload.get("configuration")
         if not isinstance(configuration, dict):
             return None
-
         current_model = str(configuration.get("model") or "").strip()
-        economy_model = os.environ.get(
-            "ADAPTIVE_ECONOMY_MODEL",
-            "openai/gpt-5.6-luna",
-        ).strip()
-        strong_model = os.environ.get(
-            "ADAPTIVE_STRONG_MODEL",
-            "moonshot/kimi-k2.7-code",
-        ).strip()
-        specialist_model = os.environ.get(
-            "ADAPTIVE_CODE_SPECIALIST_MODEL",
-            "moonshot/kimi-k2.7-code",
-        ).strip()
-        disabled_models = {
-            item.strip().casefold()
-            for item in os.environ.get(
-                "ADAPTIVE_DISABLED_MODELS",
-                "moonshot/kimi-k3,openai/gpt-5.6-sol",
-            ).split(",")
-            if item.strip()
-        }
-
-        normalized = current_model.casefold()
-        if normalized in {
-            strong_model.casefold(),
-            specialist_model.casefold(),
-        }:
-            fallback_model = economy_model
-        elif normalized == economy_model.casefold():
-            # Cost-safe policy: Luna does not automatically escalate to a paid
-            # Moonshot route for medium/low-complexity work.
-            return None
-        else:
+        provider = str(configuration.get("provider") or self._provider_from_model(current_model)).strip()
+        auth = configuration.get("auth_profile")
+        auth = auth if isinstance(auth, str) else None
+        thinking = configuration.get("thinking")
+        thinking = thinking if isinstance(thinking, str) else None
+        policy = ModelRoutingPolicy.from_env()
+        current = ModelRoutingDecision(
+            model=current_model, provider=provider, auth_profile=auth, tier="runtime-current",
+            reason="runtime-current", attempt=run.runtime_attempt, thinking=thinking,
+            thinking_reason="runtime-current",
+        )
+        fallback = policy.fallback_for(current, failure_reason=reason)
+        if fallback is None:
             return None
 
-        if (
-            not fallback_model
-            or fallback_model.casefold() == normalized
-            or fallback_model.casefold() in disabled_models
-        ):
-            return None
-
-        fallback_configuration = dict(configuration)
-        fallback_configuration["model"] = fallback_model
-        fallback_configuration["provider"] = self._provider_from_model(
-            fallback_model
+        fc = dict(configuration)
+        fc["model"] = fallback.model
+        fc["provider"] = fallback.provider
+        fc["auth_profile"] = fallback.auth_profile
+        fc["thinking"] = fallback.thinking
+        prefixes = (
+            "adaptive-operational-failover:", "adaptive-failover-from:",
+            "adaptive-failover-to:", "adaptive-model-tier:",
+            "adaptive-thinking-level:", "adaptive-thinking-routing-reason:",
+            "adaptive-auth-product:",
         )
-        if fallback_model.casefold() == economy_model.casefold():
-            fallback_configuration["auth_profile"] = (
-                os.environ.get("ADAPTIVE_OPENAI_OAUTH_PROFILE") or None
-            )
-        elif fallback_model.casefold() in {
-            strong_model.casefold(),
-            specialist_model.casefold(),
-        }:
-            fallback_configuration["auth_profile"] = (
-                os.environ.get(
-                    "ADAPTIVE_KIMI_AUTH_PROFILE",
-                    "moonshot:api-key",
-                )
-                or None
-            )
-        if fallback_model.casefold() in {
-            "moonshot/kimi-k2.7-code",
-            "moonshot/kimi-k2.7-code-highspeed",
-        }:
-            fallback_configuration["thinking"] = None
-        elif fallback_model.casefold() == strong_model.casefold():
-            fallback_configuration["thinking"] = os.environ.get(
-                "ADAPTIVE_STRONG_THINKING",
-                "low",
-            )
-        else:
-            fallback_configuration["thinking"] = os.environ.get(
-                "ADAPTIVE_ROUTINE_THINKING",
-                "low",
-            )
-        constraints = list(
-            fallback_configuration.get("policy_constraints") or ()
-        )
-        constraints.extend(
-            (
-                f"adaptive-operational-failover:{reason}",
-                f"adaptive-failover-from:{current_model}",
-                f"adaptive-failover-to:{fallback_model}",
-            )
-        )
-        if fallback_model.casefold() == economy_model.casefold():
-            constraints.append("adaptive-auth-product:openai-oauth")
-        fallback_configuration["policy_constraints"] = constraints
-
-        context = list(run.task_payload.get("context") or ())
+        constraints=[str(x) for x in (fc.get("policy_constraints") or ()) if not str(x).startswith(prefixes)]
+        constraints += [
+            f"adaptive-operational-failover:{reason}",
+            f"adaptive-failover-from:{current_model}",
+            f"adaptive-failover-to:{fallback.model}",
+            "adaptive-model-tier:fallback",
+            (f"adaptive-thinking-level:{fallback.thinking}" if fallback.thinking is not None else "adaptive-thinking-level:provider-native"),
+            ("adaptive-auth-product:openai-oauth" if fallback.provider == "openai" and fallback.model == policy.economy_model else "adaptive-auth-product:provider-default"),
+        ]
+        fc["policy_constraints"] = constraints
+        context=list(run.task_payload.get("context") or ())
         context.append(
-            "Adaptive automatic operational failover: the previous model "
-            f"failed because of {reason}. Continue in the same worker session. "
-            "Inspect the transcript and repository state first; preserve "
-            "completed work and side effects, do not blindly repeat completed "
-            "actions, and continue idempotently from the interrupted point."
+            "Adaptive automatic operational failover: the previous model failed because "
+            f"of {reason}. Continue in the same worker session. Inspect transcript and "
+            "repository state first; preserve completed work and continue idempotently."
         )
+        return {**run.task_payload, "configuration": fc, "context": context}
 
-        return {
-            **run.task_payload,
-            "configuration": fallback_configuration,
-            "context": context,
-        }
 
-    @staticmethod
     def _classify_failover_error(
         exc: OpenClawGatewayError,
     ) -> str | None:
