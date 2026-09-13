@@ -69,6 +69,8 @@ def test_cli_orchestrate_executes_static_parallel_plan(monkeypatch, tmp_path, ca
             str(registry),
             "--max-concurrency",
             "2",
+            "--project-root",
+            str(tmp_path),
         ]
     )
 
@@ -126,6 +128,8 @@ def test_cli_emits_terminal_failure_when_planner_runtime_aborts(monkeypatch, tmp
             "Plan then execute a project.",
             "--skill-registry",
             str(registry),
+            "--project-root",
+            str(tmp_path),
         ]
     )
 
