@@ -9,6 +9,14 @@ data produced for that project.
 Human-facing progress and terminal summaries may be truncated or summarized.
 They are never authoritative machine-result payloads.
 
+
+This separation is incident-derived. A 2026-09-13 investigation proved that
+OpenClaw progress/history could be truncated around a presentation limit and
+that `terminalReply.text` could be a short visible summary rather than the
+original payload. The architectural response is therefore not to increase a UI
+limit, but to separate the **control/presentation plane** from the
+**authoritative result plane**.
+
 ```text
 worker
   ├─ progress / terminal summary -> OpenClaw
@@ -167,6 +175,34 @@ Global Adaptive-owned operational state may continue under locations such as:
 Those records describe the orchestrator/runtime itself. They are distinct from
 project-owned worker results.
 
+
+## Control plane vs result plane
+
+```text
+OpenClaw control/presentation plane
+  dispatch | liveness | wait | progress | cancel | terminal summary
+
+Adaptive project-local result plane
+  result.txt | summary.md | manifest.json | integrity metadata | references
+```
+
+The control plane may use bounded or summarized representations. The result plane
+must preserve the complete authoritative payload.
+
+This distinction prevents:
+
+- progress truncation from corrupting machine results;
+- terminal summaries from masquerading as full results;
+- agent-to-agent fan-in from scaling with conversation payload size;
+- one project's runtime data from accumulating in Adaptive's own repository.
+
+## Lifecycle and reconciliation invariant
+
+Run identity is preserved before waiting. A wait timeout is treated as an
+observation timeout unless execution failure is independently proven. The same
+run is reconciled before redispatch so side-effecting work is not duplicated
+merely because result observation was delayed.
+
 ## Design invariants
 
 - Project results are project-local by default.
@@ -177,3 +213,7 @@ project-owned worker results.
 - Result identity is scoped to orchestration, Work Unit and execution.
 - Result integrity is verified before evaluation.
 - Runtime result files are state, not source code, and are never committed.
+- Run identity is preserved before waiting so the same execution can be reconciled.
+- Wait timeout is not automatically run failure.
+- Progress/history and terminal summary never become authoritative merely by field name.
+- Transport robustness requires real SMALL/MEDIUM/LARGE E2E validation, not unit tests alone.
