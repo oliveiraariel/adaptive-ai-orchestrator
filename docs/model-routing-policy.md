@@ -165,6 +165,30 @@ before every task. Instead:
 Therefore K2.7 remains the preferred high-complexity route while healthy, but an
 unfunded/unavailable route is not retried indefinitely.
 
+## Bounded automatic fallback chains
+
+```text
+HIGH / COMPLEX / CRITICAL
+Kimi K2.7 Code -> Luna OAuth primary -> optional Luna OAuth secondary
+-> Laguna S 2.1 :free -> Laguna XS 2.1 :free -> failure
+
+ROUTINE / NORMAL
+Luna OAuth primary -> optional Luna OAuth secondary
+-> Laguna S 2.1 :free -> Laguna XS 2.1 :free -> failure
+```
+
+Kimi K3 and GPT-5.6 Sol remain manual-only. Laguna is always present as the final automatic safety net.
+Critical/security/financial work executed by Laguna still requires the normal independent review and verification gates.
+
+Environment:
+
+```text
+ADAPTIVE_OPENAI_SECONDARY_OAUTH_PROFILE=<optional-secondary-profile>
+ADAPTIVE_OPENROUTER_AUTH_PROFILE=openrouter:default
+ADAPTIVE_LAGUNA_MODEL=openrouter/poolside/laguna-s-2.1:free
+ADAPTIVE_LAGUNA_EMERGENCY_MODEL=openrouter/poolside/laguna-xs-2.1:free
+```
+
 ## Model selection precedence
 
 The runtime applies rules in this order:

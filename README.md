@@ -1,5 +1,18 @@
 # Adaptive AI Orchestrator
 
+## Runtime observability
+
+Normal CLI executions used by the OpenClaw bridge automatically publish the
+allowlisted lifecycle telemetry to the shared persistent JSONL source:
+
+`~/.local/state/adaptive-ai-orchestrator/observability.jsonl`
+
+The location follows `${XDG_STATE_HOME}/adaptive-ai-orchestrator/observability.jsonl`
+when `XDG_STATE_HOME` is set. `ADAPTIVE_OBSERVABILITY_LOG` remains an optional
+development, test, or diagnostic override. No shell activation or manual export
+is required for the normal bridge composition root. The sink excludes prompts,
+transcripts, reasoning, raw results, credentials, and arbitrary file content.
+
 An adaptive AI orchestration system for analyzing projects, decomposing work, coordinating agents, selecting appropriate AI models and resources, evaluating results, replanning execution, and preserving project continuity.
 
 The **Adaptive AI Orchestrator** is a software system — not a single agent, skill, or model router — designed to provide a structured orchestration layer between developers, AI agents, skills, models, tools, and external agent runtimes.
@@ -128,11 +141,16 @@ The current automatic model policy is intentionally economy-first:
 ```text
 high complexity
   -> moonshot/kimi-k2.7-code when ADAPTIVE_KIMI_ENABLED=1
-  -> openai/gpt-5.6-luna via explicit OAuth, low reasoning when Kimi is disabled
-  -> fallback: openai/gpt-5.6-luna via explicit OAuth, low reasoning
+  -> openai/gpt-5.6-luna primary OAuth
+  -> optional secondary Luna OAuth
+  -> openrouter/poolside/laguna-s-2.1:free
+  -> openrouter/poolside/laguna-xs-2.1:free
 
 medium / low complexity
-  -> openai/gpt-5.6-luna via explicit OAuth, low reasoning
+  -> openai/gpt-5.6-luna primary OAuth
+  -> optional secondary Luna OAuth
+  -> openrouter/poolside/laguna-s-2.1:free
+  -> openrouter/poolside/laguna-xs-2.1:free
 
 manual-only premium models
   -> moonshot/kimi-k3
@@ -141,6 +159,20 @@ manual-only premium models
 
 Adaptive-routed Luna work fails closed when the configured OpenAI OAuth profile
 is missing, preventing accidental fallback to a paid OpenAI Platform API key.
+
+## Execution integrity
+
+Field operation exposed several important distinctions that are now part of the executable contract:
+
+- runtime completion is not semantic completion;
+- `ACCEPTED_WITH_CONDITIONS` and worker-reported `PARTIAL` remain non-terminal;
+- project workers emit a compact `ADAPTIVE_WORK_STATUS` / blocker / unmet-criteria footer so unfinished work cannot be silently promoted to complete;
+- missing implementation or wiring that is already authorized is work, not a blocker;
+- repeated unsuccessful attempts trip a bounded circuit-breaker reason instead of creating endless equivalent retries;
+- long independent checklists should be decomposed into finishable, evidence-gated Work Units;
+- stale persisted `RUNNING` state must be reconciled against current runtime/session evidence before redispatch.
+
+The incident-derived rationale and cross-layer lessons are recorded in [`docs/execution-integrity-field-learning-2026-09-13.md`](docs/execution-integrity-field-learning-2026-09-13.md).
 
 ## Core Idea
 
@@ -329,3 +361,9 @@ structured result
 The bridge is responsible only for invocation and result transport. Planning, policy, claims, worker count, concurrency, continuous scheduling, fan-in, evaluation and replanning remain owned by Adaptive.
 
 See [`docs/OPENCLAW-INBOUND-BRIDGE.md`](docs/OPENCLAW-INBOUND-BRIDGE.md) for the bridge contract, security model, and validation procedure.
+### Conversation session identity
+
+Use `--session-id` (or `ADAPTIVE_SESSION_ID`) to associate multiple bounded
+executions with one conversational session. The session identifier is
+observability metadata only: each execution still has its own
+`orchestration_id` and emits a terminal lifecycle event when finished.

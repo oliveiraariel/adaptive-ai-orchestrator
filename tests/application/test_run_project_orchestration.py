@@ -55,8 +55,10 @@ class ConcurrentRuntime:
         fail_once: set[str] | None = None,
         failures_before_success: dict[str, int] | None = None,
         delays: dict[str, float] | None = None,
+        result_refs: dict[str, str] | None = None,
     ) -> None:
         self.outputs = outputs or {}
+        self.result_refs = result_refs or {}
         self.fail_once = set(fail_once or ())
         self.failures_before_success = dict(failures_before_success or {})
         for work_unit_id in self.fail_once:
@@ -106,9 +108,19 @@ class ConcurrentRuntime:
             self.active_retrievals -= 1
             self.finished_at[work_unit_id] = time.monotonic()
         completed = replace(execution, status=AgentRuntimeStatus.COMPLETED)
+        raw_result = {"output": self.outputs.get(work_unit_id, f"done:{work_unit_id}")}
+        result_ref = self.result_refs.get(work_unit_id)
+        if result_ref:
+            raw_result["result_transport"] = {
+                "source": "adaptive-result-store",
+                "authoritative": True,
+                "complete": True,
+                "result_ref": result_ref,
+                "result_bytes": len(raw_result["output"].encode("utf-8")),
+            }
         return AgentRuntimeResult(
             execution=completed,
-            raw_result={"output": self.outputs.get(work_unit_id, f"done:{work_unit_id}")},
+            raw_result=raw_result,
         )
 
     def cancel(self, execution: ExecutionReference) -> ExecutionReference:
@@ -212,6 +224,82 @@ def test_contract_unlocks_parallel_backend_frontend_then_fan_in() -> None:
     context = "\n".join(integration_task.context)
     assert "BACKEND_READY" in context
     assert "FRONTEND_READY" in context
+
+
+def test_authoritative_dependency_results_are_fanned_in_by_reference_not_inline() -> None:
+    plan = ProjectExecutionPlan(
+        summary="large worker artifact then dependent integration",
+        work_units=(
+            wu("producer", role="backend", priority=20),
+            wu("consumer", role="integration", priority=10),
+        ),
+        dependencies=(PlannedDependency("producer", "consumer"),),
+    )
+    large_payload = "RESULT_BEGIN\n" + ("payload-line-" * 1500) + "\nRESULT_END"
+    manifest = "/tmp/project/.adaptive/runs/orch/producer/exec/manifest.json"
+    runtime = ConcurrentRuntime(
+        outputs={
+            "producer": large_payload,
+            "consumer": "CONSUMED_BY_REFERENCE",
+        },
+        result_refs={"producer": manifest},
+    )
+
+    result, _ = run(plan, runtime, max_concurrency=2)
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    producer_record = next(
+        record for record in result.records if record.work_unit_id == "producer"
+    )
+    assert producer_record.result_authoritative is True
+    assert producer_record.result_ref == manifest
+
+    consumer_task = next(
+        task for task in runtime.tasks if task.work_unit_id == "consumer"
+    )
+    context = "\n".join(consumer_task.context)
+    assert manifest in context
+    assert "payload is intentionally not copied" in context
+    assert "RESULT_BEGIN" not in context
+    assert "RESULT_END" not in context
+    assert large_payload not in context
+    assert consumer_task.artifacts == (manifest,)
+
+
+def test_non_authoritative_dependency_keeps_bounded_legacy_inline_fallback() -> None:
+    plan = ProjectExecutionPlan(
+        summary="legacy runtime compatibility",
+        work_units=(wu("legacy"), wu("consumer")),
+        dependencies=(PlannedDependency("legacy", "consumer"),),
+    )
+    large_payload = "LEGACY_BEGIN-" + ("x" * 9000) + "-LEGACY_END"
+    runtime = ConcurrentRuntime(
+        outputs={"legacy": large_payload, "consumer": "DONE"},
+    )
+    actual_planner = StaticPlanner(plan)
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=actual_planner,
+        skill_profiles=(),
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="legacy fallback",
+            max_concurrency=2,
+            dependency_context_chars=512,
+            plan=plan,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    consumer_task = next(
+        task for task in runtime.tasks if task.work_unit_id == "consumer"
+    )
+    context = "\n".join(consumer_task.context)
+    assert "Legacy inline dependency result from legacy" in context
+    assert "[dependency output truncated]" in context
+    assert "LEGACY_END" not in context
+    assert consumer_task.artifacts == ()
 
 
 def test_freed_slot_is_replenished_before_unrelated_worker_finishes() -> None:
@@ -403,3 +491,104 @@ def test_replan_signal_adds_new_required_work_then_resumes_frontier() -> None:
     assert result.replan_count == 1
     assert actual_planner.replan_calls == 1
     assert result.completed_work_unit_ids == ("discover", "necessary-followup")
+
+def test_worker_partial_footer_cannot_complete_and_trips_attempt_circuit_breaker() -> None:
+    plan = ProjectExecutionPlan(
+        summary="partial completion must remain open",
+        work_units=(wu("partial-worker"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "partial-worker": (
+                "Implemented only one requested item.\n"
+                "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: remaining acceptance item"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=1)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert result.completed_work_unit_ids == ()
+    assert result.blocked_work_unit_ids == ("partial-worker",)
+    assert result.records[-1].verdict == "RETURNED"
+    assert result.records[-1].reason == "circuit-breaker:max-attempts:worker-partial"
+
+
+def test_worker_genuine_human_blocker_stops_without_false_completion() -> None:
+    plan = ProjectExecutionPlan(
+        summary="human decision blocker",
+        work_units=(wu("decision-boundary"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "decision-boundary": (
+                "Need an irreversible business decision.\n"
+                "ADAPTIVE_WORK_STATUS: BLOCKED\n"
+                "ADAPTIVE_BLOCKER_TYPE: HUMAN_DECISION\n"
+                "ADAPTIVE_UNMET_CRITERIA: choose deletion semantics"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=2)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert result.completed_work_unit_ids == ()
+    assert len(runtime.tasks) == 1
+    assert result.records[-1].verdict == "BLOCKED"
+    assert result.records[-1].reason == "worker-blocked:HUMAN_DECISION"
+
+
+def test_unsubstantiated_worker_blocker_is_retried_then_circuit_broken() -> None:
+    plan = ProjectExecutionPlan(
+        summary="implementation difficulty is not blocker",
+        work_units=(wu("implementation-worker"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "implementation-worker": (
+                "A repository dependency must be wired.\n"
+                "ADAPTIVE_WORK_STATUS: BLOCKED\n"
+                "ADAPTIVE_BLOCKER_TYPE: IMPLEMENTATION\n"
+                "ADAPTIVE_UNMET_CRITERIA: add repository wiring"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=2)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert len(runtime.tasks) == 2
+    assert result.records[0].status == "REVISION_REQUIRED"
+    assert result.records[0].reason == "worker-blocker-unsubstantiated"
+    assert result.records[-1].reason == (
+        "circuit-breaker:max-attempts:worker-blocker-unsubstantiated"
+    )
+
+
+def test_worker_assignment_requires_structured_completion_footer() -> None:
+    plan = ProjectExecutionPlan(
+        summary="completion footer contract",
+        work_units=(wu("footer-worker"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "footer-worker": (
+                "done\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            ),
+        }
+    )
+
+    result, _ = run(plan, runtime, max_attempts=1)
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    task = next(task for task in runtime.tasks if task.work_unit_id == "footer-worker")
+    constraints = "\n".join(task.constraints)
+    assert "ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED" in constraints
+    assert "Missing implementation, wiring, tests" in constraints

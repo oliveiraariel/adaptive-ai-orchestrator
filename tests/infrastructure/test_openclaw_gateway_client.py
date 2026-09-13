@@ -9,6 +9,7 @@ from infrastructure.openclaw_gateway_client import (
     OpenClawGatewayClient,
     OpenClawGatewayError,
 )
+from infrastructure.result_store import FileResultStore
 
 
 def start_gateway(responses: dict[str, dict], *, protocol: int = 4):
@@ -421,65 +422,28 @@ def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
 
 
 
-def test_gateway_does_not_escalate_luna_to_paid_kimi_on_billing(monkeypatch) -> None:
-    client = OpenClawGatewayClient(
-        GatewayConfig(
-            archive_completed_sessions=False,
-            archive_cancelled_sessions=False,
-        )
-    )
-    patched_models: list[str] = []
-    agent_calls: list[dict] = []
-
-    def fake_rpc(method: str, params: dict) -> dict:
-        if method == "sessions.patch":
-            patched_models.append(params["model"])
-            return {"ok": True}
-        if method == "agent":
-            agent_calls.append(params)
-            return {"runId": "run-1", "acceptedAt": 123}
+def test_gateway_fails_over_luna_to_free_laguna_on_billing(monkeypatch) -> None:
+    client = OpenClawGatewayClient(GatewayConfig(archive_completed_sessions=False, archive_cancelled_sessions=False))
+    patched_models=[]; calls=[]
+    def fake_rpc(method, params):
+        if method == "sessions.patch": patched_models.append(params["model"]); return {"ok": True}
+        if method == "agent": calls.append(params); return {"runId": f"run-{len(calls)}", "acceptedAt": 123}
         if method == "agent.wait":
-            return {
-                "status": "error",
-                "error": "You have no credits remaining. Add credits to continue.",
-            }
-        raise AssertionError(f"Unexpected RPC method: {method}")
-
+            if params["runId"] == "run-1": return {"status":"error","error":"You have no credits remaining. Add credits to continue."}
+            return {"status":"ok","startedAt":100,"endedAt":200,"stopReason":"stop"}
+        if method == "chat.history": return {"messages":[{"role":"assistant","content":[{"type":"text","text":"LAGUNA_RECOVERED"}]}]}
+        raise AssertionError(method)
     monkeypatch.setattr(client, "_rpc", fake_rpc)
-
-    external = client.submit(
-        {
-            "task_id": "task-luna-billing",
-            "work_unit_id": "wu-luna-billing",
-            "objective": "Organizar documentação simples.",
-            "scope": "",
-            "context": [],
-            "inputs": [],
-            "artifacts": [],
-            "decisions": [],
-            "dependencies": [],
-            "constraints": [],
-            "expected_output": ["done"],
-            "acceptance_criteria": ["runtime-completed"],
-            "configuration": {
-                "agent": "sgfp",
-                "model": "openai/gpt-5.6-luna",
-                "provider": "openai",
-                "thinking": "low",
-                "policy_constraints": [],
-            },
-        }
-    )
-
-    try:
-        client.retrieve_result(external)
-    except OpenClawGatewayError as exc:
-        assert "no credits remaining" in str(exc)
-    else:
-        raise AssertionError("Expected Luna billing failure to remain terminal.")
-
-    assert patched_models == ["openai/gpt-5.6-luna"]
-    assert len(agent_calls) == 1
+    external=client.submit({
+        "task_id":"task-luna-billing","work_unit_id":"wu-luna-billing","objective":"Organizar documentação simples.",
+        "scope":"","context":[],"inputs":[],"artifacts":[],"decisions":[],"dependencies":[],"constraints":[],
+        "expected_output":["done"],"acceptance_criteria":["runtime-completed"],
+        "configuration":{"agent":"sgfp","model":"openai/gpt-5.6-luna","provider":"openai","thinking":"low","policy_constraints":[]},
+    })
+    result=client.retrieve_result(external)
+    assert result["output"] == "LAGUNA_RECOVERED"
+    assert result["model_failover"]["to_model"] == "openrouter/poolside/laguna-s-2.1:free"
+    assert patched_models == ["openai/gpt-5.6-luna", "openrouter/poolside/laguna-s-2.1:free"]
 
 
 def test_gateway_k3_has_no_automatic_fallback(monkeypatch) -> None:
@@ -628,6 +592,40 @@ def test_gateway_automatically_fails_over_k27_to_luna_oauth_on_rate_limit(
     assert "adaptive-auth-product:openai-oauth" in (
         fallback_message["configuration"]["policy_constraints"]
     )
+
+def test_gateway_uses_full_kimi_luna_laguna_chain(monkeypatch) -> None:
+    monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-primary")
+    monkeypatch.setenv("ADAPTIVE_OPENAI_SECONDARY_OAUTH_PROFILE", "openai:oauth-secondary")
+    monkeypatch.setenv("ADAPTIVE_OPENROUTER_AUTH_PROFILE", "openrouter:default")
+    client=OpenClawGatewayClient(GatewayConfig(archive_completed_sessions=False, archive_cancelled_sessions=False))
+    patched=[]; calls=[]
+    def fake_rpc(method, params):
+        if method == "sessions.patch": patched.append(params["model"]); return {"ok": True}
+        if method == "agent": calls.append(params); return {"runId":f"run-{len(calls)}","acceptedAt":123}
+        if method == "agent.wait":
+            if params["runId"] != "run-5": return {"status":"error","error":"provider rate limit reached (429)"}
+            return {"status":"ok","startedAt":100,"endedAt":200,"stopReason":"stop"}
+        if method == "chat.history": return {"messages":[{"role":"assistant","content":[{"type":"text","text":"CHAIN_RECOVERED"}]}]}
+        raise AssertionError(method)
+    monkeypatch.setattr(client,"_rpc",fake_rpc)
+    external=client.submit({
+        "task_id":"task-full-chain","work_unit_id":"wu-full-chain","objective":"Implementação complexa.",
+        "scope":"","context":[],"inputs":[],"artifacts":[],"decisions":[],"dependencies":[],"constraints":[],
+        "expected_output":["done"],"acceptance_criteria":["runtime-completed"],
+        "configuration":{"agent":"sgfp","model":"moonshot/kimi-k2.7-code","provider":"moonshot","auth_profile":"moonshot:api-key","thinking":None,"policy_constraints":[]},
+    })
+    result=client.retrieve_result(external)
+    assert result["output"] == "CHAIN_RECOVERED"
+    assert patched == [
+        "moonshot/kimi-k2.7-code@moonshot:api-key",
+        "openai/gpt-5.6-luna@openai:oauth-primary",
+        "openai/gpt-5.6-luna@openai:oauth-secondary",
+        "openrouter/poolside/laguna-s-2.1:free@openrouter:default",
+        "openrouter/poolside/laguna-xs-2.1:free@openrouter:default",
+    ]
+    assert result["model_failover"]["attempts"] == 4
+    assert len(result["model_failover"]["history"]) == 4
+
 
 def test_gateway_does_not_fail_over_for_unclassified_semantic_failure(monkeypatch) -> None:
     client = OpenClawGatewayClient(
@@ -873,3 +871,79 @@ def test_gateway_patches_luna_with_explicit_oauth_profile(monkeypatch) -> None:
     assert patched_models == [
         "openai/gpt-5.6-luna@openai:oauth-work",
     ]
+
+
+def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path) -> None:
+    responses = {
+        "agent": {"runId": "run-store", "acceptedAt": 123},
+        "agent.wait": {
+            "status": "ok",
+            "startedAt": 100,
+            "endedAt": 200,
+            "stopReason": "stop",
+        },
+        "chat.history": {
+            "sessionKey": "agent:agent-001:orchestrator:task-store",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "SHOULD_NOT_BE_USED"}],
+                }
+            ],
+        },
+    }
+    url, holder, server, thread = start_gateway(responses)
+    store = FileResultStore(tmp_path)
+
+    try:
+        client = OpenClawGatewayClient(
+            GatewayConfig(
+                url=url,
+                archive_completed_sessions=False,
+            ),
+            result_store=store,
+        )
+        external = client.submit({
+            "task_id": "task-store",
+            "orchestration_id": "orch-store",
+            "work_unit_id": "wu-store",
+            "objective": "produce a large result",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["large result"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {"agent": "agent-001"},
+        })
+
+        target = client._runs[external].result_target
+        assert target is not None
+        content = '{"marker":"BEGIN","payload":"' + ("x" * 12000) + '","end":"END"}'
+        store.publish(target, content=content, summary="large result stored")
+
+        result = client.retrieve_result(external)
+
+        assert result["output"] == content
+        assert result["result_transport"]["source"] == "adaptive-result-store"
+        assert result["result_transport"]["authoritative"] is True
+        assert result["result_transport"]["result_bytes"] > 12000
+        assert result["result_transport"]["complete"] is True
+
+        methods = [request["method"] for request in holder["requests"]]
+        assert methods == ["agent", "agent.wait"]
+
+        agent_request = holder["requests"][0]
+        message = json.loads(agent_request["params"]["message"])
+        assert message["result_store"]["orchestration_id"] == "orch-store"
+        assert message["result_store"]["work_unit_id"] == "wu-store"
+        assert any(
+            "authoritative-result contract" in item
+            for item in message["constraints"]
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)

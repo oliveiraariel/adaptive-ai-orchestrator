@@ -52,7 +52,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         observability: ObservabilitySink | None = None,
     ) -> ProjectOrchestrationResult:
         observability = observability or NullObservabilitySink()
-        orchestration_id = uuid4().hex
+        orchestration_id = request.orchestration_id or uuid4().hex
         planning_request = ProjectPlanningRequest(
             objective=request.objective,
             scope=request.scope,
@@ -86,6 +86,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
         attempts = {work_unit_id: 0 for work_unit_id in work_units}
         outputs: dict[str, str] = {}
+        output_refs: dict[str, str] = {}
         revision_feedback: dict[str, str] = {}
         records: list[WorkUnitExecutionRecord] = []
         dispatch_records: list[ParallelWaveRecord] = []
@@ -123,6 +124,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             work_units=work_units,
                             dependencies=dependencies,
                             outputs=outputs,
+                            output_refs=output_refs,
                             request=request,
                         )
                         replan_count += 1
@@ -204,6 +206,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 skills=skill_sets[work_unit_id],
                                 dependencies=dependencies,
                                 outputs=outputs,
+                                output_refs=output_refs,
                                 revision_feedback=revision_feedback.get(work_unit_id, ""),
                                 request=request,
                             )
@@ -320,10 +323,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         )
                         if record.output:
                             outputs[work_unit_id] = record.output
-                        if record.verdict not in {
-                            EvaluationVerdict.ACCEPTED.value,
-                            EvaluationVerdict.ACCEPTED_WITH_CONDITIONS.value,
-                        }:
+                        if (
+                            record.verdict == EvaluationVerdict.ACCEPTED.value
+                            and record.result_authoritative
+                            and record.result_ref
+                        ):
+                            output_refs[work_unit_id] = record.result_ref
+                        if record.verdict != EvaluationVerdict.ACCEPTED.value:
                             revision_feedback[work_unit_id] = (
                                 record.output
                                 or record.reason
@@ -475,6 +481,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         revision_feedback[outcome.work_unit_id] = reason
         if attempts[outcome.work_unit_id] >= max_attempts:
             work_unit.mark_blocked()
+            reason = f"circuit-breaker:max-attempts:{reason}"
         records.append(
             WorkUnitExecutionRecord(
                 work_unit_id=outcome.work_unit_id,

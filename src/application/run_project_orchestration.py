@@ -13,6 +13,10 @@ from application.agent_runtime import (
     ExecutionReference,
 )
 from application.claim_registry import ClaimRegistry
+from application.completion_integrity import (
+    WorkerCompletionStatus,
+    parse_worker_completion,
+)
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
 from application.execution_coordinator import (
     DispatchFrontierRequest,
@@ -65,6 +69,7 @@ class ProjectRunStatus(str, Enum):
 @dataclass(frozen=True)
 class ProjectOrchestrationRequest:
     objective: str
+    orchestration_id: str | None = None
     agent: str = "main"
     planner_agent: str | None = None
     scope: str = ""
@@ -112,6 +117,8 @@ class WorkUnitExecutionRecord:
     runtime_status: str | None = None
     verdict: str | None = None
     output: str = ""
+    result_ref: str | None = None
+    result_authoritative: bool = False
     reason: str = ""
 
 
@@ -200,6 +207,7 @@ class RunProjectOrchestration:
 
         attempts = {work_unit_id: 0 for work_unit_id in work_units}
         outputs: dict[str, str] = {}
+        output_refs: dict[str, str] = {}
         revision_feedback: dict[str, str] = {}
         records: list[WorkUnitExecutionRecord] = []
         wave_records: list[ParallelWaveRecord] = []
@@ -263,6 +271,7 @@ class RunProjectOrchestration:
                     skills=skill_sets[work_unit_id],
                     dependencies=dependencies,
                     outputs=outputs,
+                    output_refs=output_refs,
                     revision_feedback=revision_feedback.get(work_unit_id, ""),
                     request=request,
                 )
@@ -326,6 +335,7 @@ class RunProjectOrchestration:
                     revision_feedback[work_unit_id] = reason
                     if attempts[work_unit_id] >= request.max_attempts_per_work_unit:
                         work_unit.mark_blocked()
+                        reason = f"circuit-breaker:max-attempts:{reason}"
                     records.append(
                         WorkUnitExecutionRecord(
                             work_unit_id=work_unit_id,
@@ -358,10 +368,13 @@ class RunProjectOrchestration:
                 records.append(record)
                 if record.output:
                     outputs[work_unit_id] = record.output
-                if record.verdict not in {
-                    EvaluationVerdict.ACCEPTED.value,
-                    EvaluationVerdict.ACCEPTED_WITH_CONDITIONS.value,
-                }:
+                if (
+                    record.verdict == EvaluationVerdict.ACCEPTED.value
+                    and record.result_authoritative
+                    and record.result_ref
+                ):
+                    output_refs[work_unit_id] = record.result_ref
+                if record.verdict != EvaluationVerdict.ACCEPTED.value:
                     revision_feedback[work_unit_id] = (
                         record.output or record.reason or "Previous result was not accepted."
                     )
@@ -381,6 +394,7 @@ class RunProjectOrchestration:
                     work_units=work_units,
                     dependencies=dependencies,
                     outputs=outputs,
+                    output_refs=output_refs,
                     request=request,
                 )
                 if new_ids:
@@ -597,6 +611,7 @@ class RunProjectOrchestration:
         skills: tuple[str, ...],
         dependencies: Sequence[Dependency],
         outputs: dict[str, str],
+        output_refs: dict[str, str],
         revision_feedback: str,
         request: ProjectOrchestrationRequest,
     ) -> WorkAssignment:
@@ -623,13 +638,29 @@ class RunProjectOrchestration:
         ]
         if spec.write_paths:
             context.append("Authorized write scope for this Work Unit: " + ", ".join(spec.write_paths))
+
+        dependency_artifacts: list[str] = []
         for source_id in dependency_sources:
+            result_ref = output_refs.get(source_id)
+            if result_ref:
+                dependency_artifacts.append(result_ref)
+                context.append(
+                    "Accepted dependency result from "
+                    f"{source_id} is available by reference at manifest: {result_ref}. "
+                    "Read that manifest and the referenced result_file from the same "
+                    "execution directory when the dependency details are needed. "
+                    "The dependency payload is intentionally not copied into this "
+                    "conversation context."
+                )
+                continue
             if source_id not in outputs:
                 continue
             text = outputs[source_id]
             if len(text) > request.dependency_context_chars:
                 text = text[: request.dependency_context_chars] + "\n[dependency output truncated]"
-            context.append(f"Accepted dependency result from {source_id}:\n{text}")
+            context.append(
+                f"Legacy inline dependency result from {source_id}:\n{text}"
+            )
         if revision_feedback:
             feedback = revision_feedback[: request.dependency_context_chars]
             context.append(f"Revision feedback from previous attempt:\n{feedback}")
@@ -639,8 +670,11 @@ class RunProjectOrchestration:
             "This is a bounded Work Unit under Adaptive AI Orchestrator control. Do not invoke adaptive-orchestrator-bridge or start another Adaptive run.",
             "Work only inside the delegated objective and declared scope. Do not expand authority.",
             "Return a concise result describing artifacts changed/produced, verification actually performed, blockers, and any next dependency-relevant fact.",
+            "Missing implementation, wiring, tests, repositories, ports, or transactions that are already inside the authorized objective/scope are work to complete, not blockers. Continue the Work Unit instead of stopping merely because such changes are needed.",
+            "Use BLOCKED only for a genuine external stop: HUMAN_DECISION, AUTHORITY, ENVIRONMENT, RUNTIME, or EXTERNAL_DEPENDENCY. Ordinary implementation difficulty is not a blocker.",
             f"If genuinely necessary new work is discovered that is not represented by this Work Unit, include the literal marker {self.REPLAN_MARKER}: followed by a concise reason. Do not use the marker for optional improvements.",
             self._learning_signal_constraint(),
+            "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
         if spec.write_paths:
             constraints = (
@@ -657,6 +691,7 @@ class RunProjectOrchestration:
             scope=spec.scope,
             context=tuple(context),
             inputs=spec.inputs,
+            artifacts=tuple(dependency_artifacts),
             dependencies=dependency_sources,
             constraints=constraints,
             configuration=configuration,
@@ -710,20 +745,41 @@ class RunProjectOrchestration:
         assert outcome.claim is not None
         assert outcome.execution is not None
         runtime_status = runtime_result.execution.status
+        raw_result = runtime_result.raw_result
+        if runtime_status is AgentRuntimeStatus.COMPLETED and raw_result is None:
+            raw_result = {"status": "completed"}
+
+        output = self._extract_output(raw_result)
+        result_ref, result_authoritative = self._extract_result_reference(raw_result)
+        completion = parse_worker_completion(output)
         result_status = (
             ResultPackageStatus.SUCCEEDED
             if runtime_status is AgentRuntimeStatus.COMPLETED
             else ResultPackageStatus.FAILED
         )
-        raw_result = runtime_result.raw_result
-        if result_status is ResultPackageStatus.SUCCEEDED and raw_result is None:
-            raw_result = {"status": "completed"}
-        evidence = ("runtime-completed",) if runtime_status is AgentRuntimeStatus.COMPLETED else ()
+        if (
+            result_status is ResultPackageStatus.SUCCEEDED
+            and completion.structured
+            and completion.status in {
+                WorkerCompletionStatus.PARTIAL,
+                WorkerCompletionStatus.BLOCKED,
+            }
+        ):
+            result_status = ResultPackageStatus.PARTIAL
+
+        evidence_items: list[str] = []
+        if runtime_status is AgentRuntimeStatus.COMPLETED:
+            evidence_items.append("runtime-completed")
+        if completion.structured:
+            evidence_items.append(
+                f"worker-status:{completion.status.value.casefold()}"
+            )
+
         package = ResultPackage(
             task_id=f"project-result:{outcome.work_unit_id}:wave:{wave}",
             status=result_status,
             result=raw_result,
-            evidence=evidence,
+            evidence=tuple(evidence_items),
         )
         evaluation = EvaluateResult().execute(
             EvaluateResultRequest(
@@ -732,11 +788,33 @@ class RunProjectOrchestration:
                 evaluator_id="adaptive-orchestrator:project",
             )
         ).evaluation
+
+        verdict = evaluation.verdict
+        reason = "evaluation-returned"
+        if completion.structured:
+            if completion.is_genuine_blocker:
+                verdict = EvaluationVerdict.BLOCKED
+                reason = f"worker-blocked:{completion.blocker_type.value}"
+            elif completion.status is WorkerCompletionStatus.BLOCKED:
+                verdict = EvaluationVerdict.RETURNED
+                reason = "worker-blocker-unsubstantiated"
+            elif completion.status is WorkerCompletionStatus.PARTIAL:
+                verdict = EvaluationVerdict.RETURNED
+                reason = "worker-partial"
+            elif completion.status is WorkerCompletionStatus.COMPLETE:
+                reason = (
+                    "accepted"
+                    if verdict is EvaluationVerdict.ACCEPTED
+                    else "evaluation-returned"
+                )
+        elif verdict is EvaluationVerdict.ACCEPTED:
+            reason = "accepted"
+
         finalized = FinalizeExecution(self._claims).execute(
             FinalizeExecutionRequest(
                 work_unit=work_unit,
                 claim=outcome.claim,
-                verdict=evaluation.verdict,
+                verdict=verdict,
                 dependencies=dependencies,
                 orchestration_id=orchestration_id,
             )
@@ -746,12 +824,9 @@ class RunProjectOrchestration:
             and attempts >= max_attempts
         ):
             work_unit.mark_blocked()
+            reason = f"circuit-breaker:max-attempts:{reason}"
 
-        output = self._extract_output(raw_result)
-        accepted = evaluation.verdict in {
-            EvaluationVerdict.ACCEPTED,
-            EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
-        }
+        accepted = verdict is EvaluationVerdict.ACCEPTED
         if accepted and output:
             self._learning_store.record_worker_signal(
                 output,
@@ -769,9 +844,11 @@ class RunProjectOrchestration:
                 execution_id=outcome.execution.id,
                 external_id=outcome.execution.external_id,
                 runtime_status=runtime_status.value,
-                verdict=evaluation.verdict.value,
+                verdict=verdict.value,
                 output=output,
-                reason="accepted" if accepted else "evaluation-returned",
+                result_ref=result_ref,
+                result_authoritative=result_authoritative,
+                reason=reason,
             ),
             accepted and self.REPLAN_MARKER in output,
         )
@@ -801,10 +878,12 @@ class RunProjectOrchestration:
     ) -> None:
         work_unit_id = outcome.work_unit_id
         work_unit = work_units[work_unit_id]
+        reason = outcome.reason
         if outcome.status is DispatchStatus.FAILED:
             attempts[work_unit_id] += 1
             if attempts[work_unit_id] >= max_attempts:
                 work_unit.mark_blocked()
+                reason = f"circuit-breaker:max-attempts:{reason}"
         elif outcome.status is DispatchStatus.BLOCKED:
             work_unit.mark_blocked()
         records.append(
@@ -815,7 +894,7 @@ class RunProjectOrchestration:
                 attempt=attempts[work_unit_id],
                 status=work_unit.state.value,
                 skills=skill_sets[work_unit_id],
-                reason=outcome.reason,
+                reason=reason,
             )
         )
 
@@ -828,10 +907,11 @@ class RunProjectOrchestration:
         work_units: dict[str, WorkUnit],
         dependencies: list[Dependency],
         outputs: dict[str, str],
+        output_refs: dict[str, str],
         request: ProjectOrchestrationRequest,
     ) -> tuple[ProjectExecutionPlan, tuple[str, ...]]:
         replan = getattr(self._planner, "replan")
-        state_summary = self._state_summary(work_units, outputs)
+        state_summary = self._state_summary(work_units, outputs, output_refs)
         revised = replan(planner_request, current_plan, state_summary)
 
         new_specs = [spec for spec in revised.work_units if spec.id not in specs]
@@ -882,17 +962,38 @@ class RunProjectOrchestration:
     def _state_summary(
         work_units: dict[str, WorkUnit],
         outputs: dict[str, str],
+        output_refs: dict[str, str] | None = None,
     ) -> str:
+        refs = output_refs or {}
         lines = []
         for work_unit_id in sorted(work_units):
             work_unit = work_units[work_unit_id]
-            output = outputs.get(work_unit_id, "")
-            if len(output) > 2000:
-                output = output[:2000] + " [truncated]"
+            result_ref = refs.get(work_unit_id)
+            if result_ref:
+                output_description = f"authoritative_result_ref={result_ref!r}"
+            else:
+                output = outputs.get(work_unit_id, "")
+                if len(output) > 2000:
+                    output = output[:2000] + " [truncated]"
+                output_description = f"output={output!r}"
             lines.append(
-                f"{work_unit_id}: state={work_unit.state.value}; output={output!r}"
+                f"{work_unit_id}: state={work_unit.state.value}; {output_description}"
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def _extract_result_reference(raw_result: object) -> tuple[str | None, bool]:
+        if not isinstance(raw_result, dict):
+            return None, False
+        transport = raw_result.get("result_transport")
+        if not isinstance(transport, dict):
+            return None, False
+        authoritative = transport.get("authoritative") is True
+        complete = transport.get("complete") is True
+        result_ref = transport.get("result_ref")
+        if authoritative and complete and isinstance(result_ref, str) and result_ref.strip():
+            return result_ref, True
+        return None, False
 
     @staticmethod
     def _extract_output(raw_result: object) -> str:

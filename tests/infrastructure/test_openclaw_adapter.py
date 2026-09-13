@@ -65,6 +65,7 @@ def test_submit_translates_task_and_returns_execution_reference() -> None:
     assert execution.status is AgentRuntimeStatus.SUBMITTED
 
     assert client.submissions[0]["task_id"] == "task-001"
+    assert client.submissions[0]["orchestration_id"] == "orch-001"
     assert client.submissions[0]["configuration"]["agent"] == "agent-001"
 
 

@@ -96,3 +96,22 @@ def test_blocked_evaluation_blocks_work_and_releases_claim() -> None:
 
     assert result.work_unit_state is WorkUnitState.BLOCKED
     assert registry.get("wu-a") is None
+
+def test_accepted_with_conditions_requires_revision_and_does_not_advance_dependency() -> None:
+    work_unit, registry, claim = make_running_work()
+    dependency = Dependency(source_id="wu-a", target_id="wu-b")
+
+    result = FinalizeExecution(registry).execute(
+        FinalizeExecutionRequest(
+            work_unit=work_unit,
+            claim=claim,
+            verdict=EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
+            dependencies=(dependency,),
+            orchestration_id="orch-a",
+        )
+    )
+
+    assert result.work_unit_state is WorkUnitState.REVISION_REQUIRED
+    assert result.satisfied_dependency_ids == ()
+    assert dependency.status is DependencyStatus.BLOCKED
+    assert registry.get("wu-a") is None

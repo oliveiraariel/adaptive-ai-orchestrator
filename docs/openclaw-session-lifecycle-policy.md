@@ -71,6 +71,14 @@ This prevents a stale task key from archiving a replacement session generation.
 
 Retryable OpenClaw `UNAVAILABLE` archive responses are retried a small bounded number of times using the **same observed session ID**, so a retry cannot silently retarget a newer session generation.
 
+## Runtime truth and stale/orphan reconciliation
+
+A persisted dashboard/session label such as `RUNNING` is not, by itself, proof that useful work is still executing. When state sources disagree, Adaptive should prefer the most direct current evidence available: durable run/session identity, `agent.wait`/session activity, active run identifiers, captured terminal result, and correlated lifecycle telemetry. Historical UI rows or stale persisted orchestration records are supporting evidence, not the authority for redispatch decisions.
+
+Before replacing an apparently interrupted worker, preserve and reconcile its orchestration/task/execution/run/session identifiers. A timeout means "no terminal result yet"; an active process means only that infrastructure exists; neither fact alone proves that the intended worker is alive. If repeated attempts reach the configured attempt budget without a usable completion, surface a circuit-breaker stop and require a classified recovery/human decision rather than silently creating equivalent workers indefinitely.
+
+This truth hierarchy exists to prevent the two dangerous opposites observed in field operation: falsely reporting stale work as healthy `RUNNING`, and duplicating recoverable work merely because a caller stopped waiting.
+
 ## Why state-based archival instead of a timer
 
 OpenClaw's native sub-agent lifecycle uses a default `archiveAfterMinutes` value of 60 minutes, but that timer is best-effort and pending timers can be lost when the Gateway restarts. Adaptive is not using those native sub-agent timers for its per-Work-Unit Gateway sessions.

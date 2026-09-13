@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
 from datetime import datetime, timezone
 from uuid import uuid4
+
+
+def canonical_observability_path() -> Path:
+    """Return the shared persistent telemetry path, with an optional override."""
+    override = os.environ.get("ADAPTIVE_OBSERVABILITY_LOG")
+    if override:
+        return Path(override).expanduser()
+    state_home = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+    return Path(state_home).expanduser() / "adaptive-ai-orchestrator" / "observability.jsonl"
 
 
 class ObservabilitySink(Protocol):
@@ -21,11 +31,12 @@ class JsonlObservabilitySink:
     """Append-only, allowlisted operational events; never stores raw payloads."""
 
     _fields = {
-        "event_id", "timestamp", "orchestration_id", "work_unit_id",
+        "event_id", "timestamp", "session_id", "orchestration_id", "work_unit_id",
         "execution_id", "external_id", "role", "skills",
         "model", "provider", "thinking", "attempt", "wave", "status", "verdict",
         "runtime_status",
         "usage", "cost",
+        "failure_category", "failure_code",
     }
     _event_types = {
         "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -34,8 +45,9 @@ class JsonlObservabilitySink:
         "orchestration_completed",
     }
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, session_id: str | None = None) -> None:
         self._path = Path(path)
+        self._session_id = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
         self._lock = Lock()
 
     def emit(self, event_type: str, **fields: Any) -> None:
@@ -54,6 +66,8 @@ class JsonlObservabilitySink:
         ):
             raise ValueError(f"{event_type} requires nonblank work_unit_id")
         safe = {key: value for key, value in fields.items() if key in self._fields}
+        if self._session_id:
+            safe["session_id"] = self._session_id
         if "usage" in safe and not isinstance(safe["usage"], dict):
             safe.pop("usage")
         if "cost" in safe and not isinstance(safe["cost"], dict):

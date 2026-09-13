@@ -1,6 +1,6 @@
 import json
 
-from application.observability import JsonlObservabilitySink
+from application.observability import JsonlObservabilitySink, canonical_observability_path
 
 
 def test_jsonl_observability_sink_allowlists_fields(tmp_path) -> None:
@@ -45,3 +45,15 @@ def test_jsonl_observability_drops_invalid_telemetry_shapes(tmp_path) -> None:
     event = json.loads(path.read_text(encoding="utf-8"))
     assert "usage" not in event
     assert "cost" not in event
+
+
+def test_canonical_path_uses_xdg_state_home(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("ADAPTIVE_OBSERVABILITY_LOG", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    assert canonical_observability_path() == tmp_path / "adaptive-ai-orchestrator" / "observability.jsonl"
+
+
+def test_observability_override_wins(monkeypatch, tmp_path) -> None:
+    override = tmp_path / "override.jsonl"
+    monkeypatch.setenv("ADAPTIVE_OBSERVABILITY_LOG", str(override))
+    assert canonical_observability_path() == override

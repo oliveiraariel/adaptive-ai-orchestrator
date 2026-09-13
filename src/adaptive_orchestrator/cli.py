@@ -4,7 +4,8 @@ import argparse
 import json
 import os
 import sys
-from application.observability import JsonlObservabilitySink
+from uuid import uuid4
+from application.observability import JsonlObservabilitySink, canonical_observability_path
 from pathlib import Path
 from typing import Sequence
 
@@ -35,6 +36,7 @@ from infrastructure.openclaw_gateway_client import (
     OpenClawGatewayClient,
     OpenClawGatewayError,
 )
+from infrastructure.result_store import FileResultStore, ResultStoreError
 from infrastructure.skill_registry_loader import (
     SkillRegistryError,
     load_skill_profiles,
@@ -81,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--objective", required=True)
+    parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--skill", action="append", default=[])
     parser.add_argument("--model")
@@ -99,6 +102,7 @@ def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--objective", required=True)
+    parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
     parser.add_argument("--scope", default="")
@@ -136,6 +140,14 @@ def _add_gateway_arguments(parser: argparse.ArgumentParser) -> None:
         "--wait-timeout-ms",
         type=int,
         default=int(os.environ.get("ADAPTIVE_GATEWAY_WAIT_TIMEOUT_MS", "120000")),
+    )
+    parser.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+        help=(
+            "Project root that owns .adaptive/runs. Defaults to ADAPTIVE_PROJECT_ROOT "
+            "or the current working directory."
+        ),
     )
 
 
@@ -177,12 +189,14 @@ def _doctor(gateway_url: str) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     policy = _execution_policy(args)
-    runtime = _runtime(args)
+    observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
 
     try:
+        runtime = _runtime(args)
         result = RunOrchestration(
             runtime=runtime,
             claim_registry=InMemoryClaimRegistry(),
+            observability=observability,
         ).execute(
             RunOrchestrationRequest(
                 objective=args.objective,
@@ -206,13 +220,26 @@ def _run(args: argparse.Namespace) -> int:
         RunOrchestrationError,
         OpenClawGatewayError,
         ValueError,
+        ResultStoreError,
     ) as exc:
         return _print_error(exc)
 
-    accepted = result.verdict in {
-        EvaluationVerdict.ACCEPTED,
-        EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
-    }
+    accepted = result.verdict is EvaluationVerdict.ACCEPTED
+    observability.emit(
+        "work_unit_status_changed",
+        orchestration_id=result.task_id.removeprefix("task:"),
+        work_unit_id=result.work_unit_id,
+        execution_id=result.execution_id,
+        external_id=result.external_id,
+        skills=list(args.skill),
+        model=args.model,
+        provider=args.provider,
+        attempt=1,
+        status=result.work_unit_state.value,
+        runtime_status=result.runtime_status.value,
+        verdict=result.verdict.value,
+        usage=RunOrchestration._extract_usage(result.raw_result),
+    )
     print(
         json.dumps(
             {
@@ -235,6 +262,8 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
+    orchestration_id = uuid4().hex
+    observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
     try:
         registry_path = (
             Path(args.skill_registry).expanduser().resolve()
@@ -268,6 +297,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         ).execute(
             ProjectOrchestrationRequest(
                 objective=args.objective,
+                orchestration_id=orchestration_id,
                 agent=args.agent,
                 planner_agent=args.planner_agent,
                 scope=args.scope,
@@ -283,10 +313,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 human_approved=args.human_approved,
                 plan=plan,
             ),
-            observability=(
-                JsonlObservabilitySink(os.environ["ADAPTIVE_OBSERVABILITY_LOG"])
-                if os.environ.get("ADAPTIVE_OBSERVABILITY_LOG") else None
-            ),
+            observability=observability,
         )
     except (
         OSError,
@@ -296,11 +323,32 @@ def _orchestrate(args: argparse.Namespace) -> int:
         SkillRegistryError,
         SkillResolutionError,
         OpenClawGatewayError,
+        ResultStoreError,
         ValueError,
     ) as exc:
+        observability.emit(
+            "orchestration_completed",
+            orchestration_id=orchestration_id,
+            status="FAILED",
+            failure_category=_safe_failure_category(exc),
+            failure_code=_safe_failure_code(exc),
+        )
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    stop_reasons = sorted(
+        {
+            record.reason
+            for record in result.records
+            if record.status == "BLOCKED" and record.reason
+        }
+    )
+    requires_human_decision = any(
+        reason.startswith("circuit-breaker:")
+        or reason.startswith("worker-blocked:HUMAN_DECISION")
+        or reason.startswith("worker-blocked:AUTHORITY")
+        for reason in stop_reasons
+    )
     print(
         json.dumps(
             {
@@ -314,6 +362,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
+                "stop_reasons": stop_reasons,
+                "requires_human_decision": requires_human_decision,
                 "dispatch_generations": [
                     {
                         "generation": wave.wave,
@@ -347,6 +397,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                         "runtime_status": record.runtime_status,
                         "verdict": record.verdict,
                         "output": record.output,
+                        "result_ref": record.result_ref,
+                        "result_authoritative": record.result_authoritative,
                         "reason": record.reason,
                     }
                     for record in result.records
@@ -368,17 +420,23 @@ def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:
 
 
 def _runtime(args: argparse.Namespace) -> OpenClawAdapter:
-    observability = (
-        JsonlObservabilitySink(os.environ["ADAPTIVE_OBSERVABILITY_LOG"])
-        if os.environ.get("ADAPTIVE_OBSERVABILITY_LOG") else None
-    )
+    observability = JsonlObservabilitySink(canonical_observability_path())
+    project_root = Path(args.project_root).expanduser().resolve()
+    if not project_root.is_dir():
+        raise ValueError(
+            f"Adaptive project root does not exist or is not a directory: {project_root}"
+        )
     config = GatewayConfig(
         url=args.gateway_url,
         token=os.environ.get("OPENCLAW_GATEWAY_TOKEN"),
         password=os.environ.get("OPENCLAW_GATEWAY_PASSWORD"),
         agent_wait_timeout_ms=args.wait_timeout_ms,
     )
-    return OpenClawAdapter(OpenClawGatewayClient(config), observability=observability)
+    result_store = FileResultStore(project_root=project_root)
+    return OpenClawAdapter(
+        OpenClawGatewayClient(config, result_store=result_store),
+        observability=observability,
+    )
 
 
 def _find_skill_registry(*, required: bool) -> Path | None:
@@ -420,6 +478,45 @@ def _print_error(exc: Exception) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def _safe_failure_category(exc: Exception) -> str:
+    if isinstance(exc, (ProjectPlanningError, ProjectOrchestrationError)):
+        return "planning"
+    if isinstance(exc, (OpenClawGatewayError, RunOrchestrationError)):
+        return "runtime"
+    if isinstance(exc, (SkillRegistryError, SkillResolutionError)):
+        return "configuration"
+    if isinstance(exc, (OSError, ResultStoreError)):
+        return "environment"
+    if isinstance(exc, ValueError):
+        return "validation"
+    return "unknown"
+
+
+def _safe_failure_code(exc: Exception) -> str:
+    message = str(exc).lower()
+    if isinstance(exc, (ProjectPlanningError, ProjectOrchestrationError)):
+        if "json" in message:
+            return "planner_invalid_json"
+        if "plan" in message:
+            return "planner_invalid_plan"
+        return "planner_failed"
+    if isinstance(exc, OpenClawGatewayError):
+        return "openclaw_gateway_failed"
+    if isinstance(exc, RunOrchestrationError):
+        return "orchestration_runtime_failed"
+    if isinstance(exc, SkillRegistryError):
+        return "skill_registry_failed"
+    if isinstance(exc, SkillResolutionError):
+        return "skill_resolution_failed"
+    if isinstance(exc, ResultStoreError):
+        return "result_store_failed"
+    if isinstance(exc, OSError):
+        return "environment_io_failed"
+    if isinstance(exc, ValueError):
+        return "validation_failed"
+    return "unknown_failure"
 
 
 if __name__ == "__main__":

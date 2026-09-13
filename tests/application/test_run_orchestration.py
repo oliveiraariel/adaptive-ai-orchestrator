@@ -15,9 +15,18 @@ from domain.work_unit import WorkUnitState
 from infrastructure.claim_registry import InMemoryClaimRegistry
 
 
+class RecordingObservability:
+    def __init__(self) -> None:
+        self.events = []
+
+    def emit(self, event_type: str, **fields) -> None:
+        self.events.append((event_type, fields))
+
+
 class FakeRuntime:
-    def __init__(self, output: str = "done") -> None:
+    def __init__(self, output: str = "done", usage: dict | None = None) -> None:
         self.output = output
+        self.usage = usage
 
     def submit(self, task):
         return ExecutionReference(
@@ -38,7 +47,7 @@ class FakeRuntime:
                 external_id=execution.external_id,
                 status=AgentRuntimeStatus.COMPLETED,
             ),
-            raw_result={"status": "ok", "output": self.output},
+            raw_result={"status": "ok", "output": self.output, **({"usage": self.usage} if self.usage else {})},
         )
 
     def cancel(self, execution):
@@ -47,9 +56,11 @@ class FakeRuntime:
 
 def test_run_orchestration_completes_governed_work_unit() -> None:
     claims = InMemoryClaimRegistry()
+    observability = RecordingObservability()
     result = RunOrchestration(
         runtime=FakeRuntime(),
         claim_registry=claims,
+        observability=observability,
     ).execute(
         RunOrchestrationRequest(
             objective="Return a bounded result.",
@@ -62,6 +73,10 @@ def test_run_orchestration_completes_governed_work_unit() -> None:
     assert result.output == "done"
     assert result.evidence == ("runtime-completed",)
     assert claims.get(result.work_unit_id) is None
+    assert observability.events[-1] == (
+        "orchestration_completed",
+        {"orchestration_id": result.task_id.removeprefix("task:"), "status": "COMPLETED", "verdict": "ACCEPTED"},
+    )
 
 
 def test_run_orchestration_evaluates_explicit_output_criterion() -> None:
@@ -79,10 +94,23 @@ def test_run_orchestration_evaluates_explicit_output_criterion() -> None:
     assert result.work_unit_state is WorkUnitState.COMPLETED
 
 
+def test_run_orchestration_publishes_usage_on_terminal_event() -> None:
+    observability = RecordingObservability()
+    RunOrchestration(
+        runtime=FakeRuntime(usage={"prompt_tokens": 7, "completion_tokens": 3}),
+        claim_registry=InMemoryClaimRegistry(),
+        observability=observability,
+    ).execute(RunOrchestrationRequest(objective="Report usage."))
+    evaluation = next(fields for event, fields in observability.events if event == "evaluation_finalized")
+    assert evaluation["usage"] == {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+
+
 def test_run_orchestration_blocks_unauthorized_side_effect() -> None:
+    observability = RecordingObservability()
     runner = RunOrchestration(
         runtime=FakeRuntime(),
         claim_registry=InMemoryClaimRegistry(),
+        observability=observability,
     )
 
     with pytest.raises(RunOrchestrationError, match="policy:DENY"):
@@ -92,3 +120,34 @@ def test_run_orchestration_blocks_unauthorized_side_effect() -> None:
                 requested_side_effects=("filesystem-write",),
             )
         )
+
+    assert observability.events[-1][0] == "orchestration_completed"
+    assert observability.events[-1][1]["status"] == "BLOCKED"
+    assert observability.events[-1][1]["failure_category"] == "dispatch"
+
+
+class FailingResultRuntime(FakeRuntime):
+    def retrieve_result(self, execution):
+        raise RuntimeError("transport interrupted")
+
+
+def test_run_orchestration_emits_terminal_failure_on_runtime_result_error() -> None:
+    observability = RecordingObservability()
+    runner = RunOrchestration(
+        runtime=FailingResultRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        observability=observability,
+    )
+
+    with pytest.raises(RunOrchestrationError, match="Runtime result retrieval failed"):
+        runner.execute(RunOrchestrationRequest(objective="Fail after dispatch."))
+
+    terminal = [
+        fields
+        for event_type, fields in observability.events
+        if event_type == "orchestration_completed"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["status"] == "FAILED"
+    assert terminal[0]["failure_category"] == "runtime"
+    assert terminal[0]["failure_code"] == "runtime_result_retrieval_failed"

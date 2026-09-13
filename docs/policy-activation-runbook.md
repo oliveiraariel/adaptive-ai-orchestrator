@@ -196,6 +196,24 @@ auth type: OAuth
 
 Only after this verification should a large handoff/project prompt be sent.
 
+## OpenRouter / Laguna activation
+
+Allow and smoke-test these exact OpenRouter models before automatic fallback:
+
+```text
+openrouter/poolside/laguna-s-2.1:free
+openrouter/poolside/laguna-xs-2.1:free
+```
+
+Recommended settings:
+
+```text
+ADAPTIVE_OPENROUTER_AUTH_PROFILE=openrouter:default
+ADAPTIVE_LAGUNA_MODEL=openrouter/poolside/laguna-s-2.1:free
+ADAPTIVE_LAGUNA_EMERGENCY_MODEL=openrouter/poolside/laguna-xs-2.1:free
+ADAPTIVE_OPENAI_SECONDARY_OAUTH_PROFILE=<optional-secondary-Luna-profile>
+```
+
 ## Completion definition for a policy change
 
 A policy migration is complete only when all of the following are true:
