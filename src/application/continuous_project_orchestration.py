@@ -320,10 +320,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         )
                         if record.output:
                             outputs[work_unit_id] = record.output
-                        if record.verdict not in {
-                            EvaluationVerdict.ACCEPTED.value,
-                            EvaluationVerdict.ACCEPTED_WITH_CONDITIONS.value,
-                        }:
+                        if record.verdict != EvaluationVerdict.ACCEPTED.value:
                             revision_feedback[work_unit_id] = (
                                 record.output
                                 or record.reason
@@ -475,6 +472,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         revision_feedback[outcome.work_unit_id] = reason
         if attempts[outcome.work_unit_id] >= max_attempts:
             work_unit.mark_blocked()
+            reason = f"circuit-breaker:max-attempts:{reason}"
         records.append(
             WorkUnitExecutionRecord(
                 work_unit_id=outcome.work_unit_id,
