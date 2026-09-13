@@ -88,6 +88,51 @@ It performs one bounded recovery attempt:
 - schema validation remains mandatory;
 - a second failure is surfaced rather than bypassed through ungoverned execution.
 
+
+### Trace machine-result transport before retrying work
+
+When an execution appears to complete but the consumer receives malformed,
+truncated, summarized, or missing output, Adaptive must first determine whether
+the defect is in the result path rather than in the model or task.
+
+The reusable diagnostic pattern is:
+
+1. preserve run/execution identity;
+2. compare producer and consumer representations;
+3. use BEGIN/END markers, length, and SHA-256;
+4. distinguish progress/history from terminal summary and authoritative result;
+5. repair transport/persistence if the producer created a complete result;
+6. only retry/replan after the result path is understood.
+
+This prevents a transport defect from being misclassified as generic planner
+invalid JSON.
+
+### Separate control plane from result plane
+
+OpenClaw is used for dispatch, liveness, progress, bounded waiting, cancellation,
+and short terminal summaries. Large authoritative results move through Adaptive's
+durable project-local Result Store.
+
+Dependent workers receive result references rather than copied large payloads.
+This keeps agent-to-agent coordination independent from chat/progress size limits
+and reduces avoidable context growth.
+
+### Reconcile the same run before redispatch
+
+A wait timeout does not by itself prove execution failure. Adaptive preserves run
+identity, reconciles the same execution within a bounded budget, and only creates
+another execution after the previous state is known.
+
+### Validate transports with SMALL / MEDIUM / LARGE
+
+Transport changes are validated progressively:
+
+- SMALL proves the basic contract;
+- MEDIUM exposes boundary/summarization problems;
+- LARGE (>12k) proves independence from historical presentation limits.
+
+If MEDIUM fails, escalation stops until that boundary is diagnosed.
+
 ## Runtime learning candidates
 
 Accepted workers may emit one explicit final-line signal:
