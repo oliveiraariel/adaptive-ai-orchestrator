@@ -12,4 +12,3 @@ secrets.env
 
 # Permitir arquivo de exemplo sem segredos
 !.env.example
-
