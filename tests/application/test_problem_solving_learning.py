@@ -177,3 +177,59 @@ def test_repeated_independent_successes_become_provisional_guidance(tmp_path: Pa
 
     assert "PROVISIONAL REPEATED EXPERIENCE" in guidance
     assert "resolve-contract-first" in guidance
+
+
+def test_default_knowledge_guides_machine_result_transport_diagnosis() -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning.jsonl"))
+    )
+
+    guidance = base.render_guidance(
+        "Planner returned invalid JSON after chat.history was truncated and terminalReply looked complete."
+    )
+
+    assert "trace-machine-result-before-retrying" in guidance
+    assert "Do not assume that a terminal-looking field" in guidance
+    assert "progress output and terminal summaries" in guidance
+
+
+def test_default_knowledge_guides_reference_based_agent_handoff() -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning-2.jsonl"))
+    )
+
+    guidance = base.render_guidance(
+        "Agent-to-agent fan-in has a large result and a context limit; use a result store artifact handoff."
+    )
+
+    assert "separate-control-plane-from-result-plane" in guidance
+    assert "stable result references" in guidance
+    assert "project boundary" in guidance
+
+
+def test_default_knowledge_guides_same_run_reconciliation() -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning-3.jsonl"))
+    )
+
+    guidance = base.render_guidance(
+        "agent.wait returned a wait timeout; preserve runId and reconcile the same run."
+    )
+
+    assert "reconcile-same-run-before-redispatch" in guidance
+    assert "Distinguish a wait/observation timeout" in guidance
+    assert "Do not redispatch solely" in guidance
+
+
+def test_default_knowledge_guides_staged_transport_validation() -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(Path("/tmp/nonexistent-adaptive-learning-4.jsonl"))
+    )
+
+    guidance = base.render_guidance(
+        "Run SMALL MEDIUM LARGE end-to-end validation around the 8000 character truncation boundary."
+    )
+
+    assert "validate-transport-with-staged-payloads" in guidance
+    assert "Stop escalation when MEDIUM fails" in guidance
+    assert "real production transport path" in guidance
