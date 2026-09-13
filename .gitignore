@@ -12,3 +12,6 @@ secrets.env
 
 # Permitir arquivo de exemplo sem segredos
 !.env.example
+
+# Optional project-local Adaptive runtime state
+.adaptive/
