@@ -214,10 +214,7 @@ def _run(args: argparse.Namespace) -> int:
     ) as exc:
         return _print_error(exc)
 
-    accepted = result.verdict in {
-        EvaluationVerdict.ACCEPTED,
-        EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
-    }
+    accepted = result.verdict is EvaluationVerdict.ACCEPTED
     observability.emit(
         "work_unit_status_changed",
         orchestration_id=result.task_id.removeprefix("task:"),
@@ -327,6 +324,19 @@ def _orchestrate(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    stop_reasons = sorted(
+        {
+            record.reason
+            for record in result.records
+            if record.status == "BLOCKED" and record.reason
+        }
+    )
+    requires_human_decision = any(
+        reason.startswith("circuit-breaker:")
+        or reason.startswith("worker-blocked:HUMAN_DECISION")
+        or reason.startswith("worker-blocked:AUTHORITY")
+        for reason in stop_reasons
+    )
     print(
         json.dumps(
             {
@@ -340,6 +350,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
+                "stop_reasons": stop_reasons,
+                "requires_human_decision": requires_human_decision,
                 "dispatch_generations": [
                     {
                         "generation": wave.wave,
