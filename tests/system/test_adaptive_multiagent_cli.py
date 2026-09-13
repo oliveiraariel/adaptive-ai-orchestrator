@@ -79,4 +79,6 @@ def test_cli_orchestrate_executes_static_parallel_plan(monkeypatch, tmp_path, ca
     assert payload["status"] == "COMPLETED"
     assert payload["work_unit_count"] == 2
     assert payload["max_parallelism_observed"] == 2
+    assert payload["stop_reasons"] == []
+    assert payload["requires_human_decision"] is False
     assert payload["waves"][0]["selected_work_unit_ids"] == ["a", "b"]
