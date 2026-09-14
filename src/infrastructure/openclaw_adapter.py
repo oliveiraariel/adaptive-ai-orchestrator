@@ -185,6 +185,20 @@ class OpenClawAdapter(AgentRuntime):
         )
         return execution
 
+    def recover_execution(self, external_id: str) -> ExecutionReference:
+        recover = getattr(self._client, "recover_run", None)
+        if not callable(recover):
+            raise RuntimeError("Runtime recovery unsupported.")
+        run = recover(external_id)
+        execution = ExecutionReference(
+            id=run.result_target.execution_id if run.result_target else run.run_id,
+            runtime=self.RUNTIME_NAME,
+            external_id=external_id,
+            status=AgentRuntimeStatus.SUBMITTED,
+        )
+        self._executions[external_id] = execution
+        return execution
+
     def get_status(self, execution: ExecutionReference) -> AgentRuntimeStatus:
         self._ensure_openclaw_execution(execution)
 

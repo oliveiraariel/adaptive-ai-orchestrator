@@ -283,10 +283,10 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 def _wait(args: argparse.Namespace) -> int:
     try:
-        client = OpenClawGatewayClient(GatewayConfig(url=args.gateway_url, token=os.environ.get("OPENCLAW_GATEWAY_TOKEN"), password=os.environ.get("OPENCLAW_GATEWAY_PASSWORD"), agent_wait_timeout_ms=args.wait_timeout_ms), result_store=FileResultStore(project_root=args.project_root))
-        client.recover_run(args.external_id)
-        result = client.retrieve_result(args.external_id)
-        print(json.dumps({"ok": True, "external_id": args.external_id, "result": result}, ensure_ascii=False, sort_keys=True))
+        runtime = _runtime(args)
+        execution = runtime.recover_execution(args.external_id)
+        result = runtime.retrieve_result(execution)
+        print(json.dumps({"ok": True, "external_id": execution.external_id, "execution_id": execution.id, "runtime": execution.runtime, "runtime_status": result.execution.status.value, "result": result.raw_result}, ensure_ascii=False, sort_keys=True))
         return 0
     except (OpenClawGatewayError, ValueError, ResultStoreError) as exc:
         return _print_error(exc)

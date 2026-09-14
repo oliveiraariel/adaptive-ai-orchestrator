@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Tuple
 from uuid import uuid4
 
-from application.agent_runtime import AgentRuntime, AgentRuntimeStatus
+from application.agent_runtime import AgentRuntime, AgentRuntimeStatus, ExecutionReference
 from application.observability import ObservabilitySink, NullObservabilitySink
 from application.claim_registry import ClaimRegistry
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
@@ -74,7 +74,7 @@ class RunOrchestrationResult:
 class DispatchResult:
     task_id: str
     work_unit_id: str
-    execution: object
+    execution: ExecutionReference
 
 
 class RunOrchestration:
