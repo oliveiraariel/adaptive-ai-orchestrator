@@ -233,3 +233,39 @@ def test_default_knowledge_guides_staged_transport_validation(tmp_path: Path) ->
     assert "validate-transport-with-staged-payloads" in guidance
     assert "Stop escalation when MEDIUM fails" in guidance
     assert "real production transport path" in guidance
+
+
+def test_default_knowledge_keeps_machine_integrity_orchestrator_owned(tmp_path: Path) -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(tmp_path / "machine-integrity.jsonl")
+    )
+    guidance = base.render_guidance(
+        "The worker writes manifest integrity but result_bytes is a string and the manifest mismatch is being coerced."
+    )
+    assert "orchestrator-owns-machine-integrity" in guidance
+    assert "deterministic orchestrator code" in guidance
+    assert "Do not silently coerce" in guidance
+
+
+def test_default_knowledge_separates_runtime_completion_from_verified_result(tmp_path: Path) -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(tmp_path / "verified-result.jsonl")
+    )
+    guidance = base.render_guidance(
+        "The runtime completed but result is missing; RESULT_VERIFIED was never reached."
+    )
+    assert "separate-runtime-completion-from-result-verification" in guidance
+    assert "runtime COMPLETED" in guidance
+    assert "upstream authoritative result" in guidance
+
+
+def test_default_knowledge_guides_observer_and_environment_identity_failures(tmp_path: Path) -> None:
+    base = ProblemSolvingKnowledgeBase.load_default(
+        learning_store=ProblemSolvingLearningStore(tmp_path / "identity.jsonl")
+    )
+    guidance = base.render_guidance(
+        "After an observer failure and process restart, the venv interpreter loaded the wrong module identity."
+    )
+    assert "observer-failure-is-not-worker-failure" in guidance
+    assert "prove-runtime-code-identity" in guidance
+    assert "sys.executable" in guidance
