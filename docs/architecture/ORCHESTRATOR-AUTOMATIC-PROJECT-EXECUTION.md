@@ -202,6 +202,10 @@ Accepted upstream results are available to downstream Work Units through bounded
 
 Only dependency-relevant outputs are propagated, and each upstream result is truncated by the configured dependency-context budget. Large authoritative artifacts should be passed by project pointers rather than copied repeatedly.
 
+The cross-cutting Worker Protocol v1, Adaptive-owned Result Store finalization
+and reference-only fan-in contract are consolidated in
+[`WORKER-PROTOCOL-V1-RESULT-TRANSPORT.md`](WORKER-PROTOCOL-V1-RESULT-TRANSPORT.md).
+
 This supports patterns such as:
 
 ```text
