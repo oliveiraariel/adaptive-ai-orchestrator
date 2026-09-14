@@ -253,3 +253,31 @@ def test_cli_incidents_surfaces_pressure_and_supervision_outbox(
     assert payload["incidents"][0]["action"] == "diagnose-now"
     assert payload["incidents"][0]["research_query"]
     assert (tmp_path / "adaptive-ai-orchestrator" / "notifications.jsonl").is_file()
+
+
+def test_cli_report_intervention_creates_persistent_learning_gap_incident(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    exit_code = cli.main(
+        [
+            "report-intervention",
+            "--component",
+            "project-orchestrator",
+            "--symptom",
+            "human had to redirect diagnosis from model quality to transport",
+            "--correction-type",
+            "strategy-correction",
+            "--orchestration-id",
+            "orch-human",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["category"] == "human-intervention"
+    assert payload["incident_id"].startswith("INC-")
+    registry = FileIncidentRegistry()
+    active = registry.list_active()
+    assert len(active) == 1
+    assert "strategy-correction" in active[0].symptom
+    assert "learning-gap" in active[0].topics
