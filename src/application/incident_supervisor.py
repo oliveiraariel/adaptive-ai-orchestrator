@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from application.incident_management import ResolutionDirective, ResolutionPressureEngine
+from application.incident_management import (
+    IncidentLifecycleManager,
+    ResolutionDirective,
+    ResolutionPressureEngine,
+)
 from application.incident_ports import (
+    ExternalResearchPort,
     ExternalResearchRequest,
     IncidentNotification,
     NotificationPort,
@@ -19,10 +24,14 @@ class IncidentSupervisor:
         registry: FileIncidentRegistry | None = None,
         pressure: ResolutionPressureEngine | None = None,
         notification_port: NotificationPort | None = None,
+        max_research_attempts: int = 3,
     ) -> None:
+        if max_research_attempts < 1:
+            raise ValueError("max_research_attempts must be at least 1")
         self.registry = registry or FileIncidentRegistry()
         self.pressure = pressure or ResolutionPressureEngine()
         self.notification_port = notification_port or NullNotificationPort()
+        self.max_research_attempts = max_research_attempts
 
     def directives(self, *, limit: int = 5) -> tuple[ResolutionDirective, ...]:
         directives: list[ResolutionDirective] = []
@@ -40,6 +49,13 @@ class IncidentSupervisor:
             elif incident.root_cause:
                 action = "validate-or-remediate-known-root-cause"
                 reason = "Root cause exists but the incident has not completed validation."
+                research = False
+            elif (
+                incident.research_attempt_count >= self.max_research_attempts
+                and not incident.root_cause
+            ):
+                action = "research-budget-exhausted"
+                reason = "Bounded proactive research attempts are exhausted; human or new local evidence is required."
                 research = False
             elif incident.local_evidence_exhausted and incident.external_research_allowed:
                 action = "external-research"
@@ -108,6 +124,8 @@ class IncidentSupervisor:
             incident = incidents.get(directive.incident_id)
             if incident is None:
                 continue
+            if incident.research_attempt_count >= self.max_research_attempts:
+                continue
             requests.append(
                 ExternalResearchRequest(
                     incident_id=incident.id,
@@ -120,6 +138,31 @@ class IncidentSupervisor:
                 )
             )
         return tuple(requests)
+
+    def execute_external_research(
+        self,
+        port: ExternalResearchPort,
+        *,
+        limit: int = 1,
+    ) -> tuple[str, ...]:
+        """Execute a bounded number of read-only research requests and attach references."""
+        completed: list[str] = []
+        lifecycle = IncidentLifecycleManager(self.registry)
+        for request in self.external_research_requests(limit=limit):
+            try:
+                refs = port.research(request)
+            except Exception as exc:
+                lifecycle.record_research_failure(
+                    request.incident_id,
+                    error_type=type(exc).__name__,
+                )
+                continue
+            lifecycle.record_research_evidence(
+                request.incident_id,
+                evidence_refs=refs,
+            )
+            completed.append(request.incident_id)
+        return tuple(completed)
 
     def render_planner_obligations(self, *, limit: int = 5) -> str:
         by_id = {incident.id: incident for incident in self.registry.list_active()}
