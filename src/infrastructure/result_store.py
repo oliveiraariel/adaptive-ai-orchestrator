@@ -212,6 +212,13 @@ class FileResultStore:
         if manifest.get("complete") is not True:
             raise ResultStoreError("Result manifest is not marked complete.")
 
+        expected_bytes = manifest.get("result_bytes")
+        if isinstance(expected_bytes, bool) or not isinstance(expected_bytes, int) or expected_bytes < 0:
+            raise ResultStoreError("Result manifest result_bytes must be a non-negative integer.")
+        expected_digest = manifest.get("result_sha256")
+        if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_digest):
+            raise ResultStoreError("Result manifest result_sha256 must be exactly 64 hexadecimal characters.")
+
         result_name = manifest.get("result_file")
         if result_name != target.result_path.name:
             raise ResultStoreError("Result manifest must reference result.txt.")
@@ -222,11 +229,9 @@ class FileResultStore:
 
         raw = content.encode("utf-8")
         digest = hashlib.sha256(raw).hexdigest()
-        expected_bytes = manifest.get("result_bytes")
-        if expected_bytes is not None and expected_bytes != len(raw):
+        if expected_bytes != len(raw):
             raise ResultStoreError("Result byte length does not match manifest.")
-        expected_digest = manifest.get("result_sha256")
-        if expected_digest is not None and expected_digest != digest:
+        if expected_digest.lower() != digest:
             raise ResultStoreError("Result SHA-256 does not match manifest.")
 
         summary: str | None = None
@@ -258,6 +263,8 @@ class FileResultStore:
             "complete": True,
             "result_file": "result.txt",
             "summary_file": "summary.md",
+            "result_bytes": "<UTF-8 byte length of final result.txt>",
+            "result_sha256": "<SHA-256 hex digest of final result.txt UTF-8 bytes>",
         }
         return (
             "Adaptive authoritative-result contract. This transport-only write is explicitly "
@@ -272,6 +279,9 @@ class FileResultStore:
             "Finally write manifest.json.tmp and atomically rename it to manifest.json LAST. "
             "The manifest must be JSON matching this identity and complete=true: "
             f"{json.dumps(manifest_example, ensure_ascii=False, separators=(',', ':'))}. "
+            "Before writing the manifest, calculate result_bytes as the exact length of the final result.txt UTF-8 bytes "
+            "and result_sha256 as the SHA-256 digest of those exact bytes; do not copy the descriptive placeholders. "
+            "Write manifest.json.tmp and atomically rename it to manifest.json LAST. "
             "Do not fabricate completion if the result file was not written. After publication, "
             "keep the conversational reply short (for example ADAPTIVE_RESULT_WRITTEN) because "
             "conversation text is progress/summary only and is not the authoritative payload."
