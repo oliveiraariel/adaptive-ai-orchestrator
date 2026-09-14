@@ -31,7 +31,11 @@ from application.problem_solving_learning import (
     LEARNING_MARKER,
     ProblemSolvingLearningStore,
 )
-from application.incident_management import DEFECT_MARKER, IncidentSentinel
+from application.incident_management import (
+    DEFECT_MARKER,
+    IncidentSentinel,
+    ResolutionPressureEngine,
+)
 from application.runtime_project_planner import (
     ProjectPlanner,
     ProjectPlanningRequest,
@@ -179,6 +183,7 @@ class RunProjectOrchestration:
         self._readiness = WorkUnitReadinessEvaluator()
         self._learning_store = learning_store or ProblemSolvingLearningStore.from_env()
         self._incident_sentinel = incident_sentinel or IncidentSentinel()
+        self._incident_pressure = ResolutionPressureEngine()
 
     def execute(
         self,
@@ -764,12 +769,19 @@ class RunProjectOrchestration:
             raw_result = {"status": "completed"}
 
         output = self._extract_output(raw_result)
-        self._incident_sentinel.observe_worker_output(
+        observed_incident = self._incident_sentinel.observe_worker_output(
             output,
             orchestration_id=orchestration_id,
             work_unit_id=outcome.work_unit_id,
             execution_id=outcome.execution.id,
             runtime=outcome.execution.runtime,
+        )
+        incident_requires_replan = bool(
+            observed_incident
+            and (
+                observed_incident.blocking
+                or self._incident_pressure.score(observed_incident) >= 70
+            )
         )
         result_ref, result_authoritative = self._extract_result_reference(raw_result)
         completion = parse_worker_completion(output)
@@ -871,7 +883,10 @@ class RunProjectOrchestration:
                 result_authoritative=result_authoritative,
                 reason=reason,
             ),
-            accepted and self.REPLAN_MARKER in output,
+            (
+                (accepted and self.REPLAN_MARKER in output)
+                or incident_requires_replan
+            ),
         )
 
     def _learning_signal_constraint(self) -> str:
