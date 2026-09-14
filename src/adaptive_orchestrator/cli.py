@@ -14,6 +14,10 @@ from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
 from application.incident_management import IncidentSentinel
+from application.incident_intake import (
+    IncidentIntakeError,
+    register_project_incident_intake,
+)
 from application.incident_ports import JsonlNotificationOutbox
 from application.incident_research import RunOrchestrationExternalResearchPort
 from application.incident_supervisor import IncidentSupervisor
@@ -298,6 +302,14 @@ def _incidents(args: argparse.Namespace) -> int:
         return _print_error(ValueError("--max-cycles must not be negative"))
 
     registry = FileIncidentRegistry()
+    try:
+        intake_incidents = register_project_incident_intake(
+            Path(args.project_root),
+            registry,
+        )
+    except (IncidentIntakeError, OSError, ValueError) as exc:
+        return _print_error(exc)
+
     supervisor = IncidentSupervisor(
         registry,
         notification_port=JsonlNotificationOutbox(),
@@ -348,6 +360,7 @@ def _incidents(args: argparse.Namespace) -> int:
             "watch": bool(args.watch),
             "auto_research": bool(args.auto_research),
             "researched_incident_ids": list(researched),
+            "project_intake_incident_ids": [item.id for item in intake_incidents],
             "incidents": [
                 {
                     "incident_id": directive.incident_id,
@@ -648,12 +661,19 @@ def _orchestrate(args: argparse.Namespace) -> int:
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
 
+        incident_registry = FileIncidentRegistry()
+        register_project_incident_intake(
+            Path(args.project_root),
+            incident_registry,
+        )
+
         runtime = _runtime(args)
         claims = InMemoryClaimRegistry()
         planner_runner = RunOrchestration(runtime=runtime, claim_registry=claims)
         planner = RuntimeProjectPlanner(
             runner=planner_runner,
             skill_profiles=profiles,
+            incident_supervisor=IncidentSupervisor(incident_registry),
         )
 
         plan = None
