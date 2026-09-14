@@ -136,6 +136,7 @@ def test_monitor_marks_suspect_after_three_missed_30_second_observations() -> No
     store = MemoryLivenessStore()
     clock = FakeClock()
     emitted = []
+    pulses = []
 
     result = ExecutionLivenessMonitor(
         runtime=runtime,
@@ -146,9 +147,17 @@ def test_monitor_marks_suspect_after_three_missed_30_second_observations() -> No
         monotonic=clock.monotonic,
         wall_clock=clock.wall,
         sleep=clock.sleep,
-    ).wait(execution(), on_heartbeat=emitted.append)
+    ).wait(
+        execution(),
+        on_heartbeat=emitted.append,
+        on_observer_pulse=lambda execution, silence: pulses.append(
+            (execution.external_id, silence)
+        ),
+    )
 
     assert result.raw_result == {"output": "done"}
+    assert [silence for _, silence in pulses] == [0.0, 30.0, 60.0, 90.0]
+    assert all(external_id == "external-001" for external_id, _ in pulses)
     assert ExecutionLivenessState.SUSPECT in [item.state for item in emitted]
     suspect = next(
         item for item in emitted if item.state is ExecutionLivenessState.SUSPECT
