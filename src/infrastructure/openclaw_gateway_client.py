@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import hashlib
+from pathlib import Path
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
+
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ImportError as exc:  # pragma: no cover - packaging validation
+    serialization = None  # type: ignore[assignment]
+    Ed25519PrivateKey = None  # type: ignore[assignment,misc]
+    _CRYPTO_IMPORT_ERROR = exc
+else:
+    _CRYPTO_IMPORT_ERROR = None
 
 from application.incident_classifier import IncidentClassifier
 from application.model_routing_policy import ModelRoutingDecision, ModelRoutingPolicy
@@ -49,6 +62,9 @@ class GatewayConfig:
     archive_cancelled_sessions: bool | None = None
     session_archive_attempts: int = 3
     session_archive_retry_delay_seconds: float = 0.25
+    device_identity_path: str | None = None
+    device_token_path: str | None = None
+    run_identity_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,11 +120,11 @@ class OpenClawGatewayClient(OpenClawClient):
         provider_telemetry: ProviderTelemetryStore | None = None,
         result_store: FileResultStore | None = None,
     ) -> None:
-        if _IMPORT_ERROR is not None:
+        if _IMPORT_ERROR is not None or _CRYPTO_IMPORT_ERROR is not None:
             raise OpenClawGatewayError(
-                "The OpenClaw Gateway client requires the 'websockets' package. "
-                "Install the gateway optional dependency."
-            ) from _IMPORT_ERROR
+                "The OpenClaw Gateway client requires the gateway optional "
+                "dependencies. Install with 'pip install -e .[gateway]'."
+            ) from (_IMPORT_ERROR or _CRYPTO_IMPORT_ERROR)
 
         self._config = config or GatewayConfig()
         if self._config.session_archive_attempts < 1:
@@ -136,7 +152,80 @@ class OpenClawGatewayClient(OpenClawClient):
         self._remediation_policy = remediation_policy or RemediationPolicy()
         self._provider_health = provider_health_policy or ProviderHealthPolicy()
         self._provider_telemetry = provider_telemetry or ProviderTelemetryStore()
+        self._device_identity = self._load_or_create_device_identity()
         self._result_store = result_store or FileResultStore()
+        self._run_identity_path = self._resolve_run_identity_path()
+
+    def recover_run(self, external_id: str) -> GatewayRun:
+        """Load one persisted execution identity without redispatching work."""
+        records: list[dict[str, Any]] = []
+        try:
+            lines = self._run_identity_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError as exc:
+            raise OpenClawGatewayError(
+                f"No persisted execution identity for '{external_id}'."
+            ) from exc
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise OpenClawGatewayError(
+                    "RUN_ID_RECOVERY_RECORD_INVALID: malformed JSON."
+                ) from exc
+            if isinstance(record, dict) and record.get("external_id") == external_id:
+                records.append(record)
+        if not records:
+            raise OpenClawGatewayError(
+                f"No persisted execution identity for '{external_id}'."
+            )
+        record = records[-1]
+        if record.get("schema_version") != 1:
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: unsupported schema.")
+        required = (
+            "external_id", "run_id", "session_key", "task_id",
+            "orchestration_id", "work_unit_id", "execution_id",
+        )
+        if any(not isinstance(record.get(key), str) or not record[key] for key in required):
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: incomplete record.")
+        target_data = record["result_target"]
+        if not isinstance(target_data, dict):
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: missing target.")
+        try:
+            root = self._result_store.root.resolve()
+            target = ResultStoreTarget(
+                root=root,
+                orchestration_id=record["orchestration_id"],
+                work_unit_id=record["work_unit_id"],
+                execution_id=record["execution_id"],
+                project_root=Path(target_data["project_root"]) if target_data.get("project_root") else None,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: invalid target.") from exc
+        if target.directory.resolve() != Path(str(target_data.get("directory"))).resolve():
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: inconsistent target.")
+        try:
+            target.directory.resolve().relative_to(root)
+        except ValueError as exc:
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: target outside result root.") from exc
+        persisted_project = target_data.get("project_root")
+        current_project = getattr(self._result_store, "project_root", None)
+        if persisted_project and current_project and Path(str(persisted_project)).resolve() != Path(str(current_project)).resolve():
+            raise OpenClawGatewayError("RUN_ID_RECOVERY_RECORD_INVALID: project root mismatch.")
+        run = GatewayRun(
+            run_id=record["run_id"],
+            session_key=record["session_key"],
+            task_payload={
+                "task_id": record["task_id"],
+                "orchestration_id": record["orchestration_id"],
+                "work_unit_id": record["work_unit_id"],
+            },
+            runtime_attempt=int(record.get("runtime_attempt", 1)),
+            result_target=target,
+        )
+        self._runs[external_id] = run
+        return run
 
     def submit(self, task_payload: dict) -> str:
         return self._submit_task(task_payload, runtime_attempt=1)
@@ -230,7 +319,39 @@ class OpenClawGatewayClient(OpenClawClient):
             runtime_attempt=runtime_attempt,
             result_target=result_target,
         )
+        self._persist_run_identity(self._runs[external_id])
         return external_id
+
+    def _resolve_run_identity_path(self) -> Path:
+        configured = self._config.run_identity_path or os.environ.get("ADAPTIVE_RUN_IDENTITY_PATH")
+        if configured:
+            return Path(configured).expanduser()
+        state_home = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
+        return Path(state_home) / "adaptive-ai-orchestrator" / "runs.jsonl"
+
+    def _persist_run_identity(self, run: GatewayRun) -> None:
+        """Persist safe execution identity before the first wait observation."""
+        record = {
+            "schema_version": 1,
+            "external_id": f"gateway:{run.run_id}",
+            "run_id": run.run_id,
+            "session_key": run.session_key,
+            "task_id": str(run.task_payload.get("task_id") or ""),
+            "orchestration_id": str(run.task_payload.get("orchestration_id") or ""),
+            "work_unit_id": str(run.task_payload.get("work_unit_id") or ""),
+            "execution_id": run.result_target.execution_id if run.result_target else None,
+            "result_target": run.result_target.as_payload() if run.result_target else None,
+            "runtime_attempt": run.runtime_attempt,
+            "recorded_at": time.time(),
+        }
+        path = self._run_identity_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
 
     def get_status(self, external_id: str) -> str:
         run = self._get_run(external_id)
@@ -687,28 +808,51 @@ class OpenClawGatewayClient(OpenClawClient):
                 f"Expected connect.challenge, received {challenge!r}"
             )
 
+        nonce = str((challenge.get("payload") or {}).get("nonce") or "").strip()
+        challenge_ts = (challenge.get("payload") or {}).get("ts")
+        if not nonce or not isinstance(challenge_ts, int):
+            raise OpenClawGatewayError("OpenClaw challenge missing nonce or timestamp.")
+        scopes = ["operator.read", "operator.write"]
+        signed_at = challenge_ts
+        device_token = self._load_device_token()
+        token = self._config.token or self._config.password or device_token
+        platform = self._config.platform.strip().lower()
+        payload = "|".join((
+            "v3", self._device_identity["device_id"], "gateway-client", "backend",
+            "operator", ",".join(scopes), str(signed_at), token or "", nonce, platform, "",
+        ))
+        signature = self._sign_device_payload(payload)
         params: dict[str, Any] = {
             "minProtocol": self._config.protocol_version,
             "maxProtocol": self._config.protocol_version,
             "client": {
                 "id": "gateway-client",
                 "version": self._config.client_version,
-                "platform": self._config.platform,
+                "platform": platform,
                 "mode": "backend",
             },
             "role": "operator",
-            "scopes": ["operator.read", "operator.write"],
+            "scopes": scopes,
             "caps": [],
             "commands": [],
             "permissions": {},
             "locale": "en-US",
             "userAgent": "adaptive-ai-orchestrator",
+            "device": {
+                "id": self._device_identity["device_id"],
+                "publicKey": self._device_identity["public_key_raw"],
+                "signature": signature,
+                "signedAt": signed_at,
+                "nonce": nonce,
+            },
         }
         auth: dict[str, str] = {}
         if self._config.token:
             auth["token"] = self._config.token
-        if self._config.password:
+        elif self._config.password:
             auth["password"] = self._config.password
+        elif device_token:
+            auth["deviceToken"] = device_token
         if auth:
             params["auth"] = auth
 
@@ -745,6 +889,64 @@ class OpenClawGatewayClient(OpenClawClient):
                 f"Unsupported OpenClaw Gateway protocol {protocol!r}; "
                 f"expected {self._config.protocol_version}."
             )
+        auth_info = hello.get("auth")
+        if isinstance(auth_info, dict) and isinstance(auth_info.get("deviceToken"), str):
+            self._persist_device_token(auth_info["deviceToken"])
+
+    def _load_or_create_device_identity(self) -> dict[str, str]:
+        path = Path(self._config.device_identity_path or (
+            Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+            / "adaptive-ai-orchestrator" / "device-identity.json"
+        ))
+        try:
+            data = json.loads(path.read_text())
+            if not isinstance(data, dict) or not all(isinstance(data.get(k), str) and data[k] for k in ("private_key", "public_key", "device_id")):
+                raise OpenClawGatewayError("Invalid device identity record.")
+            key = serialization.load_pem_private_key(data["private_key"].encode(), password=None)
+            raw_public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            expected_id = hashlib.sha256(raw_public).hexdigest()
+            if data["device_id"] != expected_id:
+                raise OpenClawGatewayError("Device identity public key does not match device_id.")
+            derived_raw = base64.urlsafe_b64encode(raw_public).rstrip(b"=").decode()
+            if data.get("public_key_raw") != derived_raw:
+                data["public_key_raw"] = derived_raw
+                temporary = path.with_suffix(path.suffix + ".tmp")
+                temporary.write_text(json.dumps(data, separators=(",", ":")))
+                temporary.chmod(0o600)
+                temporary.replace(path)
+            return data
+        except OpenClawGatewayError:
+            raise
+        except (OSError, ValueError, TypeError) as exc:
+            if path.exists():
+                raise OpenClawGatewayError("Invalid device identity record.") from exc
+        private = Ed25519PrivateKey.generate()
+        private_pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+        public_pem = private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+        raw_public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        data = {"private_key": private_pem, "public_key": public_pem, "public_key_raw": base64.urlsafe_b64encode(raw_public).rstrip(b"=").decode(), "device_id": hashlib.sha256(raw_public).hexdigest()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, separators=(",", ":")))
+        path.chmod(0o600)
+        return data
+
+    def _sign_device_payload(self, payload: str) -> str:
+        key = serialization.load_pem_private_key(self._device_identity["private_key"].encode(), password=None)
+        return base64.urlsafe_b64encode(key.sign(payload.encode())).rstrip(b"=").decode()
+
+    def _load_device_token(self) -> str | None:
+        path = Path(self._config.device_token_path or (Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "adaptive-ai-orchestrator" / "device-token.json"))
+        try:
+            value = json.loads(path.read_text()).get("token")
+        except (OSError, ValueError):
+            return None
+        return value if isinstance(value, str) and value else None
+
+    def _persist_device_token(self, token: str) -> None:
+        path = Path(self._config.device_token_path or (Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "adaptive-ai-orchestrator" / "device-token.json"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"token": token}, separators=(",", ":")))
+        path.chmod(0o600)
 
     @staticmethod
     def _receive_until_response(

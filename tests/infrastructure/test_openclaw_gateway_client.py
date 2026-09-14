@@ -1,14 +1,150 @@
 import json
 import threading
 import time
+import base64
+import hashlib
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from websockets.sync.server import ServerConnection, serve
 
 from infrastructure.openclaw_gateway_client import (
     GatewayConfig,
+    GatewayRun,
     OpenClawGatewayClient,
     OpenClawGatewayError,
 )
+
+
+def test_run_identity_is_persisted_as_sanitized_record(tmp_path) -> None:
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            url="ws://127.0.0.1:1",
+            run_identity_path=str(tmp_path / "runs.jsonl"),
+            archive_completed_sessions=False,
+        )
+    )
+    run = GatewayRun(
+        run_id="run-persisted",
+        session_key="agent:main:orchestrator:task-persisted",
+        task_payload={
+            "task_id": "task-persisted",
+            "orchestration_id": "orch-persisted",
+            "work_unit_id": "wu-persisted",
+        },
+    )
+
+    client._persist_run_identity(run)
+
+    record = json.loads((tmp_path / "runs.jsonl").read_text(encoding="utf-8"))
+    assert record["run_id"] == "run-persisted"
+    assert record["schema_version"] == 1
+    assert record["session_key"] == run.session_key
+    assert record["task_id"] == "task-persisted"
+    assert "prompt" not in record
+    assert "token" not in record
+
+def test_run_identity_is_recovered_by_new_client_without_submit(tmp_path) -> None:
+    store = FileResultStore(root=tmp_path / "runs", project_root=tmp_path)
+    path = tmp_path / "identities.jsonl"
+    first = OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", run_identity_path=str(path), archive_completed_sessions=False), result_store=store)
+    target = store.prepare_target(orchestration_id="orch", work_unit_id="wu", execution_id="exec")
+    first._persist_run_identity(GatewayRun("run-1", "agent:main:orchestrator:task", {"task_id": "task", "orchestration_id": "orch", "work_unit_id": "wu"}, result_target=target))
+    second = OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", run_identity_path=str(path), archive_completed_sessions=False), result_store=store)
+    recovered = second.recover_run("gateway:run-1")
+    assert recovered.run_id == "run-1"
+    assert recovered.result_target == target
+
+def test_corrupt_run_identity_fails_closed(tmp_path) -> None:
+    path = tmp_path / "identities.jsonl"
+    path.write_text("{not-json}\n", encoding="utf-8")
+    client = OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", run_identity_path=str(path), archive_completed_sessions=False))
+    import pytest
+    with pytest.raises(OpenClawGatewayError, match="RUN_ID_RECOVERY_RECORD_INVALID"):
+        client.recover_run("gateway:run-1")
+
+def test_legacy_identity_migrates_without_rotating_key(tmp_path) -> None:
+    key = Ed25519PrivateKey.generate()
+    private = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    public = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    path = tmp_path / "identity.json"
+    path.write_text(json.dumps({"private_key": private, "public_key": public, "device_id": hashlib.sha256(raw).hexdigest()}))
+    client = OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", device_identity_path=str(path), archive_completed_sessions=False))
+    migrated = json.loads(path.read_text())
+    assert migrated["private_key"] == private
+    assert migrated["device_id"] == hashlib.sha256(raw).hexdigest()
+    assert migrated["public_key_raw"] == base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+def test_mismatched_existing_identity_fails_closed(tmp_path) -> None:
+    key = Ed25519PrivateKey.generate()
+    private = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    public = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    path = tmp_path / "identity.json"
+    path.write_text(json.dumps({"private_key": private, "public_key": public, "device_id": "wrong"}))
+    import pytest
+    with pytest.raises(OpenClawGatewayError, match="does not match"):
+        OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", device_identity_path=str(path), archive_completed_sessions=False))
+
+def test_invalid_existing_identity_does_not_regenerate(tmp_path) -> None:
+    path = tmp_path / "identity.json"
+    path.write_text("not-json")
+    import pytest
+    with pytest.raises(OpenClawGatewayError, match="Invalid device identity"):
+        OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", device_identity_path=str(path), archive_completed_sessions=False))
+
+def test_credential_precedence_and_signed_value(tmp_path) -> None:
+    for config, expected_key, expected_value in (({"token":"shared", "password":"pw"}, "token", "shared"), ({"password":"pw"}, "password", "pw"), ({}, "deviceToken", "device")):
+        token_path = tmp_path / f"token-{expected_key}.json"
+        token_path.write_text(json.dumps({"token":"device"}))
+        client = OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", device_token_path=str(token_path), archive_completed_sessions=False, **config))
+        sent = {}
+        class Socket:
+            def send(self, value): sent.update(json.loads(value))
+        frames = iter([{"type":"event", "event":"connect.challenge", "payload":{"nonce":"n","ts":123}}])
+        client._receive_json = lambda _socket, _deadline: (next(frames) if not sent else {"type":"res", "id":sent["id"], "ok":True, "payload":{"type":"hello-ok","protocol":4}})  # type: ignore[method-assign]
+        captured = {}
+        client._sign_device_payload = lambda value: (captured.setdefault("payload", value), "sig")[1]  # type: ignore[method-assign]
+        client._handshake(Socket(), time.time() + 1)
+        assert list(sent["params"]["auth"]) == [expected_key]
+        assert expected_value in captured["payload"]
+        assert sent["params"]["scopes"] == ["operator.read", "operator.write"]
+
+def test_device_token_round_trip_persists_and_reconnects(tmp_path) -> None:
+    identity = tmp_path / "identity.json"
+    token_path = tmp_path / "device-token.json"
+
+    def handshake(client, hello, captured):
+        class Socket:
+            def send(self, value):
+                captured.update(json.loads(value))
+        frames = iter([{"type": "event", "event": "connect.challenge", "payload": {"nonce": "roundtrip-nonce", "ts": 123}}])
+        client._receive_json = lambda _socket, _deadline: next(frames) if not captured else {"type": "res", "id": captured["id"], "ok": True, "payload": hello}  # type: ignore[method-assign]
+        signed = {}
+        client._sign_device_payload = lambda value: (signed.setdefault("payload", value), "sig")[1]  # type: ignore[method-assign]
+        client._handshake(Socket(), time.time() + 1)
+        return signed["payload"]
+
+    first = OpenClawGatewayClient(GatewayConfig(token="TEST_SHARED_TOKEN", device_identity_path=str(identity), device_token_path=str(token_path), archive_completed_sessions=False))
+    first_frame = {}
+    handshake(first, {"type": "hello-ok", "protocol": 4, "auth": {"deviceToken": "TEST_DEVICE_TOKEN"}}, first_frame)
+    assert json.loads(token_path.read_text())["token"] == "TEST_DEVICE_TOKEN"
+
+    second = OpenClawGatewayClient(GatewayConfig(device_identity_path=str(identity), device_token_path=str(token_path), archive_completed_sessions=False))
+    second_frame = {}
+    signed_payload = handshake(second, {"type": "hello-ok", "protocol": 4}, second_frame)
+    assert second_frame["params"]["auth"] == {"deviceToken": "TEST_DEVICE_TOKEN"}
+    assert "TEST_DEVICE_TOKEN" in signed_payload
+    assert second_frame["params"]["scopes"] == ["operator.read", "operator.write"]
+
+def test_run_identity_outside_current_result_root_fails_closed(tmp_path) -> None:
+    path = tmp_path / "identities.jsonl"
+    target = {"schema_version": 1, "orchestration_id": "o", "work_unit_id": "w", "execution_id": "e", "project_root": str(tmp_path), "directory": str(tmp_path / "other" / "o" / "w" / "e"), "result_file": "x", "summary_file": "x", "manifest_file": "x"}
+    path.write_text(json.dumps({"schema_version": 1, "external_id": "gateway:r", "run_id": "r", "session_key": "s", "task_id": "t", "orchestration_id": "o", "work_unit_id": "w", "execution_id": "e", "result_target": target}), encoding="utf-8")
+    client = OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1", run_identity_path=str(path), archive_completed_sessions=False), result_store=FileResultStore(root=tmp_path / "governed", project_root=tmp_path))
+    import pytest
+    with pytest.raises(OpenClawGatewayError, match="RUN_ID_RECOVERY_RECORD_INVALID"):
+        client.recover_run("gateway:r")
 from infrastructure.result_store import FileResultStore
 
 

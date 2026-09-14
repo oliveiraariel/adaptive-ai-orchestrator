@@ -20,6 +20,25 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify base install without gateway extras
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_venv="$(mktemp -d)"
+          python -m venv "$base_venv"
+          "$base_venv/bin/python" -m pip install -e .
+          PYTHONPATH=src "$base_venv/bin/python" -c "import adaptive_orchestrator.cli"
+          PYTHONPATH=src "$base_venv/bin/python" -c "import infrastructure.openclaw_gateway_client"
+          PYTHONPATH=src "$base_venv/bin/python" - <<'PY'
+          from infrastructure.openclaw_gateway_client import GatewayConfig, OpenClawGatewayClient, OpenClawGatewayError
+          try:
+              OpenClawGatewayClient(GatewayConfig(url="ws://127.0.0.1:1"))
+          except OpenClawGatewayError as exc:
+              assert ".[gateway]" in str(exc)
+          else:
+              raise AssertionError("Gateway client unexpectedly initialized without extras")
+          PY
+
       - name: Install
         run: python -m pip install -e ".[test,gateway]"
 
