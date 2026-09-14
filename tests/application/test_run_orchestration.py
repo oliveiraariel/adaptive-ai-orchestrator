@@ -53,6 +53,16 @@ class FakeRuntime:
     def cancel(self, execution):
         return execution
 
+def test_dispatch_returns_reference_without_retrieving_result() -> None:
+    runtime = FakeRuntime()
+    calls = {"submit": 0, "retrieve": 0}
+    original_submit, original_retrieve = runtime.submit, runtime.retrieve_result
+    runtime.submit = lambda task: (calls.__setitem__("submit", calls["submit"] + 1), original_submit(task))[1]
+    runtime.retrieve_result = lambda execution: (calls.__setitem__("retrieve", calls["retrieve"] + 1), original_retrieve(execution))[1]
+    result = RunOrchestration(runtime=runtime, claim_registry=InMemoryClaimRegistry()).dispatch(RunOrchestrationRequest(objective="Dispatch only."))
+    assert result.execution.external_id
+    assert calls == {"submit": 1, "retrieve": 0}
+
 
 def test_run_orchestration_completes_governed_work_unit() -> None:
     claims = InMemoryClaimRegistry()
