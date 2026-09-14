@@ -1,6 +1,8 @@
 import json
 
 from adaptive_orchestrator import cli
+from application.incident_management import IncidentSentinel
+from infrastructure.incident_registry import FileIncidentRegistry
 from application.agent_runtime import (
     AgentRuntimeResult,
     AgentRuntimeStatus,
@@ -226,3 +228,28 @@ def test_cli_wait_defaults_to_30_90_600_liveness_windows(tmp_path) -> None:
     assert args.heartbeat_interval_seconds == 30.0
     assert args.liveness_timeout_seconds == 90.0
     assert args.hard_deadline_seconds == 600.0
+
+
+def test_cli_incidents_surfaces_pressure_and_supervision_outbox(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    registry = FileIncidentRegistry()
+    IncidentSentinel(registry).observe_runtime_failure(
+        "runtime completed but authoritative result is missing",
+        orchestration_id="orch-cli",
+        work_unit_id="wu-cli",
+        runtime="runtime-x",
+        blocking=True,
+    )
+
+    exit_code = cli.main(["incidents", "--supervise"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["active_incident_count"] == 1
+    assert payload["supervision_cycle"] is True
+    assert payload["incidents"][0]["pressure"] >= 70
+    assert payload["incidents"][0]["action"] == "diagnose-now"
+    assert payload["incidents"][0]["research_query"]
+    assert (tmp_path / "adaptive-ai-orchestrator" / "notifications.jsonl").is_file()
