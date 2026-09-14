@@ -93,16 +93,21 @@ def test_result_store_rejects_invalid_integrity_field(tmp_path, field, value) ->
         store.read_result(target)
 
 
-def test_worker_instructions_require_integrity_and_manifest_last(tmp_path) -> None:
+def test_worker_instructions_delegate_manifest_integrity_to_adaptive(tmp_path) -> None:
     store = FileResultStore(tmp_path)
-    target = store.prepare_target(orchestration_id="orch", work_unit_id="wu", execution_id="exec")
+    target = store.prepare_target(
+        orchestration_id="orch",
+        work_unit_id="wu",
+        execution_id="exec",
+    )
     instructions = store.worker_instructions(target)
 
-    assert "result_bytes" in instructions
-    assert "result_sha256" in instructions
-    assert "UTF-8 byte" in instructions
+    assert "DO NOT create, edit, or finalize manifest.json" in instructions
+    assert "Adaptive Orchestrator owns the manifest" in instructions
+    assert "UTF-8 byte length" in instructions
     assert "SHA-256" in instructions
     assert "manifest.json LAST" in instructions
+    assert "Chat/history" in instructions
 
 
 def test_result_store_rejects_manifest_identity_mismatch(tmp_path) -> None:
@@ -220,3 +225,84 @@ def test_project_local_store_excludes_adaptive_state_from_git_without_editing_gi
 
     assert "/.adaptive/" in exclude_path.read_text(encoding="utf-8")
     assert tracked_gitignore.read_text(encoding="utf-8") == before
+
+
+
+def test_adaptive_finalizes_worker_result_and_overwrites_worker_manifest(tmp_path) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(
+        orchestration_id="orch-protocol",
+        work_unit_id="wu-protocol",
+        execution_id="exec-protocol",
+    )
+    content = "worker-owned result content"
+    target.result_path.write_text(content, encoding="utf-8")
+    target.manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "complete": True,
+                "result_bytes": "WRONG-TYPE",
+                "result_sha256": "not-a-real-hash",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stored = store.finalize_worker_result(target)
+    manifest = json.loads(target.manifest_path.read_text(encoding="utf-8"))
+
+    assert stored.content == content
+    assert manifest["publisher"] == "adaptive-result-store"
+    assert manifest["result_bytes"] == len(content.encode("utf-8"))
+    assert isinstance(manifest["result_bytes"], int)
+    assert manifest["result_sha256"] == hashlib.sha256(
+        content.encode("utf-8")
+    ).hexdigest()
+    assert manifest["worker_protocol"]["name"] == "adaptive-worker-protocol"
+    assert manifest["worker_protocol"]["version"] == 1
+    assert len(manifest["worker_protocol"]["contract_sha256"]) == 64
+
+
+def test_adaptive_finalization_requires_worker_result_file(tmp_path) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(
+        orchestration_id="orch",
+        work_unit_id="wu",
+        execution_id="exec",
+    )
+
+    with pytest.raises(ResultStoreError, match="without final result.txt"):
+        store.finalize_worker_result(target)
+
+
+def test_read_result_rejects_worker_authored_manifest_without_adaptive_publisher(tmp_path) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(
+        orchestration_id="orch",
+        work_unit_id="wu",
+        execution_id="exec",
+    )
+    content = "result"
+    target.result_path.write_text(content, encoding="utf-8")
+    target.manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "orchestration_id": "orch",
+                "work_unit_id": "wu",
+                "execution_id": "exec",
+                "complete": True,
+                "result_file": "result.txt",
+                "summary_file": None,
+                "result_bytes": len(content.encode("utf-8")),
+                "result_sha256": hashlib.sha256(
+                    content.encode("utf-8")
+                ).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResultStoreError, match="not finalized by the Adaptive"):
+        store.read_result(target)

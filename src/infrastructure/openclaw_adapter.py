@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 from application.agent_runtime import (
     AgentRuntime,
+    AgentRuntimeError,
     AgentRuntimeResult,
     AgentRuntimeStatus,
     ExecutionReference,
@@ -14,6 +15,7 @@ from application.model_routing_policy import (
     ModelRoutingPolicy,
 )
 from application.observability import NullObservabilitySink, ObservabilitySink
+from application.worker_protocol import PROTOCOL_COMPLETION_STATE
 from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
 from infrastructure.model_routing_audit import ModelRoutingAuditLog
@@ -219,6 +221,7 @@ class OpenClawAdapter(AgentRuntime):
 
         try:
             raw_result = self._client.retrieve_result(execution.external_id)
+            self._enforce_worker_protocol_result(raw_result)
             status = self.get_status(execution)
         except Exception as exc:
             if state is not None:
@@ -384,6 +387,35 @@ class OpenClawAdapter(AgentRuntime):
             execution=updated,
             raw_result=raw_result,
         )
+
+    @staticmethod
+    def _enforce_worker_protocol_result(raw_result: object) -> None:
+        """Reject runtime completion without an authoritative protocol result."""
+
+        if not isinstance(raw_result, dict):
+            return
+        protocol = raw_result.get("worker_protocol")
+        if not isinstance(protocol, dict) or protocol.get("required") is not True:
+            # Compatibility with non-Gateway test doubles and legacy runtimes.
+            return
+        transport = raw_result.get("result_transport")
+        authoritative = (
+            isinstance(transport, dict)
+            and transport.get("authoritative") is True
+            and transport.get("complete") is True
+        )
+        verified = protocol.get("completion_state") == PROTOCOL_COMPLETION_STATE
+        if not authoritative or not verified:
+            detail = None
+            if isinstance(transport, dict):
+                candidate = transport.get("protocol_error")
+                if isinstance(candidate, str) and candidate:
+                    detail = candidate
+            suffix = f": {detail}" if detail else ""
+            raise AgentRuntimeError(
+                "Adaptive Worker Protocol requires a verified authoritative "
+                f"Result Store result before completion{suffix}"
+            )
 
     @staticmethod
     def _extract_usage(raw_result: object) -> dict[str, int] | None:

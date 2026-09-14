@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from application.worker_protocol import (
+    PROTOCOL_NAME,
+    PROTOCOL_RESULT_CHANNEL,
+    PROTOCOL_VERSION,
+    build_worker_protocol,
+)
+
 
 class ResultStoreError(RuntimeError):
     """Raised when a persisted Adaptive result violates the store contract."""
@@ -156,7 +163,7 @@ class FileResultStore:
         content: str,
         summary: str | None = None,
     ) -> StoredResult:
-        """Publish a result atomically; useful for deterministic runtimes/tests."""
+        """Publish deterministic content and let Adaptive finalize its manifest."""
 
         if not isinstance(content, str):
             raise ResultStoreError("Result content must be UTF-8 text.")
@@ -164,10 +171,47 @@ class FileResultStore:
         self._atomic_write_text(target.result_path, content)
         if summary is not None:
             self._atomic_write_text(target.summary_path, summary)
+        return self.finalize_worker_result(target)
 
+    def finalize_worker_result(self, target: ResultStoreTarget) -> StoredResult:
+        """Finalize a worker-owned result file with an Adaptive-owned manifest.
+
+        Workers own result content. Adaptive owns transport integrity metadata.
+        The manifest is always generated here and written last, so a worker cannot
+        accidentally choose JSON types, hashes, byte counts, or completion
+        semantics.
+        """
+
+        try:
+            content = target.result_path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ResultStoreError(
+                "Worker protocol completed without final result.txt."
+            ) from exc
+        except (OSError, UnicodeError) as exc:
+            raise ResultStoreError(
+                "Worker result.txt is unavailable or is not valid UTF-8 text."
+            ) from exc
+
+        summary: str | None = None
+        if target.summary_path.exists():
+            try:
+                summary = target.summary_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise ResultStoreError(
+                    "Worker summary.md is unavailable or is not valid UTF-8 text."
+                ) from exc
+
+        protocol = build_worker_protocol(
+            orchestration_id=target.orchestration_id,
+            work_unit_id=target.work_unit_id,
+            execution_id=target.execution_id,
+            result_store=target.as_payload(),
+        )
         raw = content.encode("utf-8")
         manifest = {
             "schema_version": 1,
+            "publisher": PROTOCOL_RESULT_CHANNEL,
             "orchestration_id": target.orchestration_id,
             "work_unit_id": target.work_unit_id,
             "execution_id": target.execution_id,
@@ -176,18 +220,28 @@ class FileResultStore:
             "summary_file": target.summary_path.name if summary is not None else None,
             "result_bytes": len(raw),
             "result_sha256": hashlib.sha256(raw).hexdigest(),
+            "worker_protocol": {
+                "name": protocol["name"],
+                "version": protocol["version"],
+                "contract_sha256": protocol["contract_sha256"],
+            },
         }
         self._atomic_write_text(
             target.manifest_path,
-            json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            json.dumps(
+                manifest,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
         stored = self.read_result(target)
         if stored is None:  # pragma: no cover - defensive invariant
-            raise ResultStoreError("Published result is not recoverable.")
+            raise ResultStoreError("Finalized result is not recoverable.")
         return stored
 
     def read_result(self, target: ResultStoreTarget) -> StoredResult | None:
-        """Return a verified complete result, or None while no manifest exists."""
+        """Return a verified Adaptive-finalized result, or None before finalization."""
 
         if not target.manifest_path.exists():
             return None
@@ -206,26 +260,65 @@ class FileResultStore:
         }
         for key, value in expected.items():
             if manifest.get(key) != value:
-                raise ResultStoreError(f"Result manifest {key} does not match the execution target.")
+                raise ResultStoreError(
+                    f"Result manifest {key} does not match the execution target."
+                )
         if manifest.get("schema_version") != 1:
             raise ResultStoreError("Unsupported result manifest schema_version.")
+        if manifest.get("publisher") != PROTOCOL_RESULT_CHANNEL:
+            raise ResultStoreError(
+                "Result manifest was not finalized by the Adaptive Result Store."
+            )
         if manifest.get("complete") is not True:
             raise ResultStoreError("Result manifest is not marked complete.")
 
-        expected_bytes = manifest.get("result_bytes")
-        if isinstance(expected_bytes, bool) or not isinstance(expected_bytes, int) or expected_bytes < 0:
-            raise ResultStoreError("Result manifest result_bytes must be a non-negative integer.")
-        expected_digest = manifest.get("result_sha256")
-        if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_digest):
-            raise ResultStoreError("Result manifest result_sha256 must be exactly 64 hexadecimal characters.")
+        expected_protocol = build_worker_protocol(
+            orchestration_id=target.orchestration_id,
+            work_unit_id=target.work_unit_id,
+            execution_id=target.execution_id,
+            result_store=target.as_payload(),
+        )
+        protocol_manifest = manifest.get("worker_protocol")
+        if not isinstance(protocol_manifest, dict):
+            raise ResultStoreError("Result manifest worker_protocol is missing.")
+        if protocol_manifest.get("name") != PROTOCOL_NAME:
+            raise ResultStoreError("Result manifest worker protocol name is invalid.")
+        if protocol_manifest.get("version") != PROTOCOL_VERSION:
+            raise ResultStoreError("Result manifest worker protocol version is invalid.")
+        if (
+            protocol_manifest.get("contract_sha256")
+            != expected_protocol["contract_sha256"]
+        ):
+            raise ResultStoreError(
+                "Result manifest worker protocol contract hash does not match."
+            )
 
-        result_name = manifest.get("result_file")
-        if result_name != target.result_path.name:
+        expected_bytes = manifest.get("result_bytes")
+        if (
+            isinstance(expected_bytes, bool)
+            or not isinstance(expected_bytes, int)
+            or expected_bytes < 0
+        ):
+            raise ResultStoreError(
+                "Result manifest result_bytes must be a non-negative integer."
+            )
+        expected_digest = manifest.get("result_sha256")
+        if (
+            not isinstance(expected_digest, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_digest)
+        ):
+            raise ResultStoreError(
+                "Result manifest result_sha256 must be exactly 64 hexadecimal characters."
+            )
+
+        if manifest.get("result_file") != target.result_path.name:
             raise ResultStoreError("Result manifest must reference result.txt.")
         try:
             content = target.result_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ResultStoreError("Result manifest exists but result.txt is unavailable.") from exc
+        except (OSError, UnicodeError) as exc:
+            raise ResultStoreError(
+                "Result manifest exists but result.txt is unavailable."
+            ) from exc
 
         raw = content.encode("utf-8")
         digest = hashlib.sha256(raw).hexdigest()
@@ -241,8 +334,10 @@ class FileResultStore:
                 raise ResultStoreError("Result manifest must reference summary.md.")
             try:
                 summary = target.summary_path.read_text(encoding="utf-8")
-            except OSError as exc:
-                raise ResultStoreError("Manifest references summary.md but it is unavailable.") from exc
+            except (OSError, UnicodeError) as exc:
+                raise ResultStoreError(
+                    "Manifest references summary.md but it is unavailable."
+                ) from exc
 
         return StoredResult(
             content=content,
@@ -255,36 +350,20 @@ class FileResultStore:
     @staticmethod
     def worker_instructions(target: ResultStoreTarget) -> str:
         payload = target.as_payload()
-        manifest_example = {
-            "schema_version": 1,
-            "orchestration_id": target.orchestration_id,
-            "work_unit_id": target.work_unit_id,
-            "execution_id": target.execution_id,
-            "complete": True,
-            "result_file": "result.txt",
-            "summary_file": "summary.md",
-            "result_bytes": "<UTF-8 byte length of final result.txt>",
-            "result_sha256": "<SHA-256 hex digest of final result.txt UTF-8 bytes>",
-        }
         return (
-            "Adaptive authoritative-result contract. This transport-only write is explicitly "
-            "authorized inside the project's private .adaptive runtime area and is not a source "
-            "or product-file modification. Put the COMPLETE authoritative "
-            "result requested by the task in the result store, not in chat/history. "
-            f"Project root: {payload['project_root'] or 'not-declared'}. "
-            f"Directory: {payload['directory']}. Do not write result-store data outside this directory. "
-            f"Write {payload['result_file']}.tmp first, then atomically rename it to "
-            f"{payload['result_file']}. Optionally publish a concise summary through "
-            f"{payload['summary_file']}.tmp -> {payload['summary_file']}. "
-            "Finally write manifest.json.tmp and atomically rename it to manifest.json LAST. "
-            "The manifest must be JSON matching this identity and complete=true: "
-            f"{json.dumps(manifest_example, ensure_ascii=False, separators=(',', ':'))}. "
-            "Before writing the manifest, calculate result_bytes as the exact length of the final result.txt UTF-8 bytes "
-            "and result_sha256 as the SHA-256 digest of those exact bytes; do not copy the descriptive placeholders. "
-            "Write manifest.json.tmp and atomically rename it to manifest.json LAST. "
-            "Do not fabricate completion if the result file was not written. After publication, "
-            "keep the conversational reply short (for example ADAPTIVE_RESULT_WRITTEN) because "
-            "conversation text is progress/summary only and is not the authoritative payload."
+            "Adaptive Worker Protocol publication rule. Put the COMPLETE final "
+            "authoritative result in the project-local Result Store. "
+            f"Directory: {payload['directory']}. "
+            f"Write {payload['result_file']}.tmp first, then atomically rename it "
+            f"to {payload['result_file']} only after the content is final. "
+            f"Optionally write {payload['summary_file']}.tmp and atomically rename "
+            f"it to {payload['summary_file']}. "
+            "DO NOT create, edit, or finalize manifest.json. The Adaptive "
+            "Orchestrator owns the manifest and will deterministically calculate "
+            "UTF-8 byte length, SHA-256, protocol contract identity, and completion "
+            "metadata after runtime completion, then write manifest.json LAST. "
+            "Do not report task completion until the final result.txt rename has "
+            "succeeded. Chat/history is progress-only and is never authoritative."
         )
 
     @staticmethod

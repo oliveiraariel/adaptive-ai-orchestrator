@@ -1059,7 +1059,10 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         target = client._runs[external].result_target
         assert target is not None
         content = '{"marker":"BEGIN","payload":"' + ("x" * 12000) + '","end":"END"}'
-        store.publish(target, content=content, summary="large result stored")
+        # The worker owns only result content. Adaptive must create integrity
+        # metadata and the completion manifest after runtime completion.
+        target.result_path.write_text(content, encoding="utf-8")
+        target.summary_path.write_text("large result stored", encoding="utf-8")
 
         result = client.retrieve_result(external)
 
@@ -1073,13 +1076,24 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         assert methods == ["agent", "agent.wait"]
 
         agent_request = holder["requests"][0]
-        message = json.loads(agent_request["params"]["message"])
+        serialized_message = agent_request["params"]["message"]
+        message = json.loads(serialized_message)
+        assert serialized_message.startswith('{"worker_protocol":')
+        assert message["worker_protocol"]["name"] == "adaptive-worker-protocol"
+        assert message["worker_protocol"]["version"] == 1
+        assert message["worker_protocol"]["mandatory"] is True
+        assert message["worker_protocol"]["result_contract"]["worker_writes_manifest"] is False
+        assert message["worker_protocol"]["result_contract"]["adaptive_finalizes_manifest"] is True
         assert message["result_store"]["orchestration_id"] == "orch-store"
         assert message["result_store"]["work_unit_id"] == "wu-store"
         assert any(
-            "authoritative-result contract" in item
+            "Adaptive Worker Protocol publication rule" in item
             for item in message["constraints"]
         )
+        manifest = json.loads(target.manifest_path.read_text(encoding="utf-8"))
+        assert manifest["publisher"] == "adaptive-result-store"
+        assert manifest["result_bytes"] == len(content.encode("utf-8"))
+        assert manifest["worker_protocol"]["name"] == "adaptive-worker-protocol"
     finally:
         server.shutdown()
         thread.join(timeout=1)

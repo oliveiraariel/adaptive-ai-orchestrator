@@ -1,4 +1,4 @@
-from application.agent_runtime import AgentRuntimeStatus
+from application.agent_runtime import AgentRuntimeError, AgentRuntimeStatus
 from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
 from infrastructure.openclaw_adapter import OpenClawAdapter
@@ -141,3 +141,59 @@ def test_adapter_rejects_execution_from_other_runtime() -> None:
         assert "does not belong to OpenClaw" in str(exc)
     else:
         raise AssertionError("Expected runtime ownership validation.")
+
+
+
+def test_adapter_rejects_mandatory_protocol_result_without_authoritative_transport() -> None:
+    client = FakeOpenClawClient()
+    adapter = OpenClawAdapter(client)
+
+    execution = adapter.submit(make_task())
+    client.result = {
+        "output": "progress only",
+        "worker_protocol": {
+            "name": "adaptive-worker-protocol",
+            "version": 1,
+            "required": True,
+            "completion_state": "RESULT_UNVERIFIED",
+        },
+        "result_transport": {
+            "source": "chat-history-fallback",
+            "authoritative": False,
+            "complete": False,
+        },
+    }
+
+    try:
+        adapter.retrieve_result(execution)
+    except AgentRuntimeError as exc:
+        assert "verified authoritative Result Store result" in str(exc)
+    else:
+        raise AssertionError("Expected non-authoritative protocol result to fail closed.")
+
+
+def test_adapter_accepts_mandatory_protocol_result_after_result_verified() -> None:
+    client = FakeOpenClawClient()
+    adapter = OpenClawAdapter(client)
+
+    execution = adapter.submit(make_task())
+    client.status = "completed"
+    client.result = {
+        "output": "done",
+        "worker_protocol": {
+            "name": "adaptive-worker-protocol",
+            "version": 1,
+            "required": True,
+            "completion_state": "RESULT_VERIFIED",
+        },
+        "result_transport": {
+            "source": "adaptive-result-store",
+            "authoritative": True,
+            "complete": True,
+        },
+    }
+
+    result = adapter.retrieve_result(execution)
+
+    assert result.execution.status is AgentRuntimeStatus.COMPLETED
+    assert result.raw_result["output"] == "done"
