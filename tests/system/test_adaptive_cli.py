@@ -243,7 +243,11 @@ def test_cli_incidents_surfaces_pressure_and_supervision_outbox(
         blocking=True,
     )
 
-    exit_code = cli.main(["incidents", "--supervise"])
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    exit_code = cli.main(
+        ["incidents", "--supervise", "--project-root", str(project_root)]
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
@@ -354,6 +358,8 @@ def test_cli_incident_watch_runs_persistent_bounded_supervision_cycles(
             "2",
             "--interval-seconds",
             "0.01",
+            "--project-root",
+            str(tmp_path),
         ]
     )
 
