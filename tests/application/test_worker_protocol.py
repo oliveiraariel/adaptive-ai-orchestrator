@@ -36,6 +36,10 @@ def test_worker_protocol_is_mandatory_and_result_transport_is_not_skill_owned():
         protocol["result_contract"]["completion_requires"]
         == PROTOCOL_COMPLETION_STATE
     )
+    assert protocol["incident_contract"]["worker_may_report_defect_signal"] is True
+    assert protocol["incident_contract"]["worker_owns_incident_lifecycle"] is False
+    assert protocol["incident_contract"]["adaptive_owns_incident_lifecycle"] is True
+    assert protocol["incident_contract"]["adaptive_owns_learning_promotion"] is True
 
 
 def test_worker_protocol_contract_hash_is_self_verifying():
