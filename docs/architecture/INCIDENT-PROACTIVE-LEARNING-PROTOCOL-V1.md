@@ -90,6 +90,41 @@ raw prompts, arbitrary source code, credentials, secrets, chain-of-thought or
 raw tool output. Repeated observations with the same normalized fingerprint
 reuse the active incident and increase recurrence_count.
 
+### 5.1 Versioned project incident intake
+
+A project may need to preserve a known defect, capability gap or improvement
+investigation before any particular Adaptive process is running. Those durable
+project declarations live under:
+
+~~~text
+<project>/incidents/intake/
+~~~
+
+They are **intake inputs, not live state**. Machine-readable `*.json`
+declarations are idempotently registered into the persistent
+`IncidentRegistry`; an optional bounded Markdown evidence/intention document
+may preserve the human rationale and unresolved decisions.
+
+Adaptive must not treat the static repository file as proof that an incident is
+currently active, closed, waived or resolved. Lifecycle authority remains in the
+operational registry. Conversely, an unchanged intake declaration must not
+recreate a terminal incident every time the project is opened.
+
+Project intake is registered before incident supervision and before normal
+project planning, so known obligations can reach the orchestrator even when
+they originated in a previous session or from direct human guidance.
+
+The first official project intake case is:
+
+~~~text
+INC-20260914-001-INVESTIGATION-CAPABILITY-GAP
+~~~
+
+It intentionally tracks the still-open design of a governed investigation
+capability / possible Investigation Skill, including search ownership, search
+liveness, escalation and exhaustion semantics. It must remain an incident
+obligation until those later decisions are implemented and validated.
+
 ## 6. Four memory layers
 
 ~~~text
