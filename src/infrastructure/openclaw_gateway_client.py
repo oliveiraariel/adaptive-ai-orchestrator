@@ -24,6 +24,12 @@ from application.incident_classifier import IncidentClassifier
 from application.model_routing_policy import ModelRoutingDecision, ModelRoutingPolicy
 from application.provider_health_policy import ProviderHealthPolicy
 from application.remediation_policy import RemediationPolicy
+from application.worker_protocol import (
+    PROTOCOL_COMPLETION_STATE,
+    PROTOCOL_NAME,
+    PROTOCOL_VERSION,
+    build_worker_protocol,
+)
 from infrastructure.openclaw_adapter import OpenClawClient
 from infrastructure.provider_telemetry_store import ProviderTelemetryStore
 from infrastructure.result_store import FileResultStore, ResultStoreError, ResultStoreTarget
@@ -449,15 +455,26 @@ class OpenClawGatewayClient(OpenClawClient):
         output: str
         metadata: dict[str, Any] = {}
         result_transport: dict[str, object]
+        protocol_error: str | None = None
+
+        protocol = run.task_payload.get("worker_protocol")
+        if not isinstance(protocol, dict) and run.result_target is not None:
+            protocol = build_worker_protocol(
+                orchestration_id=run.result_target.orchestration_id,
+                work_unit_id=run.result_target.work_unit_id,
+                execution_id=run.result_target.execution_id,
+                result_store=run.result_target.as_payload(),
+            )
 
         stored = None
         if run.result_target is not None:
             try:
-                stored = self._result_store.read_result(run.result_target)
+                # Runtime completion only means the worker stopped. Adaptive now
+                # owns transport finalization and writes the integrity manifest
+                # deterministically after the worker's final result.txt exists.
+                stored = self._result_store.finalize_worker_result(run.result_target)
             except ResultStoreError as exc:
-                raise OpenClawGatewayError(
-                    f"Adaptive result store rejected worker result: {exc}"
-                ) from exc
+                protocol_error = str(exc)
 
         if stored is not None:
             output = stored.content
@@ -468,6 +485,7 @@ class OpenClawGatewayClient(OpenClawClient):
                 "result_sha256": stored.sha256,
                 "result_bytes": stored.byte_length,
                 "complete": True,
+                "completion_state": PROTOCOL_COMPLETION_STATE,
             }
         else:
             history = self._rpc(
@@ -475,16 +493,37 @@ class OpenClawGatewayClient(OpenClawClient):
                 {"sessionKey": run.session_key},
             )
 
-            # Backwards compatibility only. chat.history is a human/progress
-            # representation and can be truncated by OpenClaw. New workers are
-            # instructed to publish authoritative results through Result Store.
+            # Human/progress fallback remains available only as diagnostics.
+            # Adaptive application-layer semantics reject it for mandatory
+            # protocol executions because it is not authoritative.
             output = self._extract_assistant_text(history)
             metadata = self._extract_assistant_metadata(history)
             result_transport = {
                 "source": "chat-history-fallback",
                 "authoritative": False,
                 "complete": False,
+                "completion_state": "RESULT_UNVERIFIED",
+                **(
+                    {"protocol_error": protocol_error}
+                    if protocol_error is not None
+                    else {}
+                ),
             }
+
+        protocol_result: dict[str, object] = {
+            "name": PROTOCOL_NAME,
+            "version": PROTOCOL_VERSION,
+            "required": True,
+            "completion_state": (
+                PROTOCOL_COMPLETION_STATE
+                if stored is not None
+                else "RESULT_UNVERIFIED"
+            ),
+        }
+        if isinstance(protocol, dict):
+            digest = protocol.get("contract_sha256")
+            if isinstance(digest, str):
+                protocol_result["contract_sha256"] = digest
 
         lifecycle: dict[str, object] | None = None
         if self._archive_completed_sessions:
@@ -498,6 +537,7 @@ class OpenClawGatewayClient(OpenClawClient):
             "output": output,
             **metadata,
             "result_transport": result_transport,
+            "worker_protocol": protocol_result,
             **({"session_lifecycle": lifecycle} if lifecycle is not None else {}),
         }
 
@@ -595,10 +635,18 @@ class OpenClawGatewayClient(OpenClawClient):
         target: ResultStoreTarget,
     ) -> dict[str, Any]:
         payload = dict(task_payload)
+        result_store_payload = target.as_payload()
+        protocol = build_worker_protocol(
+            orchestration_id=target.orchestration_id,
+            work_unit_id=target.work_unit_id,
+            execution_id=target.execution_id,
+            result_store=result_store_payload,
+        )
         constraints = list(payload.get("constraints") or ())
         constraints.append(self._result_store.worker_instructions(target))
+        payload["worker_protocol"] = protocol
         payload["constraints"] = constraints
-        payload["result_store"] = target.as_payload()
+        payload["result_store"] = result_store_payload
         return payload
 
     @staticmethod
@@ -1076,24 +1124,27 @@ class OpenClawGatewayClient(OpenClawClient):
 
     @staticmethod
     def _build_message(task_payload: dict[str, Any]) -> str:
+        # Insertion order is intentional: the mandatory protocol is the first
+        # instruction visible to every worker, before role/skill/task content.
+        message = {
+            "worker_protocol": task_payload["worker_protocol"],
+            "task_id": task_payload["task_id"],
+            "work_unit_id": task_payload["work_unit_id"],
+            "objective": task_payload["objective"],
+            "scope": task_payload["scope"],
+            "context": task_payload["context"],
+            "inputs": task_payload["inputs"],
+            "artifacts": task_payload["artifacts"],
+            "decisions": task_payload["decisions"],
+            "dependencies": task_payload["dependencies"],
+            "constraints": task_payload["constraints"],
+            "configuration": task_payload["configuration"],
+            "expected_output": task_payload["expected_output"],
+            "acceptance_criteria": task_payload["acceptance_criteria"],
+            "result_store": task_payload.get("result_store"),
+        }
         return json.dumps(
-            {
-                "task_id": task_payload["task_id"],
-                "work_unit_id": task_payload["work_unit_id"],
-                "objective": task_payload["objective"],
-                "scope": task_payload["scope"],
-                "context": task_payload["context"],
-                "inputs": task_payload["inputs"],
-                "artifacts": task_payload["artifacts"],
-                "decisions": task_payload["decisions"],
-                "dependencies": task_payload["dependencies"],
-                "constraints": task_payload["constraints"],
-                "configuration": task_payload["configuration"],
-                "expected_output": task_payload["expected_output"],
-                "acceptance_criteria": task_payload["acceptance_criteria"],
-                "result_store": task_payload.get("result_store"),
-            },
+            message,
             ensure_ascii=False,
             separators=(",", ":"),
-            sort_keys=True,
         )
