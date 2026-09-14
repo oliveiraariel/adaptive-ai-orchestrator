@@ -321,15 +321,33 @@ class IncidentLifecycleManager:
         self.registry.append_event(incident_id, "knowledge_disseminated", {"target": clean})
         return updated
 
-    def mark_consistency(self, incident_id: str, *, passed: bool) -> Incident:
+    def mark_consistency(
+        self,
+        incident_id: str,
+        *,
+        passed: bool,
+        evidence_refs: Iterable[str] = (),
+    ) -> Incident:
         incident = self._require(incident_id)
+        refs = tuple(
+            str(item).strip()[:300]
+            for item in evidence_refs
+            if str(item).strip()
+        )
+        if passed and not refs:
+            raise ValueError("a passing consistency check requires evidence references")
         updated = replace(
             incident,
             consistency_check_passed=passed,
+            consistency_refs=tuple(dict.fromkeys((*incident.consistency_refs, *refs))),
             status=IncidentStatus.CONSISTENCY_CHECK,
         ).touch()
         self.registry.save(updated)
-        self.registry.append_event(incident_id, "consistency_check", {"passed": passed})
+        self.registry.append_event(
+            incident_id,
+            "consistency_check",
+            {"passed": passed, "evidence_count": len(refs)},
+        )
         return updated
 
     def close(self, incident_id: str) -> Incident:
