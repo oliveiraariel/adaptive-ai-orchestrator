@@ -75,6 +75,8 @@ class Incident:
     root_cause_confidence: float = 0.0
     local_evidence_exhausted: bool = False
     external_research_allowed: bool = True
+    research_attempt_count: int = 0
+    last_research_at: str = ""
     root_cause: str = ""
     fix_summary: str = ""
     validation_refs: tuple[str, ...] = ()
@@ -126,6 +128,8 @@ class Incident:
             "root_cause_confidence": self.root_cause_confidence,
             "local_evidence_exhausted": self.local_evidence_exhausted,
             "external_research_allowed": self.external_research_allowed,
+            "research_attempt_count": self.research_attempt_count,
+            "last_research_at": self.last_research_at,
             "root_cause": self.root_cause,
             "fix_summary": self.fix_summary,
             "validation_refs": list(self.validation_refs),
@@ -163,6 +167,8 @@ class Incident:
             root_cause_confidence=float(payload.get("root_cause_confidence", 0.0)),
             local_evidence_exhausted=bool(payload.get("local_evidence_exhausted", False)),
             external_research_allowed=bool(payload.get("external_research_allowed", True)),
+            research_attempt_count=max(0, int(payload.get("research_attempt_count", 0))),
+            last_research_at=str(payload.get("last_research_at", "")),
             root_cause=str(payload.get("root_cause", "")),
             fix_summary=str(payload.get("fix_summary", "")),
             validation_refs=tuple(str(x) for x in payload.get("validation_refs", []) if str(x)),
