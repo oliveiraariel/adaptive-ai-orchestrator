@@ -14,6 +14,7 @@ adaptive-orchestrator = "adaptive_orchestrator.cli:main"
 [project.optional-dependencies]
 gateway = [
     "websockets>=15,<17",
+    "cryptography>=44,<47",
 ]
 test = [
     "pytest>=9,<10",

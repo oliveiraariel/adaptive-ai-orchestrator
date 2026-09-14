@@ -183,6 +183,25 @@
       "evidence": [
         "2026-09-13: SMALL succeeded through agent.wait, MEDIUM exposed that terminalReply was only a 237-character summary for a 5266-character source payload, and LARGE was intentionally withheld until the transport architecture was corrected."
       ]
+    },
+    {
+      "id": "recover-authenticated-run-before-redispatch",
+      "status": "validated",
+      "title": "Preserve authenticated execution identity across observer processes",
+      "triggers": ["device auth", "run recovery", "cross-process", "redispatch", "result target"],
+      "guidance": [
+        "Sign the exact effective connect facts: challenge nonce and timestamp, sent credential, ordered scopes, client mode, platform and device family.",
+        "Use least-privilege Gateway scopes and persist only sanitized execution identity before the first wait.",
+        "Recover the same run and governed Result Store target before considering redispatch; never call agent again merely because the observer process ended.",
+        "Fail closed when recovery records are invalid or point outside the current project Result Store."
+      ],
+      "safety": [
+        "Never persist credentials, private keys, prompts or worker results in run identity records.",
+        "Treat observation-channel failure as distinct from execution failure."
+      ],
+      "evidence": [
+        "2026-09-13: a new Python process recovered the same runId, execution_id and ResultStoreTarget and retrieved an authoritative adaptive-result-store result without a second agent dispatch."
+      ]
     }
   ]
 }
