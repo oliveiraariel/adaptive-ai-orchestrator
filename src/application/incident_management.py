@@ -135,6 +135,37 @@ class IncidentSentinel:
             project_id=project_id,
         )
 
+    def observe_human_intervention(
+        self,
+        *,
+        component: str,
+        symptom: str,
+        correction_type: str,
+        orchestration_id: str = "",
+        work_unit_id: str = "",
+        execution_id: str = "",
+        runtime: str = "",
+        project_id: str = "",
+        blocking: bool = False,
+    ) -> Incident | None:
+        """Preserve a human correction when it reveals a diagnostic/strategy gap."""
+        return self.record(
+            IncidentSignal(
+                category="human-intervention",
+                component=component or "adaptive-orchestration",
+                symptom=f"{correction_type}: {symptom}"[:500],
+                severity=IncidentSeverity.HIGH if blocking else IncidentSeverity.MEDIUM,
+                topics=("learning-gap", "debugging", "orchestration"),
+                blocking=blocking,
+            ),
+            source="human-intervention",
+            orchestration_id=orchestration_id,
+            work_unit_id=work_unit_id,
+            execution_id=execution_id,
+            runtime=runtime,
+            project_id=project_id,
+        )
+
     def observe_provider_incident(
         self,
         provider_incident: ProviderIncident,
