@@ -10,6 +10,7 @@ from domain.incident import (
     IncidentSeverity,
     IncidentStatus,
     LearningScope,
+    utc_now,
 )
 from domain.learning_candidate import LearningCandidate
 from domain.provider_incident import ProviderIncident
