@@ -84,6 +84,7 @@ class Incident:
     dissemination_targets: tuple[str, ...] = ()
     dissemination_completed: tuple[str, ...] = ()
     consistency_check_passed: bool = False
+    consistency_refs: tuple[str, ...] = ()
     last_progress_at: str = field(default_factory=utc_now)
 
     @property
@@ -91,11 +92,12 @@ class Incident:
         return self.status not in _TERMINAL
 
     def touch(self, **changes: Any) -> "Incident":
+        progress_at = changes.pop("last_progress_at", utc_now())
         return replace(
             self,
             **changes,
             updated_at=utc_now(),
-            last_progress_at=changes.pop("last_progress_at", utc_now()),
+            last_progress_at=progress_at,
         )
 
     def with_status(self, status: IncidentStatus) -> "Incident":
@@ -133,6 +135,7 @@ class Incident:
             "dissemination_targets": list(self.dissemination_targets),
             "dissemination_completed": list(self.dissemination_completed),
             "consistency_check_passed": self.consistency_check_passed,
+            "consistency_refs": list(self.consistency_refs),
             "last_progress_at": self.last_progress_at,
         }
 
@@ -169,5 +172,6 @@ class Incident:
             dissemination_targets=tuple(str(x) for x in payload.get("dissemination_targets", []) if str(x)),
             dissemination_completed=tuple(str(x) for x in payload.get("dissemination_completed", []) if str(x)),
             consistency_check_passed=bool(payload.get("consistency_check_passed", False)),
+            consistency_refs=tuple(str(x) for x in payload.get("consistency_refs", []) if str(x)),
             last_progress_at=str(payload.get("last_progress_at", utc_now())),
         )
