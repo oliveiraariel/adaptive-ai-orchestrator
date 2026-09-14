@@ -115,7 +115,8 @@
         "Publish authoritative worker output to a durable result store before declaring completion.",
         "Pass stable result references between dependent Work Units instead of copying large payloads into prompts or chat messages.",
         "Use manifest-last publication with execution identity, completeness, byte length, and SHA-256 so consumers can verify integrity before use.",
-        "Keep project-owned runtime results inside the governed project boundary rather than mixing them with orchestrator-owned global state."
+        "Keep project-owned runtime results inside the governed project boundary rather than mixing them with orchestrator-owned global state.",
+        "Use reference-only fan-in only after the upstream result is a verified authoritative artifact; runtime completion alone is insufficient."
       ],
       "safety": [
         "Do not treat chat history as a durable inter-agent message bus.",
@@ -188,7 +189,13 @@
       "id": "recover-authenticated-run-before-redispatch",
       "status": "validated",
       "title": "Preserve authenticated execution identity across observer processes",
-      "triggers": ["device auth", "run recovery", "cross-process", "redispatch", "result target"],
+      "triggers": [
+        "device auth",
+        "run recovery",
+        "cross-process",
+        "redispatch",
+        "result target"
+      ],
       "guidance": [
         "Sign the exact effective connect facts: challenge nonce and timestamp, sent credential, ordered scopes, client mode, platform and device family.",
         "Use least-privilege Gateway scopes and persist only sanitized execution identity before the first wait.",
@@ -201,6 +208,146 @@
       ],
       "evidence": [
         "2026-09-13: a new Python process recovered the same runId, execution_id and ResultStoreTarget and retrieved an authoritative adaptive-result-store result without a second agent dispatch."
+      ]
+    },
+    {
+      "id": "orchestrator-owns-machine-integrity",
+      "status": "validated",
+      "title": "Keep machine envelopes and integrity metadata under deterministic orchestrator ownership",
+      "triggers": [
+        "worker writes manifest",
+        "manifest integrity",
+        "machine envelope",
+        "result_bytes",
+        "result_sha256",
+        "schema coercion",
+        "integrity metadata",
+        "manifest mismatch"
+      ],
+      "guidance": [
+        "Let workers produce semantic result content; deterministic orchestrator code must construct integrity envelopes, completion sentinels and machine metadata.",
+        "Validate identity, field types, exact UTF-8 byte length, hashes and contract version before accepting an authoritative result.",
+        "Do not silently coerce malformed machine-contract values such as numeric integrity fields encoded as strings.",
+        "Treat a worker-authored manifest or envelope as untrusted content rather than authoritative infrastructure state."
+      ],
+      "safety": [
+        "Do not move credentials into integrity metadata; hashes prove integrity/provenance, not authentication.",
+        "Fail closed when required machine-contract fields are missing, malformed or mismatched."
+      ],
+      "evidence": [
+        "2026-09-13: result-transport investigation found missing manifest fields and result_bytes encoded as a string; moving manifest finalization to deterministic Adaptive code produced verified MEDIUM/LARGE/fan-in transport."
+      ]
+    },
+    {
+      "id": "separate-runtime-completion-from-result-verification",
+      "status": "validated",
+      "title": "Do not equate runtime completion with authoritative result completion",
+      "triggers": [
+        "runtime completed",
+        "runtime completion",
+        "result_verified",
+        "result verified",
+        "completed but result",
+        "completion state",
+        "authoritative completion"
+      ],
+      "guidance": [
+        "Interpret runtime COMPLETED as an execution-state fact, not proof that the authoritative result is durable and valid.",
+        "Require result persistence, identity checks, completeness, byte length and hash verification before reaching RESULT_VERIFIED.",
+        "Do not unlock downstream reference fan-in until the upstream authoritative result has passed verification.",
+        "Classify a completed runtime with a missing or invalid result as a transport/persistence/integrity incident before blaming the model."
+      ],
+      "safety": [
+        "Never reconstruct an authoritative result from a progress or terminal-summary channel.",
+        "Do not weaken completion criteria merely to keep the Work Graph moving."
+      ],
+      "evidence": [
+        "2026-09-13: OpenClaw runs could be runtime-complete while terminal/history channels were summarized or truncated; Adaptive therefore introduced RESULT_VERIFIED as the authoritative completion state."
+      ]
+    },
+    {
+      "id": "observer-failure-is-not-worker-failure",
+      "status": "validated",
+      "title": "Separate observer/liveness failure from worker execution failure",
+      "triggers": [
+        "observer failure",
+        "observer unavailable",
+        "monitoring process",
+        "heartbeat missing",
+        "wait observer",
+        "process restart",
+        "observation timeout",
+        "liveness"
+      ],
+      "guidance": [
+        "Preserve execution identity and reconcile the same run before retrying or redispatching.",
+        "Derive heartbeat/liveness from runtime or harness observations, not from whether the LLM emits conversational progress.",
+        "Treat observer process death, wait timeout and temporary monitoring unavailability as observation failures unless execution failure is independently proven.",
+        "Recover the same execution/result target after process restart whenever the runtime contract permits."
+      ],
+      "safety": [
+        "Do not duplicate side-effecting work because an observer disappeared.",
+        "Keep retry, reconciliation and hard observer deadlines bounded."
+      ],
+      "evidence": [
+        "2026-09-13: same-run recovery proved that a new observer process could recover the original run and authoritative Result Store target without a second dispatch."
+      ]
+    },
+    {
+      "id": "prove-runtime-code-identity",
+      "status": "validated",
+      "title": "Prove source, interpreter and loaded-module identity before debugging environment drift",
+      "triggers": [
+        "wrong module",
+        "module identity",
+        "venv",
+        "virtual environment",
+        "interpreter",
+        "source root",
+        "python environment",
+        "loaded module",
+        "symlink",
+        "code identity"
+      ],
+      "guidance": [
+        "Treat repository/source root, current working directory, Python interpreter, virtual environment and loaded module path as separate identities.",
+        "Prove the effective interpreter and loaded module location before concluding that a code change is active.",
+        "Inspect sys.executable, module __file__, import paths and package installation mode when behavior contradicts the checked-out source.",
+        "Preserve virtual-environment executable identity when it matters; do not dereference a venv executable path and then assume the resolved base interpreter represents the active environment."
+      ],
+      "safety": [
+        "Do not modify environments merely to make observed paths look consistent; first establish which environment is authoritative.",
+        "Do not expose secrets while collecting environment provenance."
+      ],
+      "evidence": [
+        "2026-09-13: transport debugging was delayed by source/runtime identity drift and virtual-environment symlink confusion; explicit interpreter and module identity checks isolated the code actually being executed."
+      ]
+    },
+    {
+      "id": "incident-remains-an-orchestration-obligation",
+      "status": "validated",
+      "title": "Keep unresolved defects active until validation and learning disposition are complete",
+      "triggers": [
+        "active incident",
+        "unresolved incident",
+        "defect detected",
+        "incident lifecycle",
+        "learning pending",
+        "knowledge dissemination",
+        "consistency check"
+      ],
+      "guidance": [
+        "Create a persistent incident when a real defect or protocol/runtime anomaly is detected and keep it in orchestration state across sessions.",
+        "Preserve evidence, rejected hypotheses, attempts and decisions as historical incident memory; do not promote them directly as validated knowledge.",
+        "Use severity, blocking impact, recurrence, age and uncertainty to raise resolution pressure and schedule bounded diagnosis/research work.",
+        "After a validated fix, explicitly classify learning scope, disseminate only to relevant knowledge/skill consumers, run a consistency check, and only then close the incident."
+      ],
+      "safety": [
+        "Do not let an LLM worker own incident closure or permanent knowledge promotion.",
+        "Keep proactive diagnosis/research within cost, attempt, authority and side-effect policies."
+      ],
+      "evidence": [
+        "2026-09-14: the Adaptive Incident, Proactive Resolution & Learning v1 design connected persistent incident state, pressure-based replanning, governed learning promotion and dissemination obligations."
       ]
     }
   ]
