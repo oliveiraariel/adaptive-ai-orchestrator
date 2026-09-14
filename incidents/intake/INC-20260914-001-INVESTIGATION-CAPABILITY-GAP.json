@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "declaration_id": "INC-20260914-001-INVESTIGATION-CAPABILITY-GAP",
+  "enabled": true,
+  "category": "capability-gap",
+  "component": "incident-proactive-resolution",
+  "symptom": "Adaptive does not yet have a finalized governed investigation capability for incident and improvement resolution, including ownership, search liveness and exhaustion criteria.",
+  "severity": "MEDIUM",
+  "project_id": "adaptive-ai-orchestrator",
+  "blocking": false,
+  "topics": [
+    "investigation",
+    "proactive-resolution",
+    "learning",
+    "skills",
+    "orchestration"
+  ],
+  "evidence_ref": "incidents/intake/INC-20260914-001-INVESTIGATION-CAPABILITY-GAP.md"
+}
