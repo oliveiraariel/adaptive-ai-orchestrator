@@ -153,7 +153,7 @@ class FileIncidentRegistry:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def list_active(self) -> tuple[Incident, ...]:
+    def list_all(self) -> tuple[Incident, ...]:
         incidents: list[Incident] = []
         if not self.root.is_dir():
             return ()
@@ -161,8 +161,13 @@ class FileIncidentRegistry:
             if not item.is_dir():
                 continue
             incident = self.get(item.name)
-            if incident is not None and incident.is_active:
+            if incident is not None:
                 incidents.append(incident)
+        incidents.sort(key=lambda item: (item.detected_at, item.id))
+        return tuple(incidents)
+
+    def list_active(self) -> tuple[Incident, ...]:
+        incidents = [incident for incident in self.list_all() if incident.is_active]
         incidents.sort(key=lambda item: (-self._severity_rank(item.severity), item.detected_at, item.id))
         return tuple(incidents)
 
