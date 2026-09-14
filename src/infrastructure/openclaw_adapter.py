@@ -191,7 +191,7 @@ class OpenClawAdapter(AgentRuntime):
             raise RuntimeError("Runtime recovery unsupported.")
         run = recover(external_id)
         execution = ExecutionReference(
-            id=run.result_target.execution_id if run.result_target else run.run_id,
+            id=f"openclaw:{external_id}",
             runtime=self.RUNTIME_NAME,
             external_id=external_id,
             status=AgentRuntimeStatus.SUBMITTED,
