@@ -281,3 +281,37 @@ def test_cli_report_intervention_creates_persistent_learning_gap_incident(
     assert len(active) == 1
     assert "strategy-correction" in active[0].symptom
     assert "learning-gap" in active[0].topics
+
+
+def test_cli_incident_watch_runs_persistent_bounded_supervision_cycles(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    registry = FileIncidentRegistry()
+    IncidentSentinel(registry).observe_runtime_failure(
+        "persistent result transport defect",
+        orchestration_id="orch-watch",
+        work_unit_id="wu-watch",
+        runtime="runtime-x",
+        blocking=True,
+    )
+
+    exit_code = cli.main(
+        [
+            "incidents",
+            "--watch",
+            "--max-cycles",
+            "2",
+            "--interval-seconds",
+            "0.01",
+        ]
+    )
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert exit_code == 0
+    assert len(lines) == 2
+    assert lines[0]["cycle"] == 1
+    assert lines[1]["cycle"] == 2
+    assert all(item["watch"] is True for item in lines)
+    assert all(item["active_incident_count"] == 1 for item in lines)
