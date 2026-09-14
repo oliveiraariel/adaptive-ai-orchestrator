@@ -200,6 +200,17 @@ trackers and upstream source repositories. Search results are evidence, not
 validated knowledge. Research execution remains subject to tools, cost policy,
 network authority and the normal Work Unit contract.
 
+When auto-research is explicitly enabled, the supervisor executes research
+through the normal governed Work Unit path with technical-research and debugging
+capabilities. The research Work Unit requests no side effects and returns only
+execution/evidence/result references into incident memory; its conversational
+payload is not promoted as knowledge.
+
+Research is bounded per incident. Failed or successful research attempts consume
+the configured attempt budget. When that budget is exhausted without a confirmed
+root cause, the directive becomes research-budget-exhausted instead of creating
+an unbounded retry/search loop.
+
 ## 13. Learning extraction
 
 A validated incident may become a LearningCandidate only after root cause, fix
