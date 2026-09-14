@@ -264,6 +264,38 @@ class IncidentLifecycleManager:
         })
         return updated
 
+    def record_research_evidence(
+        self,
+        incident_id: str,
+        *,
+        evidence_refs: Iterable[str],
+    ) -> Incident:
+        incident = self._require(incident_id)
+        refs = tuple(str(item).strip()[:300] for item in evidence_refs if str(item).strip())
+        if not refs:
+            raise ValueError("research evidence references are required")
+        updated = replace(
+            incident,
+            evidence_refs=tuple(dict.fromkeys((*incident.evidence_refs, *refs))),
+            research_attempt_count=incident.research_attempt_count + 1,
+            last_research_at=utc_now(),
+            status=(
+                IncidentStatus.INVESTIGATING
+                if incident.status in {IncidentStatus.DETECTED, IncidentStatus.TRIAGED}
+                else incident.status
+            ),
+        ).touch()
+        self.registry.save(updated)
+        self.registry.append_event(
+            incident_id,
+            "external_research_completed",
+            {
+                "attempt": updated.research_attempt_count,
+                "evidence_count": len(refs),
+            },
+        )
+        return updated
+
     def confirm_root_cause(self, incident_id: str, *, root_cause: str, confidence: float) -> Incident:
         incident = self._require(incident_id)
         if not root_cause.strip():
