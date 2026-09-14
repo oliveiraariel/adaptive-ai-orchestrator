@@ -9,6 +9,7 @@ from domain.resource_configuration import ResourceConfiguration
 from domain.task_package import TaskPackage
 from infrastructure.openclaw_adapter import OpenClawAdapter
 from infrastructure.openclaw_gateway_client import GatewayConfig, OpenClawGatewayClient
+from infrastructure.result_store import FileResultStore
 
 
 def start_gateway() -> tuple[str, object, threading.Thread]:
@@ -95,19 +96,32 @@ def make_task() -> TaskPackage:
     )
 
 
-def test_openclaw_gateway_vertical_slice() -> None:
+def test_openclaw_gateway_vertical_slice(tmp_path) -> None:
     url, server, thread = start_gateway()
     try:
-        client = OpenClawGatewayClient(GatewayConfig(url=url))
+        client = OpenClawGatewayClient(
+            GatewayConfig(
+                url=url,
+                archive_completed_sessions=False,
+                archive_cancelled_sessions=False,
+            ),
+            result_store=FileResultStore(tmp_path),
+        )
         runtime = OpenClawAdapter(client)
 
         execution = runtime.submit(make_task())
         assert execution.external_id == "gateway:run-vertical-001"
         assert runtime.get_status(execution) is AgentRuntimeStatus.COMPLETED
 
+        target = client._runs[execution.external_id].result_target
+        assert target is not None
+        target.result_path.write_text("integration-ok", encoding="utf-8")
+
         result = runtime.retrieve_result(execution)
         assert result.execution.status is AgentRuntimeStatus.COMPLETED
         assert result.raw_result["summary"] == "integration-ok"
+        assert result.raw_result["worker_protocol"]["completion_state"] == "RESULT_VERIFIED"
+        assert result.raw_result["result_transport"]["authoritative"] is True
 
         cancelled = runtime.cancel(execution)
         assert cancelled.status is AgentRuntimeStatus.CANCELLED
