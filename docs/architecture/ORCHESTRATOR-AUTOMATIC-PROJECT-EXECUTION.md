@@ -358,3 +358,42 @@ Adaptive v0.4 does not claim:
 - that more workers always improve quality or cost.
 
 The implemented guarantee is a bounded, policy-governed, dependency-aware, continuously replenished scalable orchestration loop over independent runtime worker sessions.
+
+
+---
+
+## Incident pressure and proactive replanning
+
+Automatic project execution consumes persistent active incidents as orchestration
+state, not as optional historical notes.
+
+RuntimeProjectPlanner receives bounded active-incident obligations together with
+validated problem-solving knowledge. A blocking or sufficiently high-pressure
+defect discovered by a worker may request governed replanning even when that
+worker did not separately emit ADAPTIVE_REPLAN_REQUIRED.
+
+The responsibility split remains:
+
+~~~text
+worker/runtime/sentinel
+  -> reports bounded defect evidence
+
+Adaptive
+  -> creates/deduplicates persistent incident
+  -> computes resolution pressure
+  -> decides whether the Work Graph must replan
+  -> schedules allowed diagnosis/research work
+  -> preserves normal max_replans, concurrency, side-effect and circuit-breaker policy
+~~~
+
+Resolution pressure changes priority, never authority. A severe incident cannot
+authorize a filesystem mutation, merge, deployment, credential change or
+external communication that normal execution policy would deny.
+
+Between project executions, the same persistent incident state can be supervised
+through the incidents watch entry point. This keeps unresolved obligations
+visible across session/process boundaries rather than requiring the initiating
+worker or chat to remain alive.
+
+The normative lifecycle and closure gates are defined in
+INCIDENT-PROACTIVE-LEARNING-PROTOCOL-V1.md.
