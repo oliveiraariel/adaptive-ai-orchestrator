@@ -13,6 +13,8 @@ from typing import Sequence
 from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
+from application.incident_ports import JsonlNotificationOutbox
+from application.incident_supervisor import IncidentSupervisor
 from application.execution_liveness import (
     ExecutionLiveness,
     ExecutionLivenessMonitor,
@@ -41,6 +43,7 @@ from infrastructure.execution_liveness_store import (
     ExecutionLivenessStoreError,
     FileExecutionLivenessStore,
 )
+from infrastructure.incident_registry import FileIncidentRegistry
 from infrastructure.openclaw_adapter import OpenClawAdapter
 from infrastructure.openclaw_gateway_client import (
     GatewayConfig,
@@ -102,6 +105,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_project_arguments(orchestrate)
+
+    incidents = commands.add_parser(
+        "incidents",
+        help="Show persistent active incidents and their proactive resolution directives.",
+    )
+    incidents.add_argument("--limit", type=int, default=10)
+    incidents.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Run one bounded supervision cycle and publish actionable notifications.",
+    )
 
     doctor = commands.add_parser(
         "doctor",
@@ -191,6 +205,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _doctor(args.gateway_url)
+    if args.command == "incidents":
+        return _incidents(args)
     if args.command == "run":
         return _run(args)
     if args.command == "dispatch":
@@ -202,6 +218,55 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+
+def _incidents(args: argparse.Namespace) -> int:
+    if args.limit < 1 or args.limit > 100:
+        return _print_error(ValueError("--limit must be between 1 and 100"))
+    registry = FileIncidentRegistry()
+    supervisor = IncidentSupervisor(
+        registry,
+        notification_port=JsonlNotificationOutbox(),
+    )
+    directives = (
+        supervisor.supervise(limit=args.limit)
+        if args.supervise
+        else supervisor.directives(limit=args.limit)
+    )
+    incidents = {item.id: item for item in registry.list_active()}
+    research_by_id = {
+        item.incident_id: item
+        for item in supervisor.external_research_requests(limit=args.limit)
+    }
+    payload = {
+        "ok": True,
+        "active_incident_count": len(incidents),
+        "supervision_cycle": bool(args.supervise),
+        "incidents": [
+            {
+                "incident_id": directive.incident_id,
+                "severity": incidents[directive.incident_id].severity.value,
+                "status": incidents[directive.incident_id].status.value,
+                "category": incidents[directive.incident_id].category,
+                "component": incidents[directive.incident_id].component,
+                "blocking": incidents[directive.incident_id].blocking,
+                "recurrence_count": incidents[directive.incident_id].recurrence_count,
+                "pressure": directive.pressure,
+                "action": directive.action,
+                "reason": directive.reason,
+                "external_research_allowed": directive.external_research_allowed,
+                "research_query": (
+                    research_by_id[directive.incident_id].query
+                    if directive.incident_id in research_by_id
+                    else None
+                ),
+            }
+            for directive in directives
+            if directive.incident_id in incidents
+        ],
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def _doctor(gateway_url: str) -> int:
