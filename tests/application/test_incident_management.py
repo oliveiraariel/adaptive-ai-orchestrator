@@ -94,3 +94,55 @@ def test_generalizable_incident_gets_dissemination_targets(tmp_path):
     assert "adaptive:problem-solving" in targets
     assert "skills:debugging" in targets
     assert "skills:testing" in targets
+
+
+def test_validated_generalizable_incident_closes_only_after_dissemination_and_consistency(tmp_path):
+    registry = FileIncidentRegistry(tmp_path / "incidents")
+    sentinel = IncidentSentinel(registry)
+    incident = sentinel.observe_runtime_failure(
+        "authoritative result missing",
+        orchestration_id="orch",
+        work_unit_id="wu",
+        runtime="runtime-x",
+        blocking=True,
+    )
+    assert incident is not None
+    lifecycle = IncidentLifecycleManager(registry)
+    lifecycle.confirm_root_cause(
+        incident.id,
+        root_cause="presentation channel was treated as authoritative transport",
+        confidence=0.95,
+    )
+    lifecycle.record_fix(
+        incident.id,
+        fix_summary="separate control plane from verified result-store transport",
+    )
+    lifecycle.validate_fix(
+        incident.id,
+        validation_refs=("test:transport-e2e",),
+    )
+    promoted = lifecycle.set_learning_scope(
+        incident.id,
+        scope=LearningScope.GENERALIZABLE,
+        dissemination_targets=("adaptive:problem-solving", "skills:debugging"),
+    )
+    assert promoted.status is IncidentStatus.KNOWLEDGE_PROMOTED
+
+    lifecycle.mark_disseminated(incident.id, "adaptive:problem-solving")
+    lifecycle.mark_disseminated(incident.id, "skills:debugging")
+
+    try:
+        lifecycle.mark_consistency(incident.id, passed=True)
+    except ValueError as exc:
+        assert "evidence references" in str(exc)
+    else:
+        raise AssertionError("passing consistency without evidence must fail")
+
+    lifecycle.mark_consistency(
+        incident.id,
+        passed=True,
+        evidence_refs=("consistency:worker-protocol-docs",),
+    )
+    closed = lifecycle.close(incident.id)
+    assert closed.status is IncidentStatus.CLOSED
+    assert registry.list_active() == ()
