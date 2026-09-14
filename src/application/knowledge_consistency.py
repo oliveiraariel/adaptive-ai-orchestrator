@@ -99,7 +99,8 @@ def worker_protocol_consistency_rules() -> tuple[ConsistencyRule, ...]:
             required_fragments=(
                 "The worker **must not create or edit**",
                 "Adaptive\n  -> reads final result.txt",
-                "Runtime `COMPLETED` alone does not satisfy the authoritative completion contract.",
+                "Runtime `COMPLETED` alone does",
+                "not satisfy the authoritative completion contract.",
             ),
             forbidden_fragments=(
                 "write `manifest.json.tmp`",
