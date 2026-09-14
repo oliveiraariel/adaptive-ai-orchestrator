@@ -13,6 +13,7 @@ from typing import Sequence
 from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
+from application.incident_management import IncidentSentinel
 from application.incident_ports import JsonlNotificationOutbox
 from application.incident_supervisor import IncidentSupervisor
 from application.execution_liveness import (
@@ -105,6 +106,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_project_arguments(orchestrate)
+
+    intervention = commands.add_parser(
+        "report-intervention",
+        help="Record a human correction that reveals a diagnostic or strategy gap.",
+    )
+    intervention.add_argument("--component", required=True)
+    intervention.add_argument("--symptom", required=True)
+    intervention.add_argument("--correction-type", default="strategy-correction")
+    intervention.add_argument("--orchestration-id", default="")
+    intervention.add_argument("--work-unit-id", default="")
+    intervention.add_argument("--execution-id", default="")
+    intervention.add_argument("--runtime", default="")
+    intervention.add_argument("--project-id", default="")
+    intervention.add_argument("--blocking", action="store_true")
 
     incidents = commands.add_parser(
         "incidents",
@@ -207,6 +222,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _doctor(args.gateway_url)
     if args.command == "incidents":
         return _incidents(args)
+    if args.command == "report-intervention":
+        return _report_intervention(args)
     if args.command == "run":
         return _run(args)
     if args.command == "dispatch":
@@ -218,6 +235,37 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+
+def _report_intervention(args: argparse.Namespace) -> int:
+    incident = IncidentSentinel().observe_human_intervention(
+        component=args.component,
+        symptom=args.symptom,
+        correction_type=args.correction_type,
+        orchestration_id=args.orchestration_id,
+        work_unit_id=args.work_unit_id,
+        execution_id=args.execution_id,
+        runtime=args.runtime,
+        project_id=args.project_id,
+        blocking=args.blocking,
+    )
+    if incident is None:
+        return _print_error(ValueError("intervention did not contain a safe incident signal"))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "incident_id": incident.id,
+                "status": incident.status.value,
+                "severity": incident.severity.value,
+                "category": incident.category,
+                "recurrence_count": incident.recurrence_count,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def _incidents(args: argparse.Namespace) -> int:
