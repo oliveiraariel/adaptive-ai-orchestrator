@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from uuid import uuid4
 from application.observability import JsonlObservabilitySink, canonical_observability_path
 from pathlib import Path
@@ -11,6 +12,12 @@ from typing import Sequence
 
 from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
+)
+from application.execution_liveness import (
+    ExecutionLiveness,
+    ExecutionLivenessMonitor,
+    ExecutionLivenessState,
+    ExecutionLivenessTimeout,
 )
 from application.run_orchestration import (
     RunOrchestration,
@@ -30,6 +37,10 @@ from application.skill_resolution import SkillResolutionError
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from infrastructure.claim_registry import InMemoryClaimRegistry
+from infrastructure.execution_liveness_store import (
+    ExecutionLivenessStoreError,
+    FileExecutionLivenessStore,
+)
 from infrastructure.openclaw_adapter import OpenClawAdapter
 from infrastructure.openclaw_gateway_client import (
     GatewayConfig,
@@ -63,6 +74,24 @@ def build_parser() -> argparse.ArgumentParser:
     _add_single_work_unit_arguments(dispatch)
     wait = commands.add_parser("wait", help="Recover and observe a previously dispatched execution.")
     wait.add_argument("--external-id", required=True)
+    wait.add_argument(
+        "--heartbeat-interval-seconds",
+        type=float,
+        default=float(os.environ.get("ADAPTIVE_HEARTBEAT_INTERVAL_SECONDS", "30")),
+        help="Seconds between runtime-confirmed liveness observations.",
+    )
+    wait.add_argument(
+        "--liveness-timeout-seconds",
+        type=float,
+        default=float(os.environ.get("ADAPTIVE_LIVENESS_TIMEOUT_SECONDS", "90")),
+        help="Silence window before an execution is marked SUSPECT; it is not cancelled.",
+    )
+    wait.add_argument(
+        "--hard-deadline-seconds",
+        type=float,
+        default=float(os.environ.get("ADAPTIVE_EXECUTION_HARD_DEADLINE_SECONDS", "600")),
+        help="Maximum observer lifetime. Reaching it never redispatches or cancels the run.",
+    )
     _add_gateway_arguments(wait)
 
     orchestrate = commands.add_parser(
@@ -274,21 +303,159 @@ def _request_from_args(args: argparse.Namespace) -> RunOrchestrationRequest:
 
 def _dispatch(args: argparse.Namespace) -> int:
     try:
-        result = RunOrchestration(runtime=_runtime(args), claim_registry=InMemoryClaimRegistry()).dispatch(_request_from_args(args))
+        result = RunOrchestration(
+            runtime=_runtime(args),
+            claim_registry=InMemoryClaimRegistry(),
+        ).dispatch(_request_from_args(args))
         execution = result.execution
-        print(json.dumps({"ok": True, "task_id": result.task_id, "work_unit_id": result.work_unit_id, "execution_id": execution.id, "external_id": execution.external_id, "runtime": execution.runtime, "runtime_status": execution.status.value}, sort_keys=True))
-        return 0
-    except (RunOrchestrationError, OpenClawGatewayError, ValueError, ResultStoreError) as exc:
+    except (
+        RunOrchestrationError,
+        OpenClawGatewayError,
+        ValueError,
+        ResultStoreError,
+    ) as exc:
         return _print_error(exc)
+
+    # Liveness persistence happens after the runtime has already accepted the
+    # work. Never turn a liveness-file failure into an apparent dispatch
+    # failure, because a caller could otherwise redispatch the same task.
+    liveness_persisted = True
+    liveness_warning = None
+    now = time.time()
+    try:
+        FileExecutionLivenessStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        ).write(
+            ExecutionLiveness(
+                external_id=execution.external_id,
+                execution_id=execution.id,
+                runtime=execution.runtime,
+                state=ExecutionLivenessState.SUBMITTED,
+                heartbeat_sequence=0,
+                started_at=now,
+                last_heartbeat_at=now,
+                last_progress_at=now,
+                source="dispatch",
+            )
+        )
+    except (ExecutionLivenessStoreError, OSError, ValueError) as exc:
+        liveness_persisted = False
+        liveness_warning = type(exc).__name__
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "task_id": result.task_id,
+                "work_unit_id": result.work_unit_id,
+                "execution_id": execution.id,
+                "external_id": execution.external_id,
+                "runtime": execution.runtime,
+                "runtime_status": execution.status.value,
+                "liveness_persisted": liveness_persisted,
+                "liveness_warning": liveness_warning,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
 
 def _wait(args: argparse.Namespace) -> int:
     try:
         runtime = _runtime(args)
         execution = runtime.recover_execution(args.external_id)
-        result = runtime.retrieve_result(execution)
-        print(json.dumps({"ok": True, "external_id": execution.external_id, "execution_id": execution.id, "runtime": execution.runtime, "runtime_status": result.execution.status.value, "result": result.raw_result}, ensure_ascii=False, sort_keys=True))
+        liveness_store = FileExecutionLivenessStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        monitor = ExecutionLivenessMonitor(
+            runtime=runtime,
+            store=liveness_store,
+            heartbeat_interval_seconds=args.heartbeat_interval_seconds,
+            liveness_timeout_seconds=args.liveness_timeout_seconds,
+            hard_deadline_seconds=args.hard_deadline_seconds,
+        )
+
+        def emit_heartbeat(snapshot: ExecutionLiveness) -> None:
+            print(
+                json.dumps(
+                    {
+                        "event": "execution-heartbeat",
+                        "external_id": snapshot.external_id,
+                        "execution_id": snapshot.execution_id,
+                        "state": snapshot.state.value,
+                        "sequence": snapshot.heartbeat_sequence,
+                        "last_heartbeat_at": snapshot.last_heartbeat_at,
+                        "last_progress_at": snapshot.last_progress_at,
+                        "source": snapshot.source,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
+        def emit_observer_pulse(
+            observed_execution,
+            silence_seconds: float,
+        ) -> None:
+            print(
+                json.dumps(
+                    {
+                        "event": "execution-observer-pulse",
+                        "external_id": observed_execution.external_id,
+                        "execution_id": observed_execution.id,
+                        "state": "OBSERVATION_UNAVAILABLE",
+                        "silence_seconds": round(max(0.0, silence_seconds), 3),
+                        "action": "CONTINUE_SAME_RUN",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = monitor.wait(
+            execution,
+            on_heartbeat=emit_heartbeat,
+            on_observer_pulse=emit_observer_pulse,
+        )
+        final_liveness = liveness_store.read(execution.external_id)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "external_id": execution.external_id,
+                    "execution_id": execution.id,
+                    "runtime": execution.runtime,
+                    "runtime_status": result.execution.status.value,
+                    "liveness": (
+                        {
+                            "state": final_liveness.state.value,
+                            "sequence": final_liveness.heartbeat_sequence,
+                            "last_heartbeat_at": final_liveness.last_heartbeat_at,
+                            "last_progress_at": final_liveness.last_progress_at,
+                            "source": final_liveness.source,
+                        }
+                        if final_liveness is not None
+                        else None
+                    ),
+                    "result": result.raw_result,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         return 0
-    except (OpenClawGatewayError, ValueError, ResultStoreError) as exc:
+    except (
+        ExecutionLivenessStoreError,
+        ExecutionLivenessTimeout,
+        OpenClawGatewayError,
+        ValueError,
+        ResultStoreError,
+    ) as exc:
         return _print_error(exc)
 
 
