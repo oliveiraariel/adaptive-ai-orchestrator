@@ -3,6 +3,7 @@ from pathlib import Path
 from application.knowledge_consistency import (
     ConsistencyRule,
     KnowledgeConsistencySentinel,
+    worker_protocol_consistency_rules,
 )
 
 
@@ -41,3 +42,12 @@ def test_consistency_sentinel_fails_on_stale_statement(tmp_path: Path):
     report = KnowledgeConsistencySentinel(tmp_path).check((rule,))
     assert report.passed is False
     assert len(report.findings) == 2
+
+
+def test_current_worker_protocol_documents_are_consistent() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    report = KnowledgeConsistencySentinel(repository_root).check(
+        worker_protocol_consistency_rules()
+    )
+    assert report.passed is True, report.findings
+    assert report.evidence_refs
