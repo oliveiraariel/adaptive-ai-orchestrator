@@ -296,6 +296,29 @@ class IncidentLifecycleManager:
         )
         return updated
 
+    def record_research_failure(
+        self,
+        incident_id: str,
+        *,
+        error_type: str,
+    ) -> Incident:
+        incident = self._require(incident_id)
+        updated = replace(
+            incident,
+            research_attempt_count=incident.research_attempt_count + 1,
+            last_research_at=utc_now(),
+        ).touch()
+        self.registry.save(updated)
+        self.registry.append_event(
+            incident_id,
+            "external_research_failed",
+            {
+                "attempt": updated.research_attempt_count,
+                "error_type": error_type,
+            },
+        )
+        return updated
+
     def confirm_root_cause(self, incident_id: str, *, root_cause: str, confidence: float) -> Incident:
         incident = self._require(incident_id)
         if not root_cause.strip():
