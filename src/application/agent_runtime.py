@@ -42,6 +42,10 @@ class AgentRuntime(Protocol):
         """Submit a task package for execution."""
         ...
 
+    def recover_execution(self, external_id: str) -> ExecutionReference:
+        """Recover an existing execution without dispatching new work."""
+        ...
+
     def get_status(self, execution: ExecutionReference) -> AgentRuntimeStatus:
         """Return the current normalized execution status."""
         ...

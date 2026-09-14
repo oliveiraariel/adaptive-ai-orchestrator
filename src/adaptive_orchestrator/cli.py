@@ -59,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Execute one governed Work Unit through the Adaptive core.",
     )
     _add_single_work_unit_arguments(run)
+    dispatch = commands.add_parser("dispatch", help="Dispatch one Work Unit without waiting for its result.")
+    _add_single_work_unit_arguments(dispatch)
+    wait = commands.add_parser("wait", help="Recover and observe a previously dispatched execution.")
+    wait.add_argument("--external-id", required=True)
+    _add_gateway_arguments(wait)
 
     orchestrate = commands.add_parser(
         "orchestrate",
@@ -159,6 +164,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _doctor(args.gateway_url)
     if args.command == "run":
         return _run(args)
+    if args.command == "dispatch":
+        return _dispatch(args)
+    if args.command == "wait":
+        return _wait(args)
     if args.command == "orchestrate":
         return _orchestrate(args)
 
@@ -259,6 +268,28 @@ def _run(args: argparse.Namespace) -> int:
         )
     )
     return 0 if accepted else 3
+
+def _request_from_args(args: argparse.Namespace) -> RunOrchestrationRequest:
+    return RunOrchestrationRequest(objective=args.objective, agent=args.agent, skills=tuple(args.skill), model=args.model, provider=args.provider, tools=tuple(args.tool), scope=args.scope, context=tuple(args.context), inputs=tuple(args.input), constraints=tuple(args.constraint), expected_output=tuple(args.expected_output) or ("agent response",), acceptance_criteria=tuple(args.accept) or ("runtime-completed",), execution_policy=_execution_policy(args), requested_side_effects=tuple(args.side_effect), human_approved=args.human_approved)
+
+def _dispatch(args: argparse.Namespace) -> int:
+    try:
+        result = RunOrchestration(runtime=_runtime(args), claim_registry=InMemoryClaimRegistry()).dispatch(_request_from_args(args))
+        execution = result.execution
+        print(json.dumps({"ok": True, "task_id": result.task_id, "work_unit_id": result.work_unit_id, "execution_id": execution.id, "external_id": execution.external_id, "runtime": execution.runtime, "runtime_status": execution.status.value}, sort_keys=True))
+        return 0
+    except (RunOrchestrationError, OpenClawGatewayError, ValueError, ResultStoreError) as exc:
+        return _print_error(exc)
+
+def _wait(args: argparse.Namespace) -> int:
+    try:
+        runtime = _runtime(args)
+        execution = runtime.recover_execution(args.external_id)
+        result = runtime.retrieve_result(execution)
+        print(json.dumps({"ok": True, "external_id": execution.external_id, "execution_id": execution.id, "runtime": execution.runtime, "runtime_status": result.execution.status.value, "result": result.raw_result}, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OpenClawGatewayError, ValueError, ResultStoreError) as exc:
+        return _print_error(exc)
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
