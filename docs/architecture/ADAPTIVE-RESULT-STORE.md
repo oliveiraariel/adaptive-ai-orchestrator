@@ -80,19 +80,38 @@ composition passes a project root and therefore uses project-local storage.
 
 ## Worker contract
 
-A dispatched worker receives an absolute result-store target in its task payload.
-It must:
+A dispatched worker receives the mandatory Adaptive Worker Protocol and an
+absolute result-store target in its task payload. The ownership boundary is:
 
-1. write the complete authoritative payload to `result.txt.tmp`;
-2. atomically rename it to `result.txt`;
-3. optionally publish `summary.md` the same way;
-4. write `manifest.json.tmp`;
-5. atomically rename the manifest to `manifest.json` **last**;
-6. keep its conversational reply short.
+```text
+worker
+  -> writes semantic result content
+  -> result.txt.tmp
+  -> atomic rename to result.txt
+  -> may publish summary.md the same way
+
+Adaptive
+  -> reads final result.txt
+  -> computes exact UTF-8 result_bytes
+  -> computes result_sha256
+  -> binds orchestration / Work Unit / execution identity
+  -> binds Worker Protocol identity and contract hash
+  -> writes manifest.json LAST
+  -> rereads and verifies the published result
+  -> emits RESULT_VERIFIED
+```
+
+The worker **must not create or edit** `manifest.json` or
+`manifest.json.tmp`. Machine integrity metadata belongs to deterministic
+Adaptive infrastructure, not to the LLM worker. Runtime `COMPLETED` alone does
+not satisfy the authoritative completion contract.
 
 The result tree is organized by **orchestration -> Work Unit -> execution**, not
 by agent name. A retry therefore receives another execution directory while the
 previous attempt remains available for audit/recovery.
+
+The normative cross-cutting contract is documented in
+[`WORKER-PROTOCOL-V1-RESULT-TRANSPORT.md`](WORKER-PROTOCOL-V1-RESULT-TRANSPORT.md).
 
 ## Dependency fan-in by reference
 
@@ -135,8 +154,14 @@ after verifying:
 - execution identity;
 - `complete=true`;
 - result file presence;
-- byte length when supplied;
-- SHA-256 when supplied.
+- integer UTF-8 byte length (`result_bytes`);
+- 64-character hexadecimal SHA-256 (`result_sha256`);
+- Adaptive publisher identity;
+- Worker Protocol identity and contract hash.
+
+These fields are mandatory for the authoritative contract. Missing, malformed,
+wrongly typed, or mismatched integrity metadata fails closed; Adaptive does not
+silently coerce invalid machine-contract values.
 
 When a verified Result Store payload exists it is authoritative.
 `chat.history` is only a backwards-compatible presentation fallback for workers
@@ -209,7 +234,9 @@ merely because result observation was delayed.
 - One project's result tree must not contain another project's execution data.
 - Progress truncation must not truncate the authoritative machine result.
 - Terminal summaries are not machine results.
+- The worker never owns the integrity manifest; Adaptive writes it last.
 - A manifest is accepted only after the complete result exists.
+- Runtime `COMPLETED` is not the same state as `RESULT_VERIFIED`.
 - Result identity is scoped to orchestration, Work Unit and execution.
 - Result integrity is verified before evaluation.
 - Runtime result files are state, not source code, and are never committed.

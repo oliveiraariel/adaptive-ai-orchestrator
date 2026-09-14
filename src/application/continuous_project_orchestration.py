@@ -260,6 +260,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 continue
                             self._record_dispatch_failure(
                                 outcome=outcome,
+                                orchestration_id=orchestration_id,
                                 wave=generation,
                                 specs=specs,
                                 work_units=work_units,
@@ -289,6 +290,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             self._handle_runtime_result_error(
                                 outcome=outcome,
                                 error=exc,
+                                orchestration_id=orchestration_id,
                                 generation=generation,
                                 specs=specs,
                                 work_units=work_units,
@@ -462,6 +464,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         *,
         outcome: DispatchOutcome,
         error: Exception,
+        orchestration_id: str,
         generation: int,
         specs: dict[str, PlannedWorkUnit],
         work_units: dict[str, WorkUnit],
@@ -478,6 +481,14 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             work_unit.start_evaluation()
             work_unit.require_revision()
         reason = f"runtime-result-error:{error}"
+        self._incident_sentinel.observe_runtime_failure(
+            error,
+            orchestration_id=orchestration_id,
+            work_unit_id=outcome.work_unit_id,
+            execution_id=(outcome.execution.id if outcome.execution else ""),
+            runtime=(outcome.execution.runtime if outcome.execution else self.RUNTIME_NAME),
+            blocking=attempts[outcome.work_unit_id] >= max_attempts,
+        )
         revision_feedback[outcome.work_unit_id] = reason
         if attempts[outcome.work_unit_id] >= max_attempts:
             work_unit.mark_blocked()

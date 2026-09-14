@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from application.incident_management import (
+    IncidentLifecycleManager,
+    ResolutionDirective,
+    ResolutionPressureEngine,
+)
+from application.incident_ports import (
+    ExternalResearchPort,
+    ExternalResearchRequest,
+    IncidentNotification,
+    NotificationPort,
+    NullNotificationPort,
+)
+from domain.incident import IncidentStatus, LearningScope
+from infrastructure.incident_registry import FileIncidentRegistry
+
+
+class IncidentSupervisor:
+    """Turn persistent open incidents into bounded orchestration obligations."""
+
+    def __init__(
+        self,
+        registry: FileIncidentRegistry | None = None,
+        pressure: ResolutionPressureEngine | None = None,
+        notification_port: NotificationPort | None = None,
+        max_research_attempts: int = 3,
+    ) -> None:
+        if max_research_attempts < 1:
+            raise ValueError("max_research_attempts must be at least 1")
+        self.registry = registry or FileIncidentRegistry()
+        self.pressure = pressure or ResolutionPressureEngine()
+        self.notification_port = notification_port or NullNotificationPort()
+        self.max_research_attempts = max_research_attempts
+
+    def directives(self, *, limit: int = 5) -> tuple[ResolutionDirective, ...]:
+        directives: list[ResolutionDirective] = []
+        for incident in self.registry.list_active():
+            score = self.pressure.score(incident)
+            if incident.status in {
+                IncidentStatus.LEARNING_PENDING,
+                IncidentStatus.KNOWLEDGE_PROMOTED,
+                IncidentStatus.DISSEMINATING,
+                IncidentStatus.CONSISTENCY_CHECK,
+            }:
+                action = "complete-learning-dissemination-consistency"
+                reason = "Validated incident still carries an unresolved learning obligation."
+                research = False
+            elif incident.root_cause:
+                action = "validate-or-remediate-known-root-cause"
+                reason = "Root cause exists but the incident has not completed validation."
+                research = False
+            elif (
+                incident.research_attempt_count >= self.max_research_attempts
+                and not incident.root_cause
+            ):
+                action = "research-budget-exhausted"
+                reason = "Bounded proactive research attempts are exhausted; human or new local evidence is required."
+                research = False
+            elif incident.local_evidence_exhausted and incident.external_research_allowed:
+                action = "external-research"
+                reason = "Local evidence is exhausted while root cause remains unknown."
+                research = True
+            elif score >= 70:
+                action = "diagnose-now"
+                reason = "Resolution pressure is high."
+                research = incident.external_research_allowed
+            elif score >= 40:
+                action = "diagnose-next-safe-slot"
+                reason = "Resolution pressure is material and should compete with ordinary work."
+                research = False
+            else:
+                action = "monitor-and-reconcile"
+                reason = "Incident remains an active obligation but does not justify aggressive scheduling yet."
+                research = False
+            directives.append(
+                ResolutionDirective(
+                    incident_id=incident.id,
+                    pressure=score,
+                    action=action,
+                    reason=reason,
+                    external_research_allowed=research,
+                )
+            )
+        directives.sort(key=lambda item: (-item.pressure, item.incident_id))
+        return tuple(directives[:limit])
+
+    def supervise(self, *, limit: int = 5) -> tuple[ResolutionDirective, ...]:
+        """Run one bounded supervision cycle and publish actionable notifications."""
+        directives = self.directives(limit=limit)
+        incidents = {item.id: item for item in self.registry.list_active()}
+        for directive in directives:
+            if directive.pressure < 40 and directive.action == "monitor-and-reconcile":
+                continue
+            incident = incidents.get(directive.incident_id)
+            if incident is None:
+                continue
+            self.notification_port.publish(
+                IncidentNotification(
+                    key=f"{incident.id}:{incident.status.value}:{directive.action}",
+                    incident_id=incident.id,
+                    severity=incident.severity.value,
+                    status=incident.status.value,
+                    action=directive.action,
+                    message=(
+                        f"{incident.title}. {directive.reason} "
+                        f"Next governed action: {directive.action}."
+                    ),
+                )
+            )
+        return directives
+
+    def external_research_requests(
+        self,
+        *,
+        limit: int = 5,
+    ) -> tuple[ExternalResearchRequest, ...]:
+        """Build bounded research requests; execution belongs to an authorized adapter."""
+        incidents = {item.id: item for item in self.registry.list_active()}
+        requests: list[ExternalResearchRequest] = []
+        for directive in self.directives(limit=limit):
+            if not directive.external_research_allowed:
+                continue
+            incident = incidents.get(directive.incident_id)
+            if incident is None:
+                continue
+            if incident.research_attempt_count >= self.max_research_attempts:
+                continue
+            requests.append(
+                ExternalResearchRequest(
+                    incident_id=incident.id,
+                    query=(
+                        f"Find authoritative technical evidence for incident category "
+                        f"{incident.category!r} in component {incident.component!r}: "
+                        f"{incident.symptom}. Prefer primary vendor/runtime documentation "
+                        f"and upstream issue/source evidence."
+                    )[:900],
+                )
+            )
+        return tuple(requests)
+
+    def execute_external_research(
+        self,
+        port: ExternalResearchPort,
+        *,
+        limit: int = 1,
+    ) -> tuple[str, ...]:
+        """Execute a bounded number of read-only research requests and attach references."""
+        completed: list[str] = []
+        lifecycle = IncidentLifecycleManager(self.registry)
+        for request in self.external_research_requests(limit=limit):
+            try:
+                refs = port.research(request)
+            except Exception as exc:
+                lifecycle.record_research_failure(
+                    request.incident_id,
+                    error_type=type(exc).__name__,
+                )
+                continue
+            lifecycle.record_research_evidence(
+                request.incident_id,
+                evidence_refs=refs,
+            )
+            completed.append(request.incident_id)
+        return tuple(completed)
+
+    def render_planner_obligations(self, *, limit: int = 5) -> str:
+        by_id = {incident.id: incident for incident in self.registry.list_active()}
+        directives = self.directives(limit=limit)
+        if not directives:
+            return ""
+        lines = [
+            "ACTIVE ADAPTIVE INCIDENT OBLIGATIONS:",
+            "Unresolved incidents are persistent orchestration obligations; they must not disappear merely because a previous session ended.",
+        ]
+        for directive in directives:
+            incident = by_id.get(directive.incident_id)
+            if incident is None:
+                continue
+            lines.append(
+                f"- {incident.id} pressure={directive.pressure}/100 severity={incident.severity.value} "
+                f"status={incident.status.value} component={incident.component} category={incident.category}; "
+                f"action={directive.action}; symptom={incident.symptom}"
+            )
+            if directive.external_research_allowed:
+                lines.append(
+                    "  * External authoritative research is allowed when local evidence is insufficient; attach findings as evidence, do not treat search output as validated knowledge."
+                )
+            if incident.learning_scope is not LearningScope.UNDECIDED:
+                lines.append(
+                    f"  * learning_scope={incident.learning_scope.value}; dissemination targets still govern closure."
+                )
+        lines.append(
+            "Prioritize incident work against ordinary work using pressure, blocking impact, recurrence and safety. "
+            "Research/diagnosis may be proactive; remediation remains bounded by the normal execution policy and side-effect authority."
+        )
+        return "\n".join(lines)

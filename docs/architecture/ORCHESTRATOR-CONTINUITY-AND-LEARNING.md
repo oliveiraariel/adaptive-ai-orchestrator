@@ -1870,3 +1870,39 @@ PRESERVAR / APRENDER
 ```
 
 O ciclo representa o comportamento adaptativo que define o núcleo conceitual do Adaptive AI Orchestrator.
+
+
+---
+
+## Incident-to-knowledge lifecycle
+
+Continuity & Learning now has an executable incident bridge for meaningful
+defects and runtime/protocol anomalies.
+
+An unresolved incident is persisted independently from the conversation or
+runtime session that discovered it. It therefore participates in continuity as
+active state and cannot disappear merely because the initiating execution
+ended.
+
+The four persistence roles are explicit:
+
+~~~text
+operational memory
+  -> what is unresolved now
+
+historical incident memory
+  -> what was tried, observed and decided
+
+empirical learning
+  -> what may have been learned
+
+validated knowledge
+  -> what may guide later planning and Skills
+~~~
+
+The Incident Lifecycle Manager prevents a validated incident from skipping
+learning disposition and consistency review. Resolution Pressure makes active
+incidents compete for orchestration attention while preserving normal budgets,
+side-effect policy and human authority.
+
+See INCIDENT-PROACTIVE-LEARNING-PROTOCOL-V1.md for the normative v1 flow.

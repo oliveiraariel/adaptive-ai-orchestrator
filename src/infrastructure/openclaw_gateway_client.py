@@ -21,6 +21,7 @@ else:
     _CRYPTO_IMPORT_ERROR = None
 
 from application.incident_classifier import IncidentClassifier
+from application.incident_management import IncidentSentinel
 from application.model_routing_policy import ModelRoutingDecision, ModelRoutingPolicy
 from application.provider_health_policy import ProviderHealthPolicy
 from application.remediation_policy import RemediationPolicy
@@ -125,6 +126,7 @@ class OpenClawGatewayClient(OpenClawClient):
         provider_health_policy: ProviderHealthPolicy | None = None,
         provider_telemetry: ProviderTelemetryStore | None = None,
         result_store: FileResultStore | None = None,
+        incident_sentinel: IncidentSentinel | None = None,
     ) -> None:
         if _IMPORT_ERROR is not None or _CRYPTO_IMPORT_ERROR is not None:
             raise OpenClawGatewayError(
@@ -158,6 +160,7 @@ class OpenClawGatewayClient(OpenClawClient):
         self._remediation_policy = remediation_policy or RemediationPolicy()
         self._provider_health = provider_health_policy or ProviderHealthPolicy()
         self._provider_telemetry = provider_telemetry or ProviderTelemetryStore()
+        self._incident_sentinel = incident_sentinel or IncidentSentinel()
         self._device_identity = self._load_or_create_device_identity()
         self._result_store = result_store or FileResultStore()
         self._run_identity_path = self._resolve_run_identity_path()
@@ -614,7 +617,7 @@ class OpenClawGatewayClient(OpenClawClient):
         incident: object,
         remediation: object,
     ) -> None:
-        """Persist sanitized incident evidence without making telemetry fatal."""
+        """Persist provider evidence and promote it into the generic incident lifecycle."""
         try:
             self._provider_telemetry.append_incident(
                 incident,  # type: ignore[arg-type]
@@ -627,6 +630,18 @@ class OpenClawGatewayClient(OpenClawClient):
             # Provider telemetry is diagnostic. Execution/audit policy must not
             # become unavailable solely because the auxiliary incident log
             # cannot be written.
+            pass
+        try:
+            self._incident_sentinel.observe_provider_incident(
+                incident,  # type: ignore[arg-type]
+                orchestration_id=str(run.task_payload.get("orchestration_id") or ""),
+                work_unit_id=str(run.task_payload.get("work_unit_id") or ""),
+                execution_id=(run.result_target.execution_id if run.result_target else run.run_id),
+                project_id=str(run.task_payload.get("project_id") or ""),
+            )
+        except Exception:
+            # Incident persistence is a resilience feature; failure to write
+            # the incident registry must not hide the original provider error.
             pass
 
     def _with_result_store_contract(

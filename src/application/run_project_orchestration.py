@@ -31,6 +31,11 @@ from application.problem_solving_learning import (
     LEARNING_MARKER,
     ProblemSolvingLearningStore,
 )
+from application.incident_management import (
+    DEFECT_MARKER,
+    IncidentSentinel,
+    ResolutionPressureEngine,
+)
 from application.runtime_project_planner import (
     ProjectPlanner,
     ProjectPlanningRequest,
@@ -158,6 +163,7 @@ class RunProjectOrchestration:
     RUNTIME_NAME = "openclaw"
     REPLAN_MARKER = "ADAPTIVE_REPLAN_REQUIRED"
     LEARNING_MARKER = LEARNING_MARKER
+    DEFECT_MARKER = DEFECT_MARKER
 
     def __init__(
         self,
@@ -167,6 +173,7 @@ class RunProjectOrchestration:
         planner: ProjectPlanner,
         skill_profiles: Sequence[SkillProfile],
         learning_store: ProblemSolvingLearningStore | None = None,
+        incident_sentinel: IncidentSentinel | None = None,
     ) -> None:
         self._runtime = runtime
         self._claims = claim_registry
@@ -175,12 +182,14 @@ class RunProjectOrchestration:
         self._skill_resolver = SkillResolver(self._skill_profiles)
         self._readiness = WorkUnitReadinessEvaluator()
         self._learning_store = learning_store or ProblemSolvingLearningStore.from_env()
+        self._incident_sentinel = incident_sentinel or IncidentSentinel()
+        self._incident_pressure = ResolutionPressureEngine()
 
     def execute(
         self,
         request: ProjectOrchestrationRequest,
     ) -> ProjectOrchestrationResult:
-        orchestration_id = uuid4().hex
+        orchestration_id = request.orchestration_id or uuid4().hex
         planning_request = ProjectPlanningRequest(
             objective=request.objective,
             scope=request.scope,
@@ -309,6 +318,7 @@ class RunProjectOrchestration:
                     continue
                 self._record_dispatch_failure(
                     outcome=outcome,
+                    orchestration_id=orchestration_id,
                     wave=wave,
                     specs=specs,
                     work_units=work_units,
@@ -332,6 +342,14 @@ class RunProjectOrchestration:
                         work_unit.start_evaluation()
                         work_unit.require_revision()
                     reason = f"runtime-result-error:{result_or_error}"
+                    self._incident_sentinel.observe_runtime_failure(
+                        result_or_error,
+                        orchestration_id=orchestration_id,
+                        work_unit_id=work_unit_id,
+                        execution_id=(outcome.execution.id if outcome.execution else ""),
+                        runtime=(outcome.execution.runtime if outcome.execution else self.RUNTIME_NAME),
+                        blocking=attempts[work_unit_id] >= request.max_attempts_per_work_unit,
+                    )
                     revision_feedback[work_unit_id] = reason
                     if attempts[work_unit_id] >= request.max_attempts_per_work_unit:
                         work_unit.mark_blocked()
@@ -674,6 +692,7 @@ class RunProjectOrchestration:
             "Use BLOCKED only for a genuine external stop: HUMAN_DECISION, AUTHORITY, ENVIRONMENT, RUNTIME, or EXTERNAL_DEPENDENCY. Ordinary implementation difficulty is not a blocker.",
             f"If genuinely necessary new work is discovered that is not represented by this Work Unit, include the literal marker {self.REPLAN_MARKER}: followed by a concise reason. Do not use the marker for optional improvements.",
             self._learning_signal_constraint(),
+            self._incident_signal_constraint(),
             "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
         if spec.write_paths:
@@ -750,6 +769,20 @@ class RunProjectOrchestration:
             raw_result = {"status": "completed"}
 
         output = self._extract_output(raw_result)
+        observed_incident = self._incident_sentinel.observe_worker_output(
+            output,
+            orchestration_id=orchestration_id,
+            work_unit_id=outcome.work_unit_id,
+            execution_id=outcome.execution.id,
+            runtime=outcome.execution.runtime,
+        )
+        incident_requires_replan = bool(
+            observed_incident
+            and (
+                observed_incident.blocking
+                or self._incident_pressure.score(observed_incident) >= 70
+            )
+        )
         result_ref, result_authoritative = self._extract_result_reference(raw_result)
         completion = parse_worker_completion(output)
         result_status = (
@@ -850,7 +883,10 @@ class RunProjectOrchestration:
                 result_authoritative=result_authoritative,
                 reason=reason,
             ),
-            accepted and self.REPLAN_MARKER in output,
+            (
+                (accepted and self.REPLAN_MARKER in output)
+                or incident_requires_replan
+            ),
         )
 
     def _learning_signal_constraint(self) -> str:
@@ -864,10 +900,24 @@ class RunProjectOrchestration:
             "or raw tool output in the learning signal."
         )
 
-    @staticmethod
+    def _incident_signal_constraint(self) -> str:
+        return (
+            "If you observe a real defect, protocol violation, runtime anomaly, "
+            "transport/integrity failure, regression, unexpected state transition, "
+            "or repeated human-correction-worthy failure, emit at most one bounded "
+            f"{self.DEFECT_MARKER} JSON line with keys category, component, symptom, "
+            "severity (LOW|MEDIUM|HIGH|CRITICAL), optional topics (list), and optional "
+            "blocking (boolean). Report only the observable symptom; never include "
+            "prompts, source code, secrets, credentials, chain-of-thought, or raw tool "
+            "output. Do not create/close incidents or promote knowledge yourself; "
+            "Adaptive owns that lifecycle."
+        )
+
     def _record_dispatch_failure(
+        self,
         *,
         outcome: DispatchOutcome,
+        orchestration_id: str,
         wave: int,
         specs: dict[str, PlannedWorkUnit],
         work_units: dict[str, WorkUnit],
@@ -886,6 +936,14 @@ class RunProjectOrchestration:
                 reason = f"circuit-breaker:max-attempts:{reason}"
         elif outcome.status is DispatchStatus.BLOCKED:
             work_unit.mark_blocked()
+        if outcome.status is DispatchStatus.FAILED:
+            self._incident_sentinel.observe_dispatch_failure(
+                reason,
+                orchestration_id=orchestration_id,
+                work_unit_id=work_unit_id,
+                runtime=self.RUNTIME_NAME,
+                blocking=work_unit.state is WorkUnitState.BLOCKED,
+            )
         records.append(
             WorkUnitExecutionRecord(
                 work_unit_id=work_unit_id,

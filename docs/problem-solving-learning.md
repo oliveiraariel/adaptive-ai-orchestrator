@@ -211,3 +211,45 @@ blocked implementation
 ```
 
 That makes high-quality orchestration behavior more reproducible across weaker or cheaper models without hard-coding project-specific business decisions.
+
+
+## Incident-derived operational learning
+
+Problem-solving learning now consumes the governed incident lifecycle rather
+than depending only on workers remembering to emit a learning candidate after
+success.
+
+The separation is:
+
+~~~text
+active incident history
+  !=
+validated reusable knowledge
+~~~
+
+Incident timelines may contain rejected hypotheses, failed attempts and partial
+evidence. Those records stay in operational/historical memory.
+
+After root cause, fix and validation are established, Adaptive explicitly
+decides whether the lesson is local, project-specific, runtime/provider-specific,
+generalizable, architectural or security-critical. Only promoted knowledge is
+eligible to become durable planner guidance.
+
+The validated catalog also captures the communication-chain lessons from the
+2026-09-13 transport investigation:
+
+- deterministic Adaptive ownership of machine integrity envelopes;
+- runtime completion is distinct from RESULT_VERIFIED;
+- observer failure is distinct from worker failure;
+- source root, interpreter, virtual environment and loaded module identity must
+  be proven independently when runtime behavior contradicts source;
+- reference-only fan-in follows authoritative result verification;
+- unresolved incidents remain persistent orchestration obligations.
+
+Active incidents are also injected into project planning as resolution
+obligations through IncidentSupervisor. High-pressure or blocking defects may
+trigger bounded replanning without relying on the worker to remember a separate
+replan marker.
+
+The normative lifecycle is documented in
+docs/architecture/INCIDENT-PROACTIVE-LEARNING-PROTOCOL-V1.md.

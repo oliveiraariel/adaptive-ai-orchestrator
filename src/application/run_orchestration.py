@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from application.agent_runtime import AgentRuntime, AgentRuntimeStatus, ExecutionReference
 from application.observability import ObservabilitySink, NullObservabilitySink
+from application.incident_management import DEFECT_MARKER, IncidentSentinel
 from application.claim_registry import ClaimRegistry
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
 from application.execution_coordinator import (
@@ -87,10 +88,18 @@ class RunOrchestration:
     delegation, result evaluation, and finalization.
     """
 
-    def __init__(self, *, runtime: AgentRuntime, claim_registry: ClaimRegistry, observability: ObservabilitySink | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runtime: AgentRuntime,
+        claim_registry: ClaimRegistry,
+        observability: ObservabilitySink | None = None,
+        incident_sentinel: IncidentSentinel | None = None,
+    ) -> None:
         self._runtime = runtime
         self._claim_registry = claim_registry
         self._observability = observability or NullObservabilitySink()
+        self._incident_sentinel = incident_sentinel or IncidentSentinel()
 
     def dispatch(self, request: RunOrchestrationRequest) -> DispatchResult:
         """Dispatch one Work Unit and return its reference without observing it."""
@@ -99,7 +108,7 @@ class RunOrchestration:
         task_id = f"task:{run_id}"
         work_unit = WorkUnit(id=WorkUnitId(work_unit_id), objective=request.objective, scope=request.scope, inputs=request.inputs, outputs=request.expected_output, criteria=request.acceptance_criteria)
         configuration = ResourceConfiguration(agent=request.agent, skills=request.skills, model=request.model, provider=request.provider, tools=request.tools, runtime="openclaw")
-        task_package = TaskPackage(task_id=task_id, work_unit_id=work_unit_id, objective=request.objective, orchestration_id=run_id, scope=request.scope, context=request.context, inputs=request.inputs, constraints=request.constraints, configuration=configuration, expected_output=request.expected_output, acceptance_criteria=request.acceptance_criteria, execution_policy=request.execution_policy, requested_side_effects=request.requested_side_effects)
+        task_package = TaskPackage(task_id=task_id, work_unit_id=work_unit_id, objective=request.objective, orchestration_id=run_id, scope=request.scope, context=request.context, inputs=request.inputs, constraints=(*request.constraints, self._incident_signal_constraint()), configuration=configuration, expected_output=request.expected_output, acceptance_criteria=request.acceptance_criteria, execution_policy=request.execution_policy, requested_side_effects=request.requested_side_effects)
         dispatched = ExecutionCoordinator(runtime=self._runtime, claim_registry=self._claim_registry).dispatch_frontier(DispatchFrontierRequest(assignments=(WorkAssignment(work_unit=work_unit, configuration=configuration, task_package=task_package),), dependencies=(), claimant_id=request.claimant_id, concurrency_limit=1, human_approved_work_unit_ids=(work_unit_id,) if request.human_approved else ()))
         outcome = dispatched.outcomes[0]
         if outcome.status is not DispatchStatus.DISPATCHED or outcome.execution is None:
@@ -135,7 +144,7 @@ class RunOrchestration:
             scope=request.scope,
             context=request.context,
             inputs=request.inputs,
-            constraints=request.constraints,
+            constraints=(*request.constraints, self._incident_signal_constraint()),
             configuration=configuration,
             expected_output=request.expected_output,
             acceptance_criteria=request.acceptance_criteria,
@@ -179,6 +188,13 @@ class RunOrchestration:
 
         outcome = dispatched.outcomes[0]
         if outcome.status is not DispatchStatus.DISPATCHED:
+            self._incident_sentinel.observe_dispatch_failure(
+                outcome.reason,
+                orchestration_id=run_id,
+                work_unit_id=work_unit_id,
+                runtime="openclaw",
+                blocking=outcome.status is DispatchStatus.FAILED,
+            )
             self._observability.emit(
                 "orchestration_completed",
                 orchestration_id=run_id,
@@ -212,6 +228,14 @@ class RunOrchestration:
             runtime_result = self._runtime.retrieve_result(outcome.execution)
         except Exception as exc:
             self._claim_registry.release(outcome.claim)
+            self._incident_sentinel.observe_runtime_failure(
+                exc,
+                orchestration_id=run_id,
+                work_unit_id=work_unit_id,
+                execution_id=outcome.execution.id,
+                runtime=outcome.execution.runtime,
+                blocking=True,
+            )
             self._emit_terminal_failure(
                 run_id,
                 category="runtime",
@@ -271,6 +295,13 @@ class RunOrchestration:
         )
 
         output = self._extract_output(raw_result)
+        self._incident_sentinel.observe_worker_output(
+            output,
+            orchestration_id=run_id,
+            work_unit_id=work_unit_id,
+            execution_id=outcome.execution.id,
+            runtime=outcome.execution.runtime,
+        )
         return RunOrchestrationResult(
             task_id=task_id,
             work_unit_id=work_unit_id,
@@ -282,6 +313,18 @@ class RunOrchestration:
             output=output,
             raw_result=raw_result,
             evidence=result_package.evidence,
+        )
+
+    @staticmethod
+    def _incident_signal_constraint() -> str:
+        return (
+            "If you observe a real defect, protocol violation, runtime anomaly, "
+            "transport/integrity failure, regression, or unexpected state transition, "
+            f"emit at most one {DEFECT_MARKER} JSON line with keys category, component, "
+            "symptom, severity (LOW|MEDIUM|HIGH|CRITICAL), optional topics list and "
+            "optional blocking boolean. Never include prompts, source code, secrets, "
+            "credentials, chain-of-thought, or raw tool output. Adaptive owns the "
+            "incident lifecycle and learning promotion."
         )
 
     def _emit_terminal_failure(

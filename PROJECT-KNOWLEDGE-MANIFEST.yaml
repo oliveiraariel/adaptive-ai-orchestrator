@@ -125,6 +125,16 @@ artifact_groups:
       - bootstrap/install-launchers.sh
       - bootstrap/lib/e2e_evidence.py
 
+  project_incident_intake:
+    authority: operational-input
+    default_retrieval: true
+    note: >
+      Versioned declarations of known defects, capability gaps, and improvement
+      investigations. These files are intake inputs only; live lifecycle state
+      remains in Adaptive IncidentRegistry.
+    paths:
+      - incidents/intake/**
+
   implementation:
     authority: implementation
     default_retrieval: on-demand

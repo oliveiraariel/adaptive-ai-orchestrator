@@ -10,6 +10,7 @@ from application.agent_runtime import (
 from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
+from application.incident_management import IncidentSentinel
 from application.run_project_orchestration import (
     ProjectOrchestrationRequest,
     ProjectRunStatus,
@@ -23,6 +24,7 @@ from domain.project_execution_plan import (
 )
 from domain.task_package import TaskPackage
 from infrastructure.claim_registry import InMemoryClaimRegistry
+from infrastructure.incident_registry import FileIncidentRegistry
 
 
 class StaticPlanner:
@@ -592,3 +594,58 @@ def test_worker_assignment_requires_structured_completion_footer() -> None:
     constraints = "\n".join(task.constraints)
     assert "ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED" in constraints
     assert "Missing implementation, wiring, tests" in constraints
+
+
+def test_high_pressure_worker_defect_becomes_incident_and_requests_replan(tmp_path) -> None:
+    initial = ProjectExecutionPlan(
+        summary="detect runtime-agnostic transport defect",
+        work_units=(wu("detect"),),
+    )
+    revised = ProjectExecutionPlan(
+        summary="add governed diagnosis",
+        work_units=(wu("detect"), wu("diagnose", kind="RESEARCH", priority=40),),
+        dependencies=(PlannedDependency("detect", "diagnose"),),
+    )
+    planner = StaticPlanner(initial, revised_plan=revised)
+    runtime = ConcurrentRuntime(
+        outputs={
+            "detect": (
+                "Observed a real communication-chain defect.\n"
+                'ADAPTIVE_DEFECT_SIGNAL: {"category":"result-transport","component":"runtime-adapter",'
+                '"symptom":"runtime completed but authoritative result is missing","severity":"HIGH",'
+                '"topics":["result-transport","recovery","debugging"],"blocking":true}\n'
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            ),
+            "diagnose": (
+                "Diagnosis captured.\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            ),
+        }
+    )
+    registry = FileIncidentRegistry(tmp_path / "incidents")
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        incident_sentinel=IncidentSentinel(registry),
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Detect and react to communication defects.",
+            max_replans=2,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert planner.replan_calls == 1
+    assert result.replan_count == 1
+    assert result.completed_work_unit_ids == ("detect", "diagnose")
+    active = registry.list_active()
+    assert len(active) == 1
+    assert active[0].category == "result-transport"
+    assert active[0].blocking is True

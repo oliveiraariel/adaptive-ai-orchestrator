@@ -13,6 +13,14 @@ from typing import Sequence
 from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
+from application.incident_management import IncidentSentinel
+from application.incident_intake import (
+    IncidentIntakeError,
+    register_project_incident_intake,
+)
+from application.incident_ports import JsonlNotificationOutbox
+from application.incident_research import RunOrchestrationExternalResearchPort
+from application.incident_supervisor import IncidentSupervisor
 from application.execution_liveness import (
     ExecutionLiveness,
     ExecutionLivenessMonitor,
@@ -41,6 +49,7 @@ from infrastructure.execution_liveness_store import (
     ExecutionLivenessStoreError,
     FileExecutionLivenessStore,
 )
+from infrastructure.incident_registry import FileIncidentRegistry
 from infrastructure.openclaw_adapter import OpenClawAdapter
 from infrastructure.openclaw_gateway_client import (
     GatewayConfig,
@@ -102,6 +111,51 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_project_arguments(orchestrate)
+
+    intervention = commands.add_parser(
+        "report-intervention",
+        help="Record a human correction that reveals a diagnostic or strategy gap.",
+    )
+    intervention.add_argument("--component", required=True)
+    intervention.add_argument("--symptom", required=True)
+    intervention.add_argument("--correction-type", default="strategy-correction")
+    intervention.add_argument("--orchestration-id", default="")
+    intervention.add_argument("--work-unit-id", default="")
+    intervention.add_argument("--execution-id", default="")
+    intervention.add_argument("--runtime", default="")
+    intervention.add_argument("--project-id", default="")
+    intervention.add_argument("--blocking", action="store_true")
+
+    incidents = commands.add_parser(
+        "incidents",
+        help="Show persistent active incidents and their proactive resolution directives.",
+    )
+    incidents.add_argument("--limit", type=int, default=10)
+    incidents.add_argument(
+        "--supervise",
+        action="store_true",
+        help="Run one bounded supervision cycle and publish actionable notifications.",
+    )
+    incidents.add_argument(
+        "--watch",
+        action="store_true",
+        help="Keep supervising persistent incidents until interrupted or max cycles is reached.",
+    )
+    incidents.add_argument("--interval-seconds", type=float, default=60.0)
+    incidents.add_argument(
+        "--max-cycles",
+        type=int,
+        default=0,
+        help="0 means no cycle limit when --watch is used.",
+    )
+    incidents.add_argument(
+        "--auto-research",
+        action="store_true",
+        help="Execute at most one governed read-only external research Work Unit per cycle.",
+    )
+    incidents.add_argument("--agent", default="main")
+    incidents.add_argument("--tool", action="append", default=[])
+    _add_gateway_arguments(incidents)
 
     doctor = commands.add_parser(
         "doctor",
@@ -191,6 +245,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _doctor(args.gateway_url)
+    if args.command == "incidents":
+        return _incidents(args)
+    if args.command == "report-intervention":
+        return _report_intervention(args)
     if args.command == "run":
         return _run(args)
     if args.command == "dispatch":
@@ -202,6 +260,138 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
+
+
+def _report_intervention(args: argparse.Namespace) -> int:
+    incident = IncidentSentinel().observe_human_intervention(
+        component=args.component,
+        symptom=args.symptom,
+        correction_type=args.correction_type,
+        orchestration_id=args.orchestration_id,
+        work_unit_id=args.work_unit_id,
+        execution_id=args.execution_id,
+        runtime=args.runtime,
+        project_id=args.project_id,
+        blocking=args.blocking,
+    )
+    if incident is None:
+        return _print_error(ValueError("intervention did not contain a safe incident signal"))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "incident_id": incident.id,
+                "status": incident.status.value,
+                "severity": incident.severity.value,
+                "category": incident.category,
+                "recurrence_count": incident.recurrence_count,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _incidents(args: argparse.Namespace) -> int:
+    if args.limit < 1 or args.limit > 100:
+        return _print_error(ValueError("--limit must be between 1 and 100"))
+    if args.interval_seconds <= 0:
+        return _print_error(ValueError("--interval-seconds must be positive"))
+    if args.max_cycles < 0:
+        return _print_error(ValueError("--max-cycles must not be negative"))
+
+    registry = FileIncidentRegistry()
+    try:
+        intake_incidents = register_project_incident_intake(
+            Path(args.project_root),
+            registry,
+        )
+    except (IncidentIntakeError, OSError, ValueError) as exc:
+        return _print_error(exc)
+
+    supervisor = IncidentSupervisor(
+        registry,
+        notification_port=JsonlNotificationOutbox(),
+    )
+
+    research_port = None
+    if args.auto_research:
+        try:
+            research_runner = RunOrchestration(
+                runtime=_runtime(args),
+                claim_registry=InMemoryClaimRegistry(),
+                incident_sentinel=IncidentSentinel(registry),
+            )
+            research_port = RunOrchestrationExternalResearchPort(
+                research_runner,
+                agent=args.agent,
+                tools=tuple(args.tool),
+            )
+        except (OpenClawGatewayError, ValueError, ResultStoreError) as exc:
+            return _print_error(exc)
+
+    cycle = 0
+    while True:
+        cycle += 1
+        directives = (
+            supervisor.supervise(limit=args.limit)
+            if (args.supervise or args.watch)
+            else supervisor.directives(limit=args.limit)
+        )
+        researched: tuple[str, ...] = ()
+        if research_port is not None:
+            researched = supervisor.execute_external_research(
+                research_port,
+                limit=1,
+            )
+            directives = supervisor.directives(limit=args.limit)
+
+        incidents = {item.id: item for item in registry.list_active()}
+        research_by_id = {
+            item.incident_id: item
+            for item in supervisor.external_research_requests(limit=args.limit)
+        }
+        payload = {
+            "ok": True,
+            "cycle": cycle,
+            "active_incident_count": len(incidents),
+            "supervision_cycle": bool(args.supervise or args.watch),
+            "watch": bool(args.watch),
+            "auto_research": bool(args.auto_research),
+            "researched_incident_ids": list(researched),
+            "project_intake_incident_ids": [item.id for item in intake_incidents],
+            "incidents": [
+                {
+                    "incident_id": directive.incident_id,
+                    "severity": incidents[directive.incident_id].severity.value,
+                    "status": incidents[directive.incident_id].status.value,
+                    "category": incidents[directive.incident_id].category,
+                    "component": incidents[directive.incident_id].component,
+                    "blocking": incidents[directive.incident_id].blocking,
+                    "recurrence_count": incidents[directive.incident_id].recurrence_count,
+                    "research_attempt_count": incidents[directive.incident_id].research_attempt_count,
+                    "pressure": directive.pressure,
+                    "action": directive.action,
+                    "reason": directive.reason,
+                    "external_research_allowed": directive.external_research_allowed,
+                    "research_query": (
+                        research_by_id[directive.incident_id].query
+                        if directive.incident_id in research_by_id
+                        else None
+                    ),
+                }
+                for directive in directives
+                if directive.incident_id in incidents
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
+
+        if not args.watch:
+            return 0
+        if args.max_cycles and cycle >= args.max_cycles:
+            return 0
+        time.sleep(args.interval_seconds)
 
 
 def _doctor(gateway_url: str) -> int:
@@ -471,12 +661,19 @@ def _orchestrate(args: argparse.Namespace) -> int:
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
 
+        incident_registry = FileIncidentRegistry()
+        register_project_incident_intake(
+            Path(args.project_root),
+            incident_registry,
+        )
+
         runtime = _runtime(args)
         claims = InMemoryClaimRegistry()
         planner_runner = RunOrchestration(runtime=runtime, claim_registry=claims)
         planner = RuntimeProjectPlanner(
             runner=planner_runner,
             skill_profiles=profiles,
+            incident_supervisor=IncidentSupervisor(incident_registry),
         )
 
         plan = None

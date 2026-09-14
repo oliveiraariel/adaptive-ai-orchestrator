@@ -1,6 +1,8 @@
 import json
 
 from adaptive_orchestrator import cli
+from application.incident_management import IncidentSentinel
+from infrastructure.incident_registry import FileIncidentRegistry
 from application.agent_runtime import (
     AgentRuntimeResult,
     AgentRuntimeStatus,
@@ -226,3 +228,145 @@ def test_cli_wait_defaults_to_30_90_600_liveness_windows(tmp_path) -> None:
     assert args.heartbeat_interval_seconds == 30.0
     assert args.liveness_timeout_seconds == 90.0
     assert args.hard_deadline_seconds == 600.0
+
+
+def test_cli_incidents_surfaces_pressure_and_supervision_outbox(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    registry = FileIncidentRegistry()
+    IncidentSentinel(registry).observe_runtime_failure(
+        "runtime completed but authoritative result is missing",
+        orchestration_id="orch-cli",
+        work_unit_id="wu-cli",
+        runtime="runtime-x",
+        blocking=True,
+    )
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    exit_code = cli.main(
+        ["incidents", "--supervise", "--project-root", str(project_root)]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["active_incident_count"] == 1
+    assert payload["supervision_cycle"] is True
+    assert payload["incidents"][0]["pressure"] >= 70
+    assert payload["incidents"][0]["action"] == "diagnose-now"
+    assert payload["incidents"][0]["research_query"]
+    assert (tmp_path / "adaptive-ai-orchestrator" / "notifications.jsonl").is_file()
+
+
+def test_cli_incidents_registers_project_intake_before_supervision(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    state_root = tmp_path / "state"
+    project_root = tmp_path / "project"
+    intake_root = project_root / "incidents" / "intake"
+    intake_root.mkdir(parents=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+
+    (intake_root / "INC-CLI-INTAKE.md").write_text("# investigation intent\n", encoding="utf-8")
+    (intake_root / "INC-CLI-INTAKE.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "declaration_id": "INC-CLI-INTAKE",
+                "enabled": True,
+                "category": "capability-gap",
+                "component": "investigation",
+                "symptom": "investigation capability is not finalized",
+                "severity": "MEDIUM",
+                "project_id": "adaptive-ai-orchestrator",
+                "blocking": False,
+                "topics": ["investigation", "learning"],
+                "evidence_ref": "incidents/intake/INC-CLI-INTAKE.md",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "incidents",
+            "--project-root",
+            str(project_root),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["active_incident_count"] == 1
+    assert len(payload["project_intake_incident_ids"]) == 1
+    assert payload["incidents"][0]["category"] == "capability-gap"
+    registry = FileIncidentRegistry()
+    active = registry.list_active()
+    assert len(active) == 1
+    assert active[0].status.value == "TRIAGED"
+    assert active[0].recurrence_count == 1
+
+
+def test_cli_report_intervention_creates_persistent_learning_gap_incident(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    exit_code = cli.main(
+        [
+            "report-intervention",
+            "--component",
+            "project-orchestrator",
+            "--symptom",
+            "human had to redirect diagnosis from model quality to transport",
+            "--correction-type",
+            "strategy-correction",
+            "--orchestration-id",
+            "orch-human",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["category"] == "human-intervention"
+    assert payload["incident_id"].startswith("INC-")
+    registry = FileIncidentRegistry()
+    active = registry.list_active()
+    assert len(active) == 1
+    assert "strategy-correction" in active[0].symptom
+    assert "learning-gap" in active[0].topics
+
+
+def test_cli_incident_watch_runs_persistent_bounded_supervision_cycles(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    registry = FileIncidentRegistry()
+    IncidentSentinel(registry).observe_runtime_failure(
+        "persistent result transport defect",
+        orchestration_id="orch-watch",
+        work_unit_id="wu-watch",
+        runtime="runtime-x",
+        blocking=True,
+    )
+
+    exit_code = cli.main(
+        [
+            "incidents",
+            "--watch",
+            "--max-cycles",
+            "2",
+            "--interval-seconds",
+            "0.01",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
+    assert exit_code == 0
+    assert len(lines) == 2
+    assert lines[0]["cycle"] == 1
+    assert lines[1]["cycle"] == 2
+    assert all(item["watch"] is True for item in lines)
+    assert all(item["active_incident_count"] == 1 for item in lines)
