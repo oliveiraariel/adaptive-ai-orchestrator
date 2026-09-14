@@ -26,6 +26,10 @@ def test_result_store_publishes_and_recovers_large_result(tmp_path) -> None:
     assert target.manifest_path.exists()
     assert not target.result_path.with_name("result.txt.tmp").exists()
 
+    manifest = json.loads(target.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["result_bytes"] == len(content.encode("utf-8"))
+    assert manifest["result_sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+
 
 def test_result_store_manifest_is_completion_sentinel(tmp_path) -> None:
     store = FileResultStore(tmp_path)
@@ -51,6 +55,54 @@ def test_result_store_rejects_integrity_mismatch(tmp_path) -> None:
 
     with pytest.raises(ResultStoreError, match="byte length|SHA-256"):
         store.read_result(target)
+
+
+@pytest.mark.parametrize("field", ["result_bytes", "result_sha256"])
+def test_result_store_rejects_missing_integrity_field(tmp_path, field) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(orchestration_id="orch", work_unit_id="wu", execution_id="exec")
+    store.publish(target, content="result")
+    manifest = json.loads(target.manifest_path.read_text(encoding="utf-8"))
+    del manifest[field]
+    target.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ResultStoreError, match="result_bytes|result_sha256"):
+        store.read_result(target)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("result_bytes", 99),
+        ("result_sha256", "0" * 64),
+        ("result_bytes", True),
+        ("result_bytes", -1),
+        ("result_sha256", "g" * 64),
+        ("result_sha256", "0" * 63),
+    ],
+)
+def test_result_store_rejects_invalid_integrity_field(tmp_path, field, value) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(orchestration_id="orch", work_unit_id="wu", execution_id="exec")
+    store.publish(target, content="result")
+    manifest = json.loads(target.manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = value
+    target.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ResultStoreError):
+        store.read_result(target)
+
+
+def test_worker_instructions_require_integrity_and_manifest_last(tmp_path) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(orchestration_id="orch", work_unit_id="wu", execution_id="exec")
+    instructions = store.worker_instructions(target)
+
+    assert "result_bytes" in instructions
+    assert "result_sha256" in instructions
+    assert "UTF-8 byte" in instructions
+    assert "SHA-256" in instructions
+    assert "manifest.json LAST" in instructions
 
 
 def test_result_store_rejects_manifest_identity_mismatch(tmp_path) -> None:
