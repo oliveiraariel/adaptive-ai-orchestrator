@@ -62,6 +62,14 @@ def build_worker_protocol(
             "runtime_completion_alone_is_not_authoritative_result": True,
             "orchestrator_terminal_state": PROTOCOL_COMPLETION_STATE,
         },
+        "incident_contract": {
+            "worker_may_report_defect_signal": True,
+            "signal_prefix": "ADAPTIVE_DEFECT_SIGNAL:",
+            "worker_owns_incident_lifecycle": False,
+            "adaptive_owns_incident_lifecycle": True,
+            "adaptive_owns_learning_promotion": True,
+            "raw_worker_output_is_not_incident_memory": True,
+        },
         "identity": identity,
         "result_store": {
             "directory": result_store.get("directory"),
