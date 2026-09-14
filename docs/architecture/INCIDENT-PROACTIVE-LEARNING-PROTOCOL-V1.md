@@ -161,7 +161,15 @@ The CLI exposes one explicit supervision cycle:
 ~~~bash
 adaptive-orchestrator incidents
 adaptive-orchestrator incidents --supervise
+adaptive-orchestrator incidents --watch
+adaptive-orchestrator incidents --watch --auto-research --tool web-search
 ~~~
+
+The watch form is the long-running supervisor/daemon entry point. It repeatedly
+reconciles persistent incidents, recalculates pressure and publishes
+deduplicated actionable notifications. A host service manager may keep this
+process alive; installation as an operating-system service is intentionally a
+deployment choice rather than hidden side effect of the package.
 
 Supervision may publish an actionable notification while remaining free of
 runtime-specific UI assumptions. An incident therefore survives session
