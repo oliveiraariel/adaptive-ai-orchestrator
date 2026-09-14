@@ -396,7 +396,32 @@ def _wait(args: argparse.Namespace) -> int:
                 flush=True,
             )
 
-        result = monitor.wait(execution, on_heartbeat=emit_heartbeat)
+        def emit_observer_pulse(
+            observed_execution,
+            silence_seconds: float,
+        ) -> None:
+            print(
+                json.dumps(
+                    {
+                        "event": "execution-observer-pulse",
+                        "external_id": observed_execution.external_id,
+                        "execution_id": observed_execution.id,
+                        "state": "OBSERVATION_UNAVAILABLE",
+                        "silence_seconds": round(max(0.0, silence_seconds), 3),
+                        "action": "CONTINUE_SAME_RUN",
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
+        result = monitor.wait(
+            execution,
+            on_heartbeat=emit_heartbeat,
+            on_observer_pulse=emit_observer_pulse,
+        )
         final_liveness = liveness_store.read(execution.external_id)
         print(
             json.dumps(
