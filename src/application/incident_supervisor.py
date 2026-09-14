@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from application.incident_management import ResolutionDirective, ResolutionPressureEngine
+from application.incident_ports import (
+    ExternalResearchRequest,
+    IncidentNotification,
+    NotificationPort,
+    NullNotificationPort,
+)
 from domain.incident import IncidentStatus, LearningScope
 from infrastructure.incident_registry import FileIncidentRegistry
 
@@ -12,9 +18,11 @@ class IncidentSupervisor:
         self,
         registry: FileIncidentRegistry | None = None,
         pressure: ResolutionPressureEngine | None = None,
+        notification_port: NotificationPort | None = None,
     ) -> None:
         self.registry = registry or FileIncidentRegistry()
         self.pressure = pressure or ResolutionPressureEngine()
+        self.notification_port = notification_port or NullNotificationPort()
 
     def directives(self, *, limit: int = 5) -> tuple[ResolutionDirective, ...]:
         directives: list[ResolutionDirective] = []
@@ -60,6 +68,58 @@ class IncidentSupervisor:
             )
         directives.sort(key=lambda item: (-item.pressure, item.incident_id))
         return tuple(directives[:limit])
+
+    def supervise(self, *, limit: int = 5) -> tuple[ResolutionDirective, ...]:
+        """Run one bounded supervision cycle and publish actionable notifications."""
+        directives = self.directives(limit=limit)
+        incidents = {item.id: item for item in self.registry.list_active()}
+        for directive in directives:
+            if directive.pressure < 40 and directive.action == "monitor-and-reconcile":
+                continue
+            incident = incidents.get(directive.incident_id)
+            if incident is None:
+                continue
+            self.notification_port.publish(
+                IncidentNotification(
+                    key=f"{incident.id}:{incident.status.value}:{directive.action}",
+                    incident_id=incident.id,
+                    severity=incident.severity.value,
+                    status=incident.status.value,
+                    action=directive.action,
+                    message=(
+                        f"{incident.title}. {directive.reason} "
+                        f"Next governed action: {directive.action}."
+                    ),
+                )
+            )
+        return directives
+
+    def external_research_requests(
+        self,
+        *,
+        limit: int = 5,
+    ) -> tuple[ExternalResearchRequest, ...]:
+        """Build bounded research requests; execution belongs to an authorized adapter."""
+        incidents = {item.id: item for item in self.registry.list_active()}
+        requests: list[ExternalResearchRequest] = []
+        for directive in self.directives(limit=limit):
+            if not directive.external_research_allowed:
+                continue
+            incident = incidents.get(directive.incident_id)
+            if incident is None:
+                continue
+            requests.append(
+                ExternalResearchRequest(
+                    incident_id=incident.id,
+                    query=(
+                        f"Find authoritative technical evidence for incident category "
+                        f"{incident.category!r} in component {incident.component!r}: "
+                        f"{incident.symptom}. Prefer primary vendor/runtime documentation "
+                        f"and upstream issue/source evidence."
+                    )[:900],
+                )
+            )
+        return tuple(requests)
 
     def render_planner_obligations(self, *, limit: int = 5) -> str:
         by_id = {incident.id: incident for incident in self.registry.list_active()}
