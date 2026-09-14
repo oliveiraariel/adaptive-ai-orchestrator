@@ -50,6 +50,7 @@ class ExecutionLivenessTimeout(RuntimeError):
 
 
 HeartbeatCallback = Callable[[ExecutionLiveness], None]
+ObserverPulseCallback = Callable[[ExecutionReference, float], None]
 
 
 class ExecutionLivenessMonitor:
@@ -98,6 +99,7 @@ class ExecutionLivenessMonitor:
         execution: ExecutionReference,
         *,
         on_heartbeat: HeartbeatCallback | None = None,
+        on_observer_pulse: ObserverPulseCallback | None = None,
     ) -> AgentRuntimeResult:
         started_monotonic = self._monotonic()
         existing = self._store.read(execution.external_id)
@@ -149,6 +151,8 @@ class ExecutionLivenessMonitor:
                 runtime_status = self._runtime.get_status(execution)
             except Exception:
                 silence = self._monotonic() - last_runtime_confirmation
+                if on_observer_pulse is not None:
+                    on_observer_pulse(execution, silence)
                 if silence >= self._liveness_timeout:
                     sequence += 1
                     snapshot = self._snapshot(
