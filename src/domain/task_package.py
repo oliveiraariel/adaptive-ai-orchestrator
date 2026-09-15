@@ -86,6 +86,13 @@ class TaskPackage:
                 raise TaskPackageError(f"TaskPackage {field_name} must not be empty.")
         if self.result_content_type not in {"application/json", "text/plain", "text/markdown"}:
             raise TaskPackageError("TaskPackage result_content_type is unsupported.")
+        if self.result_json_schema is not None:
+            if not isinstance(self.result_json_schema, dict):
+                raise TaskPackageError("TaskPackage result_json_schema must be an object.")
+            if self.result_content_type != "application/json":
+                raise TaskPackageError(
+                    "TaskPackage result_json_schema requires application/json."
+                )
 
         if self.delegation_context is None:
             object.__setattr__(
