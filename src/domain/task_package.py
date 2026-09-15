@@ -39,6 +39,7 @@ class TaskPackage:
     result_message_type: str = "worker.result"
     result_schema_name: str = "worker-result"
     result_content_type: str = "text/plain"
+    result_json_schema: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
