@@ -38,6 +38,7 @@ class TaskPackage:
     request_schema_name: str = "task-package"
     result_message_type: str = "worker.result"
     result_schema_name: str = "worker-result"
+    result_content_type: str = "text/plain"
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
@@ -77,10 +78,13 @@ class TaskPackage:
             "request_schema_name",
             "result_message_type",
             "result_schema_name",
+            "result_content_type",
         ):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value.strip():
                 raise TaskPackageError(f"TaskPackage {field_name} must not be empty.")
+        if self.result_content_type not in {"application/json", "text/plain", "text/markdown"}:
+            raise TaskPackageError("TaskPackage result_content_type is unsupported.")
 
         if self.delegation_context is None:
             object.__setattr__(
