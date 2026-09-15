@@ -58,7 +58,7 @@ ADAPTIVE_PROBLEM_SOLVING_KNOWLEDGE=/path/to/problem-solving-strategies.json
 
 Validated strategies may be injected automatically into planning when their triggers match the project objective, context, constraints or replanning state.
 
-The initial catalog includes two lessons learned from real execution:
+The catalog includes validated lessons learned from real execution, including:
 
 ### Resolve blockers before implementation
 
@@ -132,6 +132,46 @@ Transport changes are validated progressively:
 - LARGE (>12k) proves independence from historical presentation limits.
 
 If MEDIUM fails, escalation stops until that boundary is diagnosed.
+
+
+### Prove runtime provenance before dependency repair
+
+When a runtime reports an apparently missing Python dependency, Adaptive should not immediately reinstall the package or blame the model.
+
+The reusable diagnostic pattern is:
+
+1. preserve the original traceback;
+2. identify the exact failing process and parent/launcher;
+3. prove repository, branch, HEAD, configured interpreter and effective interpreter;
+4. compare `sys.prefix`, `sys.base_prefix`, `sys.path`, `PYTHONPATH`, `PYTHONHOME` and virtualenv state at the failing boundary;
+5. reproduce the import through the exact launcher/executable/environment;
+6. inspect interpreter symlink/path canonicalization before changing dependencies;
+7. avoid global installs that merely mask runtime provenance defects;
+8. add a fail-closed prerequisite preflight using the same executable/environment as the real launch.
+
+This strategy was promoted after the 2026-09-15 Planner/Bridge incident, where `jsonschema` was installed in the authorized venv but a real Bridge child reported it missing before Planner execution. The historical transient environment could not be reconstructed exactly later, so the permanent lesson explicitly separates confirmed evidence from suspected mechanism. The Bridge was hardened to preserve the logical venv interpreter path and to validate `adaptive_orchestrator`, `jsonschema`, `websockets` and `cryptography` before starting Adaptive.
+
+### Use explicit plan-only mode for Planner validation
+
+When the goal is to validate Planner behavior without executing the planned project, Adaptive should not overload executor limits to suppress dispatch.
+
+In particular:
+
+- `max_waves` remains an executor bound with its own invariant;
+- plan-only behavior is explicit;
+- the real `RuntimeProjectPlanner` still runs through the governed runtime;
+- strict JSON, `planner-output/1` and semantic validation remain mandatory;
+- a `ProjectExecutionPlan` is returned;
+- generated project Work Units are not dispatched;
+- successful planning is not reported as successful project execution.
+
+The 2026-09-15 real smoke first tried `max_waves=0`, which was correctly rejected by the executor contract. The new explicit `--plan-only` mode then allowed the real Planner to produce a valid three-Work-Unit plan while dispatching zero generated Work Units.
+
+The full forensic record for both strategies is:
+
+```text
+docs/incidents/2026-09-15-planner-bridge-runtime-and-plan-only.md
+```
 
 ## Runtime learning candidates
 
