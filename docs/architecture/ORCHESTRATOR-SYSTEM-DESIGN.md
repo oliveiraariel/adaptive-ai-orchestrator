@@ -5527,3 +5527,41 @@ Application
 ```
 
 sem transportar conceitos específicos do OpenClaw para o Domain.
+
+
+# 261. Design Decision — Durable Payload-by-Reference Communication
+
+Fica consolidada a seguinte decisão de design:
+
+> **Payloads de máquina relevantes entre componentes Adaptive são persistidos e
+> verificados fora do canal conversacional; o runtime transporta uma referência
+> AMEP compacta.**
+
+A implementação corrente usa o Message Store local ao projeto:
+
+    <project>/.adaptive/messages/
+    <project>/.adaptive/inbox/
+
+Cada mensagem possui identidade, correlation id, emissor, receptor, tipo,
+schema/version, payload, tamanho e SHA-256. O payload e o manifest são publicados
+atomicamente antes da referência tornar-se visível.
+
+O seam conceitual é:
+
+    Semantic payload
+    -> FileMessageStore.publish_*
+    -> AMEP manifest/reference
+    -> runtime adapter
+    -> FileMessageStore.read_reference
+    -> payload-specific validation
+
+O Planner usa `planner.request` / `planner.plan`; Work Units usam
+`work.assignment` / `worker.result`. Evaluator, Sentinel e componentes
+futuros devem declarar tipos e schemas versionados sobre o mesmo protocolo.
+
+O Planner preserva sua resposta bruta como texto no transporte para que JSON
+malformado continue diagnosticável. A validação de JSON/schema do plano ocorre
+somente após o AMEP provar a integridade dos bytes transportados.
+
+O design completo está em
+`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`.
