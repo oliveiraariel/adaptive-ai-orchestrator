@@ -525,6 +525,13 @@ class OpenClawAdapter(AgentRuntime):
             },
             "expected_output": task.expected_output,
             "acceptance_criteria": task.acceptance_criteria,
+            "message_exchange": {
+                "request_message_type": task.request_message_type,
+                "request_schema_name": task.request_schema_name,
+                "result_message_type": task.result_message_type,
+                "result_schema_name": task.result_schema_name,
+                "schema_version": "1",
+            },
         }
 
     @classmethod
