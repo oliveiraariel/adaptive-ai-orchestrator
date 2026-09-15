@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from application.agent_runtime import (
@@ -161,3 +163,75 @@ def test_run_orchestration_emits_terminal_failure_on_runtime_result_error() -> N
     assert terminal[0]["status"] == "FAILED"
     assert terminal[0]["failure_category"] == "runtime"
     assert terminal[0]["failure_code"] == "runtime_result_retrieval_failed"
+
+
+def _planner_output_text() -> str:
+    return json.dumps(
+        {
+            "summary": "one safe unit",
+            "work_units": [
+                {
+                    "id": "inspect",
+                    "objective": "Inspect safely",
+                    "role": "reviewer",
+                    "scope": "",
+                    "kind": "RESEARCH",
+                    "required_capabilities": [],
+                    "requested_skills": [],
+                    "tools": [],
+                    "inputs": [],
+                    "expected_output": ["evidence"],
+                    "acceptance_criteria": ["runtime-completed"],
+                    "requested_side_effects": [],
+                    "write_paths": [],
+                    "priority": 1,
+                    "criticality": 0,
+                    "parallel_safe": True,
+                }
+            ],
+            "dependencies": [],
+        }
+    )
+
+
+def test_run_orchestration_accepts_governed_planner_schema() -> None:
+    result = RunOrchestration(
+        runtime=FakeRuntime(output=_planner_output_text()),
+        claim_registry=InMemoryClaimRegistry(),
+    ).execute(
+        RunOrchestrationRequest(
+            objective="Produce a Planner result.",
+            result_schema_name="planner-output",
+            result_content_type="application/json",
+        )
+    )
+
+    assert json.loads(result.output)["work_units"][0]["id"] == "inspect"
+
+
+def test_run_orchestration_rejects_invalid_governed_planner_schema() -> None:
+    observability = RecordingObservability()
+    claims = InMemoryClaimRegistry()
+    runner = RunOrchestration(
+        runtime=FakeRuntime(output='{"summary":"missing work graph"}'),
+        claim_registry=claims,
+        observability=observability,
+    )
+
+    with pytest.raises(RunOrchestrationError, match="RESULT_SCHEMA_VALIDATION_FAILED"):
+        runner.execute(
+            RunOrchestrationRequest(
+                objective="Produce a Planner result.",
+                result_schema_name="planner-output",
+                result_content_type="application/json",
+            )
+        )
+
+    terminal = [
+        fields
+        for event_type, fields in observability.events
+        if event_type == "orchestration_completed"
+    ]
+    assert terminal[-1]["status"] == "FAILED"
+    assert terminal[-1]["failure_category"] == "contract"
+    assert terminal[-1]["failure_code"] == "result_schema_validation_failed"

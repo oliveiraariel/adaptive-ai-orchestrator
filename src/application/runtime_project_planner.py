@@ -4,8 +4,20 @@ import json
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from application.planner_output_contract import (
+    PLANNER_OUTPUT_SCHEMA_V1,
+    planner_output_schema,
+)
 from application.problem_solving_learning import ProblemSolvingKnowledgeBase
-from application.run_orchestration import RunOrchestration, RunOrchestrationRequest
+from application.run_orchestration import (
+    RunOrchestration,
+    RunOrchestrationError,
+    RunOrchestrationRequest,
+)
+from application.structured_output_contract import (
+    StructuredOutputContractError,
+    validate_structured_json,
+)
 from domain.project_execution_plan import (
     PlannedDependency,
     PlannedWorkUnit,
@@ -72,26 +84,38 @@ class RuntimeProjectPlanner:
         self._knowledge = knowledge_base or ProblemSolvingKnowledgeBase.load_default()
 
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
-        result = self._run_planner(
-            request=request,
-            objective=self._build_initial_prompt(request),
-        )
         try:
-            return self.parse(result, max_work_units=request.max_work_units)
-        except ProjectPlanningError as exc:
-            recovered = self._run_planner(
+            result = self._run_planner(
                 request=request,
-                objective=self._build_initial_recovery_prompt(
-                    request=request,
-                    failure=str(exc),
-                ),
+                objective=self._build_initial_prompt(request),
             )
-            plan = self.parse(recovered, max_work_units=1)
-            self._knowledge.record_planner_recovery(
-                error=str(exc),
-                result="Recovered with one bounded Work Unit.",
-            )
-            return plan
+            return self.parse(result, max_work_units=request.max_work_units)
+        except (ProjectPlanningError, RunOrchestrationError) as exc:
+            if isinstance(exc, RunOrchestrationError) and not self._is_contract_failure(exc):
+                raise
+            failure = str(exc)
+
+        recovered = self._run_planner(
+            request=request,
+            objective=self._build_initial_recovery_prompt(
+                request=request,
+                failure=failure,
+            ),
+        )
+        plan = self.parse(recovered, max_work_units=1)
+        self._knowledge.record_planner_recovery(
+            error=failure,
+            result="Recovered with one bounded Work Unit.",
+        )
+        return plan
+
+    @staticmethod
+    def _is_contract_failure(exc: RunOrchestrationError) -> bool:
+        message = str(exc)
+        return (
+            "RESULT_SCHEMA_VALIDATION_FAILED" in message
+            or "AMEP application/json payload is invalid" in message
+        )
 
     def replan(
         self,
@@ -109,40 +133,44 @@ class RuntimeProjectPlanner:
 
         if not state_summary.strip():
             raise ProjectPlanningError("Replanning requires a non-empty state summary.")
-        result = self._run_planner(
-            request=request,
-            objective=self._build_replan_prompt(
-                request=request,
-                current_plan=current_plan,
-                state_summary=state_summary,
-            ),
-        )
         try:
-            return self.parse(result, max_work_units=request.max_work_units)
-        except ProjectPlanningError as exc:
-            recovered = self._run_planner(
+            result = self._run_planner(
                 request=request,
-                objective=self._build_replan_recovery_prompt(
+                objective=self._build_replan_prompt(
                     request=request,
                     current_plan=current_plan,
                     state_summary=state_summary,
-                    failure=str(exc),
                 ),
             )
-            plan = self.parse(recovered, max_work_units=request.max_work_units)
-            existing = {item.id for item in current_plan.work_units}
-            new_ids = [item.id for item in plan.work_units if item.id not in existing]
-            if len(new_ids) > 1:
-                raise ProjectPlanningError(
-                    "Planner recovery may add at most one new Work Unit."
-                ) from exc
-            self._knowledge.record_planner_recovery(
-                error=str(exc),
-                result=(
-                    "Recovered replanning with no more than one new bounded Work Unit."
-                ),
+            return self.parse(result, max_work_units=request.max_work_units)
+        except (ProjectPlanningError, RunOrchestrationError) as exc:
+            if isinstance(exc, RunOrchestrationError) and not self._is_contract_failure(exc):
+                raise
+            failure = str(exc)
+
+        recovered = self._run_planner(
+            request=request,
+            objective=self._build_replan_recovery_prompt(
+                request=request,
+                current_plan=current_plan,
+                state_summary=state_summary,
+                failure=failure,
+            ),
+        )
+        plan = self.parse(recovered, max_work_units=request.max_work_units)
+        existing = {item.id for item in current_plan.work_units}
+        new_ids = [item.id for item in plan.work_units if item.id not in existing]
+        if len(new_ids) > 1:
+            raise ProjectPlanningError(
+                "Planner recovery may add at most one new Work Unit."
             )
-            return plan
+        self._knowledge.record_planner_recovery(
+            error=failure,
+            result=(
+                "Recovered replanning with no more than one new bounded Work Unit."
+            ),
+        )
+        return plan
 
     def _run_planner(
         self,
@@ -172,7 +200,7 @@ class RuntimeProjectPlanner:
                 request_schema_name="planner-request",
                 result_message_type="planner.plan",
                 result_schema_name="planner-output",
-                result_content_type="text/plain",
+                result_content_type="application/json",
             )
         )
         return result.output
@@ -190,7 +218,7 @@ class RuntimeProjectPlanner:
             f"{experience + chr(10) + chr(10) if experience else ''}"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
+            "OUTPUT JSON SCHEMA (return one JSON instance that validates against this schema; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -224,7 +252,7 @@ class RuntimeProjectPlanner:
             "- If no new Work Unit is truly necessary, return the current plan unchanged.\n"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
+            "OUTPUT JSON SCHEMA (return one JSON instance that validates against this schema; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -256,7 +284,7 @@ class RuntimeProjectPlanner:
             "- Do not invent business rules or bypass project governance.\n"
             "- Return only one strict JSON object; no Markdown fences.\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE:\n"
+            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -290,7 +318,7 @@ class RuntimeProjectPlanner:
             "- Do not invent business rules or optional polish.\n"
             "- Return only one strict JSON object; no Markdown fences.\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE:\n"
+            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -355,38 +383,11 @@ class RuntimeProjectPlanner:
 
     @staticmethod
     def _schema_json() -> str:
-        schema = {
-            "summary": "short plan rationale",
-            "work_units": [
-                {
-                    "id": "stable-short-id",
-                    "objective": "one independently verifiable objective",
-                    "role": "logical specialist role",
-                    "scope": "bounded scope",
-                    "kind": "EXECUTION|DECISION|RESEARCH|PROTOTYPE|HUMAN_ACTION",
-                    "required_capabilities": ["capability.id"],
-                    "requested_skills": ["skill-id"],
-                    "tools": [],
-                    "inputs": [],
-                    "expected_output": ["artifact/evidence"],
-                    "acceptance_criteria": ["runtime-completed"],
-                    "requested_side_effects": ["filesystem.write"],
-                    "write_paths": ["relative/path/prefix"],
-                    "priority": 10,
-                    "criticality": 0,
-                    "parallel_safe": True,
-                }
-            ],
-            "dependencies": [
-                {
-                    "source_id": "producer-id",
-                    "target_id": "consumer-id",
-                    "required": True,
-                    "condition": None,
-                }
-            ],
-        }
-        return json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(
+            PLANNER_OUTPUT_SCHEMA_V1,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     @staticmethod
     def _serialize_plan(plan: ProjectExecutionPlan) -> str:
@@ -427,7 +428,15 @@ class RuntimeProjectPlanner:
 
     @classmethod
     def parse(cls, text: str, *, max_work_units: int) -> ProjectExecutionPlan:
-        payload = cls._decode_json_object(text)
+        try:
+            payload, _ = validate_structured_json(
+                text,
+                planner_output_schema(max_work_units),
+            )
+        except StructuredOutputContractError as exc:
+            raise ProjectPlanningError(str(exc)) from exc
+        if not isinstance(payload, dict):
+            raise ProjectPlanningError("Planner root value must be a JSON object.")
         summary = payload.get("summary")
         entries = payload.get("work_units")
         dependency_entries = payload.get("dependencies", [])
@@ -455,30 +464,6 @@ class RuntimeProjectPlanner:
             )
         except ProjectExecutionPlanError as exc:
             raise ProjectPlanningError(str(exc)) from exc
-
-    @staticmethod
-    def _decode_json_object(text: str) -> dict:
-        candidate = text.strip()
-        if candidate.startswith("```"):
-            lines = candidate.splitlines()
-            if len(lines) >= 3 and lines[-1].strip() == "```":
-                candidate = "\n".join(lines[1:-1])
-                if candidate.lstrip().startswith("json"):
-                    candidate = candidate.lstrip()[4:].lstrip()
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            start = candidate.find("{")
-            end = candidate.rfind("}")
-            if start < 0 or end <= start:
-                raise ProjectPlanningError("Planner did not return a JSON object.")
-            try:
-                payload = json.loads(candidate[start : end + 1])
-            except json.JSONDecodeError as exc:
-                raise ProjectPlanningError(f"Planner returned invalid JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise ProjectPlanningError("Planner root value must be a JSON object.")
-        return payload
 
     @classmethod
     def _parse_work_unit(cls, entry: object) -> PlannedWorkUnit:

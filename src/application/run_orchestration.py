@@ -3,6 +3,8 @@ from typing import Tuple
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntime, AgentRuntimeStatus, ExecutionReference
+from application.message_schema_registry import resolve_message_schema
+from application.structured_output_contract import StructuredOutputContractError, validate_structured_json
 from application.observability import ObservabilitySink, NullObservabilitySink
 from application.claim_registry import ClaimRegistry
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
@@ -253,6 +255,25 @@ class RunOrchestration:
         if result_status is ResultPackageStatus.SUCCEEDED and raw_result is None:
             raw_result = {"status": "completed"}
 
+        output = self._extract_output(raw_result)
+        governed_schema = resolve_message_schema(request.result_schema_name)
+        if (
+            result_status is ResultPackageStatus.SUCCEEDED
+            and governed_schema is not None
+        ):
+            try:
+                _, output = validate_structured_json(output, governed_schema)
+            except StructuredOutputContractError as exc:
+                self._claim_registry.release(outcome.claim)
+                self._emit_terminal_failure(
+                    run_id,
+                    category="contract",
+                    code="result_schema_validation_failed",
+                )
+                raise RunOrchestrationError(
+                    f"RESULT_SCHEMA_VALIDATION_FAILED: {exc}"
+                ) from exc
+
         evidence = []
         if runtime_status is AgentRuntimeStatus.COMPLETED:
             evidence.append("runtime-completed")
@@ -292,7 +313,6 @@ class RunOrchestration:
             status=finalized.work_unit_state.value, verdict=evaluation.verdict.value,
         )
 
-        output = self._extract_output(raw_result)
         return RunOrchestrationResult(
             task_id=task_id,
             work_unit_id=work_unit_id,
