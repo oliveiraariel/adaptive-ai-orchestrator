@@ -3,8 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from application.run_orchestration import RunOrchestrationError
 from application.runtime_project_planner import (
     ProjectPlanningError,
+    ProjectPlanningRequest,
     RuntimeProjectPlanner,
 )
 
@@ -127,3 +129,47 @@ def test_parse_rejects_unknown_planner_fields() -> None:
 
     with pytest.raises(ProjectPlanningError, match="Additional properties"):
         RuntimeProjectPlanner.parse(payload([item]), max_work_units=2)
+
+
+class _SequenceRunner:
+    def __init__(self, items) -> None:
+        self.items = list(items)
+        self.calls = 0
+
+    def execute(self, request):
+        item = self.items[self.calls]
+        self.calls += 1
+        if isinstance(item, Exception):
+            raise item
+        return SimpleNamespace(output=item)
+
+
+def test_planner_retries_once_after_contract_transport_failure() -> None:
+    runner = _SequenceRunner(
+        [
+            RunOrchestrationError(
+                "Runtime result retrieval failed: AMEP application/json payload is invalid."
+            ),
+            payload([work_unit("recovered")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(objective="Recover a malformed Planner document.")
+    )
+
+    assert runner.calls == 2
+    assert plan.work_units[0].id == "recovered"
+
+
+def test_planner_does_not_retry_unrelated_runtime_failure() -> None:
+    runner = _SequenceRunner(
+        [RunOrchestrationError("Runtime result retrieval failed: credentials unavailable.")]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    with pytest.raises(RunOrchestrationError, match="credentials unavailable"):
+        planner.plan(ProjectPlanningRequest(objective="Do not mask runtime failures."))
+
+    assert runner.calls == 1
