@@ -559,6 +559,7 @@ def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
 
 
 def test_gateway_fails_over_luna_to_free_laguna_on_billing(monkeypatch) -> None:
+    monkeypatch.delenv("ADAPTIVE_OPENROUTER_AUTH_PROFILE", raising=False)
     client = OpenClawGatewayClient(GatewayConfig(archive_completed_sessions=False, archive_cancelled_sessions=False))
     patched_models=[]; calls=[]
     def fake_rpc(method, params):
