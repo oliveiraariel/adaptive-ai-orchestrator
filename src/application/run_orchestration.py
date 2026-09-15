@@ -48,7 +48,6 @@ class RunOrchestrationRequest:
     result_message_type: str = "worker.result"
     result_schema_name: str = "worker-result"
     result_content_type: str = "text/plain"
-    result_json_schema: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if not self.objective.strip():
@@ -73,13 +72,6 @@ class RunOrchestrationRequest:
                 raise ValueError(f"{field_name} must not be empty.")
         if self.result_content_type not in {"application/json", "text/plain", "text/markdown"}:
             raise ValueError("result_content_type is unsupported.")
-        if self.result_json_schema is not None:
-            if not isinstance(self.result_json_schema, dict):
-                raise ValueError("result_json_schema must be an object.")
-            if self.result_content_type != "application/json":
-                raise ValueError(
-                    "result_json_schema requires result_content_type=application/json."
-                )
 
 
 @dataclass(frozen=True)
@@ -124,7 +116,7 @@ class RunOrchestration:
         task_id = f"task:{run_id}"
         work_unit = WorkUnit(id=WorkUnitId(work_unit_id), objective=request.objective, scope=request.scope, inputs=request.inputs, outputs=request.expected_output, criteria=request.acceptance_criteria)
         configuration = ResourceConfiguration(agent=request.agent, skills=request.skills, model=request.model, provider=request.provider, tools=request.tools, runtime="openclaw")
-        task_package = TaskPackage(task_id=task_id, work_unit_id=work_unit_id, objective=request.objective, orchestration_id=run_id, scope=request.scope, context=request.context, inputs=request.inputs, constraints=request.constraints, configuration=configuration, expected_output=request.expected_output, acceptance_criteria=request.acceptance_criteria, execution_policy=request.execution_policy, requested_side_effects=request.requested_side_effects, request_message_type=request.request_message_type, request_schema_name=request.request_schema_name, result_message_type=request.result_message_type, result_schema_name=request.result_schema_name, result_content_type=request.result_content_type, result_json_schema=request.result_json_schema)
+        task_package = TaskPackage(task_id=task_id, work_unit_id=work_unit_id, objective=request.objective, orchestration_id=run_id, scope=request.scope, context=request.context, inputs=request.inputs, constraints=request.constraints, configuration=configuration, expected_output=request.expected_output, acceptance_criteria=request.acceptance_criteria, execution_policy=request.execution_policy, requested_side_effects=request.requested_side_effects, request_message_type=request.request_message_type, request_schema_name=request.request_schema_name, result_message_type=request.result_message_type, result_schema_name=request.result_schema_name, result_content_type=request.result_content_type)
         dispatched = ExecutionCoordinator(runtime=self._runtime, claim_registry=self._claim_registry).dispatch_frontier(DispatchFrontierRequest(assignments=(WorkAssignment(work_unit=work_unit, configuration=configuration, task_package=task_package),), dependencies=(), claimant_id=request.claimant_id, concurrency_limit=1, human_approved_work_unit_ids=(work_unit_id,) if request.human_approved else ()))
         outcome = dispatched.outcomes[0]
         if outcome.status is not DispatchStatus.DISPATCHED or outcome.execution is None:
@@ -171,7 +163,6 @@ class RunOrchestration:
             result_message_type=request.result_message_type,
             result_schema_name=request.result_schema_name,
             result_content_type=request.result_content_type,
-            result_json_schema=request.result_json_schema,
         )
         self._observability.emit("orchestration_started", orchestration_id=run_id)
         self._observability.emit(
