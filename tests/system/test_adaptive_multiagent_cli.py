@@ -1,6 +1,7 @@
 import json
 
 from adaptive_orchestrator import cli
+from domain.project_execution_plan import PlannedDependency, PlannedWorkUnit, ProjectExecutionPlan
 
 
 class MultiFakeGatewayClient:
@@ -22,6 +23,56 @@ class MultiFakeGatewayClient:
 
     def cancel(self, external_id):
         return None
+
+
+def test_cli_plan_only_calls_planner_and_never_dispatches(monkeypatch, tmp_path, capsys) -> None:
+    registry = tmp_path / "skills.json"
+    registry.write_text(json.dumps({"schema_version": 1, "skills": []}), encoding="utf-8")
+    plan = ProjectExecutionPlan(
+        summary="read-only plan",
+        work_units=(PlannedWorkUnit(id="inspect", objective="Inspect documents"),),
+        dependencies=(),
+    )
+
+    class FakePlanner:
+        called = False
+
+        def __init__(self, **kwargs):
+            pass
+
+        def plan(self, request):
+            type(self).called = True
+            assert request.max_work_units == 3
+            return plan
+
+    class ForbiddenExecutor:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("plan-only must not initialize the executor")
+
+    monkeypatch.setattr(cli, "RuntimeProjectPlanner", FakePlanner)
+    monkeypatch.setattr(cli, "RunContinuousProjectOrchestration", ForbiddenExecutor)
+    monkeypatch.setattr(cli, "_runtime", lambda args: object())
+
+    exit_code = cli.main([
+        "orchestrate", "--plan-only", "--objective", "Inspect documents.",
+        "--skill-registry", str(registry), "--max-work-units", "3",
+        "--project-root", str(tmp_path),
+    ])
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured.err
+    payload = json.loads(captured.out)
+    assert FakePlanner.called is True
+    assert payload["mode"] == "plan-only"
+    assert payload["work_unit_count"] == 1
+    assert payload["work_units"][0]["id"] == "inspect"
+    assert payload["dependencies"] == []
+
+
+def test_cli_parser_keeps_max_waves_validation_range() -> None:
+    args = cli.build_parser().parse_args([
+        "orchestrate", "--plan-only", "--objective", "Inspect",
+    ])
+    assert args.plan_only is True
 
 
 def test_cli_orchestrate_executes_static_parallel_plan(monkeypatch, tmp_path, capsys) -> None:
@@ -170,4 +221,3 @@ def test_cli_emits_terminal_failure_when_planner_runtime_aborts(monkeypatch, tmp
     assert terminal[0]["status"] == "FAILED"
     assert terminal[0]["failure_category"] == "runtime"
     assert terminal[0]["failure_code"] == "orchestration_runtime_failed"
-

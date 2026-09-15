@@ -31,6 +31,7 @@ from application.run_project_orchestration import (
 )
 from application.runtime_project_planner import (
     ProjectPlanningError,
+    ProjectPlanningRequest,
     RuntimeProjectPlanner,
 )
 from application.skill_resolution import SkillResolutionError
@@ -144,6 +145,7 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--constraint", action="append", default=[])
     parser.add_argument("--skill-registry")
     parser.add_argument("--plan-file")
+    parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument("--max-work-units", type=int, default=24)
     parser.add_argument("--max-waves", type=int, default=24)
@@ -478,6 +480,41 @@ def _orchestrate(args: argparse.Namespace) -> int:
             runner=planner_runner,
             skill_profiles=profiles,
         )
+
+        if args.plan_only:
+            planning_request = ProjectPlanningRequest(
+                objective=args.objective,
+                scope=args.scope,
+                context=tuple(args.context),
+                constraints=tuple(args.constraint),
+                agent=args.planner_agent or args.agent,
+                max_work_units=args.max_work_units,
+                max_concurrency=args.max_concurrency,
+            )
+            plan = planner.plan(planning_request)
+            observability.emit(
+                "orchestration_completed", orchestration_id=orchestration_id,
+                status="PLANNED", mode="plan-only",
+                work_unit_count=len(plan.work_units),
+            )
+            print(json.dumps({
+                "ok": True,
+                "mode": "plan-only",
+                "orchestration_id": orchestration_id,
+                "plan_summary": plan.summary,
+                "work_unit_count": len(plan.work_units),
+                "work_units": [
+                    {"id": unit.id, "objective": unit.objective, "role": unit.role,
+                     "scope": unit.scope, "kind": unit.kind.value}
+                    for unit in plan.work_units
+                ],
+                "dependencies": [
+                    {"source_id": item.source_id, "target_id": item.target_id,
+                     "required": item.required, "condition": item.condition}
+                    for item in plan.dependencies
+                ],
+            }, sort_keys=True))
+            return 0
 
         plan = None
         if args.plan_file:
