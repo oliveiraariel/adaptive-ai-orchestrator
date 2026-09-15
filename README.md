@@ -174,6 +174,28 @@ Field operation exposed several important distinctions that are now part of the 
 
 The incident-derived rationale and cross-layer lessons are recorded in [`docs/execution-integrity-field-learning-2026-09-13.md`](docs/execution-integrity-field-learning-2026-09-13.md).
 
+## Durable inter-component communication — AMEP v1
+
+Adaptive uses the **Adaptive Message Exchange Protocol (AMEP) v1** for
+machine-significant inter-component communication. Large Planner, Worker and
+other agent payloads live under the governed project's project-local
+`.adaptive/messages/` store; the OpenClaw/runtime channel carries only a small
+verified message reference.
+
+This establishes one communication rule for Planner, Adaptive, Workers,
+Evaluator, Sentinel/watchers and future subagents:
+
+`complete payload -> atomic persistence -> manifest/hash -> compact MESSAGE_REF -> recipient verification`
+
+Chat/history remains useful for progress and human presentation, but it is not
+the authoritative home of large machine payloads. Worker Protocol v1 embeds the
+AMEP contract as a mandatory hashed invariant.
+
+See
+[`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`](docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md)
+and the transport schemas under
+[`specifications/protocols/`](specifications/protocols/).
+
 ## Core Idea
 
 The project follows a workflow similar to:
