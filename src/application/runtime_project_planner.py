@@ -4,8 +4,20 @@ import json
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
+from application.planner_output_contract import (
+    PLANNER_OUTPUT_SCHEMA_V1,
+    planner_output_schema,
+)
 from application.problem_solving_learning import ProblemSolvingKnowledgeBase
-from application.run_orchestration import RunOrchestration, RunOrchestrationRequest
+from application.run_orchestration import (
+    RunOrchestration,
+    RunOrchestrationError,
+    RunOrchestrationRequest,
+)
+from application.structured_output_contract import (
+    StructuredOutputContractError,
+    validate_structured_json,
+)
 from domain.project_execution_plan import (
     PlannedDependency,
     PlannedWorkUnit,
