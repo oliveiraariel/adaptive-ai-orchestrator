@@ -83,7 +83,7 @@ Future components must define a versioned message_type/schema pair instead of in
 
 ### Planner special rule
 
-Planner output is transported as raw UTF-8 text under the logical planner-output/1 contract. This is deliberate. AMEP must preserve the exact bytes even if the model produced malformed JSON. Only after transport integrity succeeds does RuntimeProjectPlanner decode JSON, validate fields/types, validate Work Unit/dependency invariants, and apply bounded recovery when justified.
+Planner output uses JSON under the versioned planner-output/1 contract. The Result Store preserves the original worker result for diagnostics, while Adaptive accepts a Planner document only after strict JSON Schema validation and semantic graph validation. See docs/architecture/PLANNER-STRUCTURED-OUTPUT-CONTRACT.md and specifications/protocols/planner-output-v1.schema.json.
 
 ## Responsibilities
 
