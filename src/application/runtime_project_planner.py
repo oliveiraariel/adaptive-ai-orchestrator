@@ -123,40 +123,42 @@ class RuntimeProjectPlanner:
 
         if not state_summary.strip():
             raise ProjectPlanningError("Replanning requires a non-empty state summary.")
-        result = self._run_planner(
-            request=request,
-            objective=self._build_replan_prompt(
-                request=request,
-                current_plan=current_plan,
-                state_summary=state_summary,
-            ),
-        )
         try:
-            return self.parse(result, max_work_units=request.max_work_units)
-        except ProjectPlanningError as exc:
-            recovered = self._run_planner(
+            result = self._run_planner(
                 request=request,
-                objective=self._build_replan_recovery_prompt(
+                objective=self._build_replan_prompt(
                     request=request,
                     current_plan=current_plan,
                     state_summary=state_summary,
-                    failure=str(exc),
                 ),
             )
-            plan = self.parse(recovered, max_work_units=request.max_work_units)
-            existing = {item.id for item in current_plan.work_units}
-            new_ids = [item.id for item in plan.work_units if item.id not in existing]
-            if len(new_ids) > 1:
-                raise ProjectPlanningError(
-                    "Planner recovery may add at most one new Work Unit."
-                ) from exc
-            self._knowledge.record_planner_recovery(
-                error=str(exc),
-                result=(
-                    "Recovered replanning with no more than one new bounded Work Unit."
-                ),
+            return self.parse(result, max_work_units=request.max_work_units)
+        except (ProjectPlanningError, RunOrchestrationError) as exc:
+            failure = str(exc)
+
+        recovered = self._run_planner(
+            request=request,
+            objective=self._build_replan_recovery_prompt(
+                request=request,
+                current_plan=current_plan,
+                state_summary=state_summary,
+                failure=failure,
+            ),
+        )
+        plan = self.parse(recovered, max_work_units=request.max_work_units)
+        existing = {item.id for item in current_plan.work_units}
+        new_ids = [item.id for item in plan.work_units if item.id not in existing]
+        if len(new_ids) > 1:
+            raise ProjectPlanningError(
+                "Planner recovery may add at most one new Work Unit."
             )
-            return plan
+        self._knowledge.record_planner_recovery(
+            error=failure,
+            result=(
+                "Recovered replanning with no more than one new bounded Work Unit."
+            ),
+        )
+        return plan
 
     def _run_planner(
         self,
