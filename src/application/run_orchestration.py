@@ -171,6 +171,7 @@ class RunOrchestration:
             result_message_type=request.result_message_type,
             result_schema_name=request.result_schema_name,
             result_content_type=request.result_content_type,
+            result_json_schema=request.result_json_schema,
         )
         self._observability.emit("orchestration_started", orchestration_id=run_id)
         self._observability.emit(
