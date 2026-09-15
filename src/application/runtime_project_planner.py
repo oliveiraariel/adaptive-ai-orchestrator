@@ -367,38 +367,11 @@ class RuntimeProjectPlanner:
 
     @staticmethod
     def _schema_json() -> str:
-        schema = {
-            "summary": "short plan rationale",
-            "work_units": [
-                {
-                    "id": "stable-short-id",
-                    "objective": "one independently verifiable objective",
-                    "role": "logical specialist role",
-                    "scope": "bounded scope",
-                    "kind": "EXECUTION|DECISION|RESEARCH|PROTOTYPE|HUMAN_ACTION",
-                    "required_capabilities": ["capability.id"],
-                    "requested_skills": ["skill-id"],
-                    "tools": [],
-                    "inputs": [],
-                    "expected_output": ["artifact/evidence"],
-                    "acceptance_criteria": ["runtime-completed"],
-                    "requested_side_effects": ["filesystem.write"],
-                    "write_paths": ["relative/path/prefix"],
-                    "priority": 10,
-                    "criticality": 0,
-                    "parallel_safe": True,
-                }
-            ],
-            "dependencies": [
-                {
-                    "source_id": "producer-id",
-                    "target_id": "consumer-id",
-                    "required": True,
-                    "condition": None,
-                }
-            ],
-        }
-        return json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(
+            PLANNER_OUTPUT_SCHEMA_V1,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     @staticmethod
     def _serialize_plan(plan: ProjectExecutionPlan) -> str:
