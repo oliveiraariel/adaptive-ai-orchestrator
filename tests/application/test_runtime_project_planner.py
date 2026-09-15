@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,3 +83,37 @@ def test_parse_rejects_required_dependency_cycle() -> None:
             ),
             max_work_units=2,
         )
+
+
+class _CapturingRunner:
+    def __init__(self) -> None:
+        self.request = None
+
+    def execute(self, request):
+        self.request = request
+        return SimpleNamespace(output=payload([work_unit("planner-probe")]))
+
+
+def test_planner_declares_amep_request_and_result_contracts() -> None:
+    from application.runtime_project_planner import ProjectPlanningRequest
+
+    runner = _CapturingRunner()
+    planner = RuntimeProjectPlanner(
+        runner=runner,
+        skill_profiles=(),
+    )
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective="Inspect the project safely.",
+            max_work_units=2,
+        )
+    )
+
+    assert plan.work_units[0].id == "planner-probe"
+    assert runner.request is not None
+    assert runner.request.request_message_type == "planner.request"
+    assert runner.request.request_schema_name == "planner-request"
+    assert runner.request.result_message_type == "planner.plan"
+    assert runner.request.result_schema_name == "planner-output"
+    assert runner.request.result_content_type == "text/plain"

@@ -4,6 +4,11 @@ import hashlib
 import json
 from typing import Any
 
+from application.message_protocol import (
+    PROTOCOL_NAME as MESSAGE_PROTOCOL_NAME,
+    PROTOCOL_VERSION as MESSAGE_PROTOCOL_VERSION,
+)
+
 
 PROTOCOL_NAME = "adaptive-worker-protocol"
 PROTOCOL_VERSION = 1
@@ -61,6 +66,16 @@ def build_worker_protocol(
             "worker_may_report_done_after_result_file_finalized": True,
             "runtime_completion_alone_is_not_authoritative_result": True,
             "orchestrator_terminal_state": PROTOCOL_COMPLETION_STATE,
+        },
+        "message_exchange_contract": {
+            "name": MESSAGE_PROTOCOL_NAME,
+            "version": MESSAGE_PROTOCOL_VERSION,
+            "mandatory": True,
+            "large_payloads_by_reference": True,
+            "chat_authoritative": False,
+            "request_delivery": "AMEP_MESSAGE_REF",
+            "authoritative_payload_location": "project-local-message-store",
+            "result_bridge": "adaptive-result-store-to-AMEP",
         },
         "identity": identity,
         "result_store": {

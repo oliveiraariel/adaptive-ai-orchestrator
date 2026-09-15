@@ -53,6 +53,19 @@ If operational documents disagree, do not silently choose one. Compare version, 
 
 ## 3. Current State
 
+Current communication invariant:
+
+- **AMEP v1** is the mandatory file-backed payload-by-reference contract for
+  machine-significant Planner/Adaptive/Worker/Evaluator/Sentinel communication;
+- complete payloads live in the governed project's `.adaptive/messages/`;
+- runtime/chat carries compact references, not authoritative large payloads;
+- Worker Result Store remains integrated as a hardened result profile and is
+  bridged into AMEP;
+- Planner raw output is durably preserved before JSON/schema validation.
+
+Normative communication architecture:
+`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`.
+
 Validated:
 
 - Phase 1 — Core implementation: complete.
@@ -130,17 +143,18 @@ For shared-checkout writes, `filesystem.write` requires explicit repository-rela
 When resuming development, read:
 
 1. `CONTEXT.md`
-2. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`
-3. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md`
-4. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md`
-5. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
-6. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
-7. `docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md`
-8. `docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md`
-9. `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`
-10. `docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md`
-11. `docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
-12. Phase 3 plan/gate and WU-specific artifacts when the task reaches WU-055 or later.
+2. `docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`
+3. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`
+4. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md`
+5. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md`
+6. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
+7. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
+8. `docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md`
+9. `docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md`
+10. `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`
+11. `docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md`
+12. `docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
+13. Phase 3 plan/gate and WU-specific artifacts when the task reaches WU-055 or later.
 
 For installation/recovery problems, also read:
 

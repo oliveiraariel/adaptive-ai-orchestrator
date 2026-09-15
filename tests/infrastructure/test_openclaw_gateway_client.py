@@ -559,6 +559,7 @@ def test_gateway_client_agent_wait_uses_long_poll_timeout_budget() -> None:
 
 
 def test_gateway_fails_over_luna_to_free_laguna_on_billing(monkeypatch) -> None:
+    monkeypatch.delenv("ADAPTIVE_OPENROUTER_AUTH_PROFILE", raising=False)
     client = OpenClawGatewayClient(GatewayConfig(archive_completed_sessions=False, archive_cancelled_sessions=False))
     patched_models=[]; calls=[]
     def fake_rpc(method, params):
@@ -722,7 +723,8 @@ def test_gateway_automatically_fails_over_k27_to_luna_oauth_on_rate_limit(
         "moonshot/kimi-k2.7-code@moonshot:api-key",
         "openai/gpt-5.6-luna@openai:oauth-test",
     ]
-    fallback_message = json.loads(agent_calls[1]["message"])
+    fallback_ref = json.loads(agent_calls[1]["message"].splitlines()[-1])
+    fallback_message = client._message_store.read_reference(fallback_ref).json()
     assert fallback_message["configuration"]["thinking"] == "low"
     assert fallback_message["configuration"]["auth_profile"] == "openai:oauth-test"
     assert "adaptive-auth-product:openai-oauth" in (
@@ -1039,13 +1041,14 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
             ),
             result_store=store,
         )
+        large_request_context = "REQUEST_BODY_" + ("q" * 12000)
         external = client.submit({
             "task_id": "task-store",
             "orchestration_id": "orch-store",
             "work_unit_id": "wu-store",
             "objective": "produce a large result",
             "scope": "",
-            "context": [],
+            "context": [large_request_context],
             "inputs": [],
             "artifacts": [],
             "decisions": [],
@@ -1067,7 +1070,7 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         result = client.retrieve_result(external)
 
         assert result["output"] == content
-        assert result["result_transport"]["source"] == "adaptive-result-store"
+        assert result["result_transport"]["source"] == "adaptive-result-store+amep"
         assert result["result_transport"]["authoritative"] is True
         assert result["result_transport"]["result_bytes"] > 12000
         assert result["result_transport"]["complete"] is True
@@ -1077,8 +1080,16 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
 
         agent_request = holder["requests"][0]
         serialized_message = agent_request["params"]["message"]
-        message = json.loads(serialized_message)
-        assert serialized_message.startswith('{"worker_protocol":')
+        assert serialized_message.startswith(
+            "MANDATORY ADAPTIVE MESSAGE EXCHANGE PROTOCOL"
+        )
+        message_ref = json.loads(serialized_message.splitlines()[-1])
+        assert message_ref["type"] == "adaptive.message.ref"
+        assert message_ref["message_type"] == "work.assignment"
+        assert large_request_context not in serialized_message
+        assert len(serialized_message.encode("utf-8")) < 2000
+        message = client._message_store.read_reference(message_ref).json()
+        assert message["context"] == [large_request_context]
         assert message["worker_protocol"]["name"] == "adaptive-worker-protocol"
         assert message["worker_protocol"]["version"] == 1
         assert message["worker_protocol"]["mandatory"] is True
@@ -1086,6 +1097,13 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         assert message["worker_protocol"]["result_contract"]["adaptive_finalizes_manifest"] is True
         assert message["result_store"]["orchestration_id"] == "orch-store"
         assert message["result_store"]["work_unit_id"] == "wu-store"
+        assert message["worker_protocol"]["message_exchange_contract"]["mandatory"] is True
+        assert result["result_transport"]["message_ref"]["type"] == "adaptive.message.ref"
+        assert result["result_transport"]["message_ref"]["recipient"] == "adaptive"
+        result_message = client._message_store.read_reference(
+            result["result_transport"]["message_ref"]
+        )
+        assert result_message.content == content
         assert any(
             "Adaptive Worker Protocol publication rule" in item
             for item in message["constraints"]

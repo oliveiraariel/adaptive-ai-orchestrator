@@ -2351,3 +2351,41 @@ A arquitetura final proposta separa claramente:
 ```
 
 O sistema passa a possuir uma fronteira clara entre **o conhecimento e a inteligência de orquestração que estamos desenvolvendo** e **a infraestrutura de execução fornecida por OpenClaw, Hermes ou outro runtime**.
+
+
+# 87. Adaptive Message Exchange Protocol — AMEP v1
+
+A evolução operacional demonstrou que o canal conversacional/runtime não deve ser
+tratado como armazenamento autoritativo de payloads extensos. O contrato atual
+adota o **Adaptive Message Exchange Protocol (AMEP) v1**:
+
+    componente emissor
+    -> payload completo no Message Store do projeto
+    -> manifest + SHA-256 + schema versionado
+    -> MESSAGE_REF compacto
+    -> runtime/control plane
+    -> receptor verifica e lê o payload completo
+
+O protocolo é transversal a Planner, Adaptive, Workers, Evaluator,
+Sentinel/watchers e futuros subagentes. Chat/history permanece canal de
+apresentação/progresso, não fonte autoritativa de dados de máquina.
+
+O Worker Result Store existente é preservado como perfil endurecido e integrado
+ao AMEP; não existe uma segunda semântica concorrente de comunicação.
+
+Contrato normativo detalhado:
+
+`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`
+
+Schemas de transporte:
+
+`specifications/protocols/`
+
+Invariantes principais:
+
+- publicação de payload antes da referência;
+- escrita atômica;
+- referência e payload verificados por hash;
+- mensagens versionadas por tipo/schema;
+- validação específica do domínio após validação de transporte;
+- nenhuma Skill, prompt ou worker pode redefinir o protocolo obrigatório.

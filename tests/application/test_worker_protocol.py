@@ -32,6 +32,13 @@ def test_worker_protocol_is_mandatory_and_result_transport_is_not_skill_owned():
     assert protocol["result_contract"]["chat_authoritative"] is False
     assert protocol["result_contract"]["worker_writes_manifest"] is False
     assert protocol["result_contract"]["adaptive_finalizes_manifest"] is True
+    exchange = protocol["message_exchange_contract"]
+    assert exchange["name"] == "adaptive-message-exchange-protocol"
+    assert exchange["version"] == 1
+    assert exchange["mandatory"] is True
+    assert exchange["large_payloads_by_reference"] is True
+    assert exchange["chat_authoritative"] is False
+    assert exchange["request_delivery"] == "AMEP_MESSAGE_REF"
     assert (
         protocol["result_contract"]["completion_requires"]
         == PROTOCOL_COMPLETION_STATE

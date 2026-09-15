@@ -30,6 +30,7 @@ from application.worker_protocol import (
     PROTOCOL_VERSION,
     build_worker_protocol,
 )
+from infrastructure.message_store import FileMessageStore, MessageStoreError
 from infrastructure.openclaw_adapter import OpenClawClient
 from infrastructure.provider_telemetry_store import ProviderTelemetryStore
 from infrastructure.result_store import FileResultStore, ResultStoreError, ResultStoreTarget
@@ -80,6 +81,7 @@ class GatewayRun:
     task_payload: dict[str, Any] = field(default_factory=dict)
     runtime_attempt: int = 1
     result_target: ResultStoreTarget | None = None
+    request_message_ref: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,7 @@ class OpenClawGatewayClient(OpenClawClient):
         provider_health_policy: ProviderHealthPolicy | None = None,
         provider_telemetry: ProviderTelemetryStore | None = None,
         result_store: FileResultStore | None = None,
+        message_store: FileMessageStore | None = None,
     ) -> None:
         if _IMPORT_ERROR is not None or _CRYPTO_IMPORT_ERROR is not None:
             raise OpenClawGatewayError(
@@ -160,6 +163,16 @@ class OpenClawGatewayClient(OpenClawClient):
         self._provider_telemetry = provider_telemetry or ProviderTelemetryStore()
         self._device_identity = self._load_or_create_device_identity()
         self._result_store = result_store or FileResultStore()
+        if message_store is not None:
+            self._message_store = message_store
+        elif self._result_store.project_root is not None:
+            self._message_store = FileMessageStore(
+                project_root=self._result_store.project_root
+            )
+        else:
+            self._message_store = FileMessageStore(
+                root=self._result_store.root / "messages"
+            )
         self._run_identity_path = self._resolve_run_identity_path()
 
     def recover_run(self, external_id: str) -> GatewayRun:
@@ -229,6 +242,11 @@ class OpenClawGatewayClient(OpenClawClient):
             },
             runtime_attempt=int(record.get("runtime_attempt", 1)),
             result_target=target,
+            request_message_ref=(
+                record.get("request_message_ref")
+                if isinstance(record.get("request_message_ref"), dict)
+                else None
+            ),
         )
         self._runs[external_id] = run
         return run
@@ -254,13 +272,32 @@ class OpenClawGatewayClient(OpenClawClient):
         task_payload = self._with_result_store_contract(task_payload, result_target)
         configuration = task_payload["configuration"]
         agent_id = str(configuration["agent"])
+        exchange = task_payload.get("message_exchange")
+        if not isinstance(exchange, dict):
+            exchange = {}
+        request_message_type = str(
+            exchange.get("request_message_type") or "work.assignment"
+        )
+        request_schema_name = str(
+            exchange.get("request_schema_name") or "task-package"
+        )
+        request_schema_version = str(exchange.get("schema_version") or "1")
+        request_message = self._message_store.publish_json(
+            sender="adaptive",
+            recipient=f"agent:{agent_id}",
+            message_type=request_message_type,
+            schema_name=request_schema_name,
+            schema_version=request_schema_version,
+            correlation_id=orchestration_id,
+            payload=task_payload,
+        )
         session_key = f"agent:{agent_id}:orchestrator:{task_id}"
         idempotency_key = f"orchestrator:{task_id}"
         if runtime_attempt > 1:
             idempotency_key = f"{idempotency_key}:runtime-fallback:{runtime_attempt}"
 
         params: dict[str, Any] = {
-            "message": self._build_message(task_payload),
+            "message": self._build_message(request_message.reference),
             "agentId": agent_id,
             "sessionKey": session_key,
             "deliver": False,
@@ -324,6 +361,7 @@ class OpenClawGatewayClient(OpenClawClient):
             task_payload=dict(task_payload),
             runtime_attempt=runtime_attempt,
             result_target=result_target,
+            request_message_ref=request_message.reference,
         )
         self._persist_run_identity(self._runs[external_id])
         return external_id
@@ -347,6 +385,7 @@ class OpenClawGatewayClient(OpenClawClient):
             "work_unit_id": str(run.task_payload.get("work_unit_id") or ""),
             "execution_id": run.result_target.execution_id if run.result_target else None,
             "result_target": run.result_target.as_payload() if run.result_target else None,
+            "request_message_ref": run.request_message_ref,
             "runtime_attempt": run.runtime_attempt,
             "recorded_at": time.time(),
         }
@@ -477,13 +516,61 @@ class OpenClawGatewayClient(OpenClawClient):
                 protocol_error = str(exc)
 
         if stored is not None:
-            output = stored.content
+            exchange = run.task_payload.get("message_exchange")
+            if not isinstance(exchange, dict):
+                exchange = {}
+            configuration = run.task_payload.get("configuration")
+            agent_id = (
+                str(configuration.get("agent") or "worker")
+                if isinstance(configuration, dict)
+                else "worker"
+            )
+            reply_to = None
+            if isinstance(run.request_message_ref, dict):
+                candidate = run.request_message_ref.get("message_id")
+                if isinstance(candidate, str) and candidate:
+                    reply_to = candidate
+            try:
+                exchanged = self._message_store.publish_text(
+                    sender=f"agent:{agent_id}",
+                    recipient="adaptive",
+                    message_type=str(
+                        exchange.get("result_message_type") or "worker.result"
+                    ),
+                    schema_name=str(
+                        exchange.get("result_schema_name") or "worker-result"
+                    ),
+                    schema_version=str(exchange.get("schema_version") or "1"),
+                    content_type=str(
+                        exchange.get("result_content_type") or "text/plain"
+                    ),
+                    correlation_id=(
+                        run.result_target.orchestration_id
+                        if run.result_target is not None
+                        else str(run.task_payload.get("orchestration_id") or "runtime")
+                    ),
+                    reply_to=reply_to,
+                    content=stored.content,
+                )
+            except MessageStoreError as exc:
+                raise OpenClawGatewayError(
+                    f"AMEP result publication failed: {exc}"
+                ) from exc
+
+            # Read through the AMEP reference before exposing the result upward.
+            # This makes manifest/payload verification part of the runtime boundary.
+            exchanged = self._message_store.read_reference(exchanged.reference)
+            output = exchanged.content
             result_transport = {
-                "source": "adaptive-result-store",
+                "source": "adaptive-result-store+amep",
                 "authoritative": True,
                 "result_ref": str(run.result_target.manifest_path),
                 "result_sha256": stored.sha256,
                 "result_bytes": stored.byte_length,
+                "message_ref": exchanged.reference,
+                "message_manifest": exchanged.reference["manifest"],
+                "message_sha256": exchanged.sha256,
+                "message_bytes": exchanged.byte_length,
                 "complete": True,
                 "completion_state": PROTOCOL_COMPLETION_STATE,
             }
@@ -1124,8 +1211,13 @@ class OpenClawGatewayClient(OpenClawClient):
 
     @staticmethod
     def _build_message(task_payload: dict[str, Any]) -> str:
-        # Insertion order is intentional: the mandatory protocol is the first
-        # instruction visible to every worker, before role/skill/task content.
+        # AMEP v1 uses chat/runtime as a control plane only. New executions carry
+        # a compact reference; the full task package lives in the Message Store.
+        if task_payload.get("type") == "adaptive.message.ref":
+            return FileMessageStore.reference_message(task_payload)
+
+        # Legacy/test compatibility for callers that still provide an inline
+        # task payload directly. Runtime dispatch no longer uses this path.
         message = {
             "worker_protocol": task_payload["worker_protocol"],
             "task_id": task_payload["task_id"],
