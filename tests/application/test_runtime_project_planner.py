@@ -24,9 +24,12 @@ def work_unit(unit_id: str) -> dict:
         "id": unit_id,
         "objective": f"Execute {unit_id}",
         "role": "worker",
+        "scope": "",
         "kind": "EXECUTION",
         "required_capabilities": ["implementation.software"],
         "requested_skills": ["implementation"],
+        "tools": [],
+        "inputs": [],
         "expected_output": ["result"],
         "acceptance_criteria": ["runtime-completed"],
         "requested_side_effects": [],
@@ -47,12 +50,11 @@ def test_parse_accepts_strict_json_and_preserves_parallel_metadata() -> None:
     assert all(item.parallel_safe for item in plan.work_units)
 
 
-def test_parse_accepts_json_code_fence_from_runtime() -> None:
+def test_parse_rejects_json_code_fence_from_runtime() -> None:
     text = "```json\n" + payload([work_unit("a")]) + "\n```"
 
-    plan = RuntimeProjectPlanner.parse(text, max_work_units=2)
-
-    assert plan.work_units[0].id == "a"
+    with pytest.raises(ProjectPlanningError, match="strict JSON document"):
+        RuntimeProjectPlanner.parse(text, max_work_units=2)
 
 
 def test_parse_rejects_plan_above_work_unit_budget() -> None:
@@ -77,8 +79,8 @@ def test_parse_rejects_required_dependency_cycle() -> None:
             payload(
                 [work_unit("a"), work_unit("b")],
                 [
-                    {"source_id": "a", "target_id": "b", "required": True},
-                    {"source_id": "b", "target_id": "a", "required": True},
+                    {"source_id": "a", "target_id": "b", "required": True, "condition": None},
+                    {"source_id": "b", "target_id": "a", "required": True, "condition": None},
                 ],
             ),
             max_work_units=2,
@@ -116,4 +118,12 @@ def test_planner_declares_amep_request_and_result_contracts() -> None:
     assert runner.request.request_schema_name == "planner-request"
     assert runner.request.result_message_type == "planner.plan"
     assert runner.request.result_schema_name == "planner-output"
-    assert runner.request.result_content_type == "text/plain"
+    assert runner.request.result_content_type == "application/json"
+
+
+def test_parse_rejects_unknown_planner_fields() -> None:
+    item = work_unit("a")
+    item["unexpected"] = "not in contract"
+
+    with pytest.raises(ProjectPlanningError, match="Additional properties"):
+        RuntimeProjectPlanner.parse(payload([item]), max_work_units=2)
