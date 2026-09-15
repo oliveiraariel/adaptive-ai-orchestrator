@@ -188,7 +188,13 @@
       "id": "recover-authenticated-run-before-redispatch",
       "status": "validated",
       "title": "Preserve authenticated execution identity across observer processes",
-      "triggers": ["device auth", "run recovery", "cross-process", "redispatch", "result target"],
+      "triggers": [
+        "device auth",
+        "run recovery",
+        "cross-process",
+        "redispatch",
+        "result target"
+      ],
       "guidance": [
         "Sign the exact effective connect facts: challenge nonce and timestamp, sent credential, ordered scopes, client mode, platform and device family.",
         "Use least-privilege Gateway scopes and persist only sanitized execution identity before the first wait.",
@@ -201,6 +207,73 @@
       ],
       "evidence": [
         "2026-09-13: a new Python process recovered the same runId, execution_id and ResultStoreTarget and retrieved an authoritative adaptive-result-store result without a second agent dispatch."
+      ]
+    },
+    {
+      "id": "prove-runtime-provenance-before-dependency-repair",
+      "status": "validated",
+      "title": "Prove the effective child runtime before repairing an apparently missing dependency",
+      "triggers": [
+        "modulenotfounderror",
+        "dependency missing",
+        "dependency installed but import fails",
+        "bridge runtime",
+        "virtualenv",
+        "venv",
+        "sys.executable",
+        "python symlink",
+        "runtime provenance",
+        "child process",
+        "systemd environment"
+      ],
+      "guidance": [
+        "Do not immediately reinstall a dependency when the configured environment already contains it.",
+        "Preserve the original traceback and identify the exact failing process before changing the environment.",
+        "Prove repository, branch, HEAD, configured interpreter, effective interpreter, sys.prefix, sys.base_prefix, sys.path and the relevant Python environment across the process boundary.",
+        "Reproduce the import through the exact launcher, executable and environment used by the failing runtime.",
+        "Inspect interpreter path canonicalization and symlink handling; preserve the authorized virtualenv interpreter path instead of collapsing it into a system interpreter path.",
+        "Do not install the package globally merely to hide an environment, launcher or provenance defect.",
+        "After the runtime contract is understood, add a fail-closed prerequisite preflight that uses the same executable and environment as the real launch."
+      ],
+      "safety": [
+        "Do not print credentials, tokens or the complete inherited environment during provenance diagnostics.",
+        "Do not use global dependency installation as a workaround for a project virtualenv defect.",
+        "Do not reset, clean or destroy unrelated working-tree state while diagnosing runtime provenance.",
+        "If the historical failure cannot be reproduced exactly, distinguish confirmed evidence from the suspected mechanism instead of inventing certainty."
+      ],
+      "evidence": [
+        "2026-09-15: the Adaptive Bridge reported jsonschema missing even though jsonschema 4.26.0 was installed in the authorized venv. Forensics proved the failure occurred in the first Bridge child before Planner/provider execution; stale interpreter-path canonicalization was removed, the logical venv path was preserved, and a deterministic fail-closed runtime prerequisite preflight was added and verified through the real OpenClaw path."
+      ]
+    },
+    {
+      "id": "use-explicit-plan-only-for-planner-validation",
+      "status": "validated",
+      "title": "Use an explicit plan-only path instead of overloading executor limits",
+      "triggers": [
+        "plan-only",
+        "planner smoke",
+        "planner validation",
+        "do not dispatch work units",
+        "max_waves 0",
+        "dry run",
+        "project execution plan",
+        "validate planner without execution"
+      ],
+      "guidance": [
+        "Do not overload an execution-limit parameter with a different semantic meaning merely to suppress execution.",
+        "Keep valid executor invariants unchanged when introducing a diagnostic or planning-only path.",
+        "Use an explicit plan-only mode that executes the real RuntimeProjectPlanner and all structured-output validation but stops before the generated project Work Unit executor.",
+        "Prove separately that the Planner runtime executed and that generated project Work Units were not dispatched.",
+        "Return a machine-readable ProjectExecutionPlan so planning can be inspected, tested and audited without project mutation."
+      ],
+      "safety": [
+        "Plan-only must not be reported as successful project execution.",
+        "Do not emit worker-completion evidence for Work Units that were only planned.",
+        "Do not weaken Planner JSON Schema or semantic validation for diagnostic convenience.",
+        "Do not use max_waves=0 or another invalid executor value as a hidden plan-only switch."
+      ],
+      "evidence": [
+        "2026-09-15: a Planner smoke attempted max_waves=0 to prevent Work Unit dispatch, but the executor contract correctly required 1..256. Adaptive added explicit --plan-only mode; the real Planner then produced a schema-valid, semantically valid ProjectExecutionPlan with three Work Units while dispatching zero generated Work Units."
       ]
     }
   ]
