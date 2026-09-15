@@ -24,23 +24,32 @@ The **Adaptive AI Orchestrator** is a software system — not a single agent, sk
 
 ---
 
-## 🚀 New machine? Start here
+## New machine? Start here
 
 You **do not need to remember the manual setup** for Adaptive + Ariel Agent Skills + OpenClaw.
 
-On a compatible Linux Mint / Ubuntu / Debian machine, the official entrypoint is:
+The setup guide is available in [`COMECE-AQUI-NOVA-MAQUINA.md`](COMECE-AQUI-NOVA-MAQUINA.md). Opening that page does **not** run the installer; it provides the versioned instructions and the command to execute in a terminal.
+
+On a compatible Linux Mint / Ubuntu / Debian machine, the quick-install entrypoint is:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
 ```
 
-If you do not want to memorize even that command, open [`COMECE-AQUI-NOVA-MAQUINA.md`](COMECE-AQUI-NOVA-MAQUINA.md). That page exists as a permanent recovery entrypoint from GitHub.
+If you prefer to inspect the installer before running it:
+
+```bash
+curl -fsSLo adaptive-install.sh \
+  https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh
+less adaptive-install.sh
+bash adaptive-install.sh
+```
 
 The bootstrap installs or synchronizes the repositories, prepares Python, OpenClaw, skills, the bridge, Gateway, SecretRefs, E2E checks, and desktop launchers. On a genuinely new machine, the only intentionally interactive boundary is the user's own provider/model authentication when OpenClaw requests it.
 
 ---
 
-## 🧭 Starting projects through OpenClaw
+## Starting projects through OpenClaw
 
 Generic master prompts for future projects live under [`docs/prompts/`](docs/prompts/README.md).
 

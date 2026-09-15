@@ -1,4 +1,4 @@
-# 🚀 NOVA MÁQUINA — COMECE AQUI
+# NOVA MÁQUINA — COMECE AQUI
 
 Você **não precisa lembrar nenhum dos comandos usados para montar o ambiente manualmente**.
 
@@ -41,15 +41,26 @@ adaptive-openclaw-verify
 
 O bootstrap também cria atalhos gráficos correspondentes no Linux.
 
-## Opção recomendada: um único comando
+## Opção rápida: um único comando
 
-Em uma máquina Linux Mint / Ubuntu / Debian compatível, abra um terminal e cole:
+Abrir este arquivo no GitHub **não inicia a instalação**. Em uma máquina Linux Mint / Ubuntu / Debian compatível, abra um terminal e execute:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
 ```
 
-O instalador cuida do restante.
+Esse comando inicia o bootstrap versionado. Ele automatiza as etapas técnicas e pode pausar para a autenticação pessoal do provedor/modelo quando o OpenClaw exigir.
+
+### Se quiser revisar o instalador antes de executar
+
+```bash
+curl -fsSLo adaptive-install.sh \
+  https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh
+less adaptive-install.sh
+bash adaptive-install.sh
+```
+
+Assim você pode inspecionar exatamente o script que será executado antes de iniciar a configuração.
 
 Ele reconstrói o ambiente com:
 
