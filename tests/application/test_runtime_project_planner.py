@@ -58,8 +58,7 @@ def test_parse_rejects_json_code_fence_from_runtime() -> None:
 
 
 def test_parse_rejects_plan_above_work_unit_budget() -> None:
-    with pytest.raises(ProjectPlanningError, match="limit"):
-        RuntimeProjectPlanner.parse(
+    with pytest.raises(ProjectPlanningError, match="too long"):\n        RuntimeProjectPlanner.parse(
             payload([work_unit("a"), work_unit("b")]),
             max_work_units=1,
         )
