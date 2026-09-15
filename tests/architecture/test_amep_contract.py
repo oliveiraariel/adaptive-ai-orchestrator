@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
-from application.message_protocol import PROTOCOL_NAME, PROTOCOL_VERSION
+from application.message_protocol import (
+    PROTOCOL_NAME,
+    PROTOCOL_VERSION,
+    STANDARD_PARTICIPANTS,
+)
 from application.worker_protocol import build_worker_protocol
 
 
@@ -71,3 +75,17 @@ def test_project_context_and_manifest_make_amep_default_knowledge() -> None:
     assert "ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md" in manifest
     assert "communication_protocols:" in manifest
     assert "default_retrieval: true" in manifest
+
+
+def test_all_core_adaptive_participants_are_named_by_amep() -> None:
+    expected = {
+        "owner",
+        "bridge",
+        "adaptive",
+        "planner",
+        "worker",
+        "evaluator",
+        "sentinel",
+    }
+
+    assert expected <= set(STANDARD_PARTICIPANTS)
