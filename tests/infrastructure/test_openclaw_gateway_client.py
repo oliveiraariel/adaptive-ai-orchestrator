@@ -250,7 +250,7 @@ def test_gateway_protocol_submit_status_result_and_cancel() -> None:
             "work_unit_id": "wu-001",
             "objective": "do work",
             "scope": "",
-            "context": [],
+            "context": [large_request_context],
             "inputs": [],
             "artifacts": [],
             "decisions": [],
@@ -1040,6 +1040,7 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
             ),
             result_store=store,
         )
+        large_request_context = "REQUEST_BODY_" + ("q" * 12000)
         external = client.submit({
             "task_id": "task-store",
             "orchestration_id": "orch-store",
@@ -1084,7 +1085,10 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         message_ref = json.loads(serialized_message.splitlines()[-1])
         assert message_ref["type"] == "adaptive.message.ref"
         assert message_ref["message_type"] == "work.assignment"
+        assert large_request_context not in serialized_message
+        assert len(serialized_message.encode("utf-8")) < 2000
         message = client._message_store.read_reference(message_ref).json()
+        assert message["context"] == [large_request_context]
         assert message["worker_protocol"]["name"] == "adaptive-worker-protocol"
         assert message["worker_protocol"]["version"] == 1
         assert message["worker_protocol"]["mandatory"] is True
