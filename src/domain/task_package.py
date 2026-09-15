@@ -34,6 +34,10 @@ class TaskPackage:
     delegation_context: DelegationContext | None = None
     context_policy: ContextPolicy = field(default_factory=ContextPolicy)
     requested_side_effects: Tuple[str, ...] = field(default_factory=tuple)
+    request_message_type: str = "work.assignment"
+    request_schema_name: str = "task-package"
+    result_message_type: str = "worker.result"
+    result_schema_name: str = "worker-result"
 
     def __post_init__(self) -> None:
         if not self.task_id.strip():
@@ -67,6 +71,16 @@ class TaskPackage:
 
         if any(not effect.strip() for effect in self.requested_side_effects):
             raise TaskPackageError("Requested side effects must not contain blanks.")
+
+        for field_name in (
+            "request_message_type",
+            "request_schema_name",
+            "result_message_type",
+            "result_schema_name",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise TaskPackageError(f"TaskPackage {field_name} must not be empty.")
 
         if self.delegation_context is None:
             object.__setattr__(
