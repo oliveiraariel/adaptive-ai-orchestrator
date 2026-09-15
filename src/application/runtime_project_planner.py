@@ -84,26 +84,28 @@ class RuntimeProjectPlanner:
         self._knowledge = knowledge_base or ProblemSolvingKnowledgeBase.load_default()
 
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
-        result = self._run_planner(
-            request=request,
-            objective=self._build_initial_prompt(request),
-        )
         try:
-            return self.parse(result, max_work_units=request.max_work_units)
-        except ProjectPlanningError as exc:
-            recovered = self._run_planner(
+            result = self._run_planner(
                 request=request,
-                objective=self._build_initial_recovery_prompt(
-                    request=request,
-                    failure=str(exc),
-                ),
+                objective=self._build_initial_prompt(request),
             )
-            plan = self.parse(recovered, max_work_units=1)
-            self._knowledge.record_planner_recovery(
-                error=str(exc),
-                result="Recovered with one bounded Work Unit.",
-            )
-            return plan
+            return self.parse(result, max_work_units=request.max_work_units)
+        except (ProjectPlanningError, RunOrchestrationError) as exc:
+            failure = str(exc)
+
+        recovered = self._run_planner(
+            request=request,
+            objective=self._build_initial_recovery_prompt(
+                request=request,
+                failure=failure,
+            ),
+        )
+        plan = self.parse(recovered, max_work_units=1)
+        self._knowledge.record_planner_recovery(
+            error=failure,
+            result="Recovered with one bounded Work Unit.",
+        )
+        return plan
 
     def replan(
         self,
