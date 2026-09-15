@@ -3,6 +3,8 @@ from typing import Tuple
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntime, AgentRuntimeStatus, ExecutionReference
+from application.message_schema_registry import resolve_message_schema
+from application.structured_output_contract import StructuredOutputContractError, validate_structured_json
 from application.observability import ObservabilitySink, NullObservabilitySink
 from application.claim_registry import ClaimRegistry
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
