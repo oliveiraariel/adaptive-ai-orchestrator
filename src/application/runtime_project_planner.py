@@ -172,7 +172,7 @@ class RuntimeProjectPlanner:
                 request_schema_name="planner-request",
                 result_message_type="planner.plan",
                 result_schema_name="planner-output",
-                result_content_type="application/json",
+                result_content_type="text/plain",
             )
         )
         return result.output
