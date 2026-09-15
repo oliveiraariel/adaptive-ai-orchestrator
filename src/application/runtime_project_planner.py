@@ -218,7 +218,7 @@ class RuntimeProjectPlanner:
             f"{experience + chr(10) + chr(10) if experience else ''}"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
+            "OUTPUT JSON SCHEMA (return one JSON instance that validates against this schema; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -252,7 +252,7 @@ class RuntimeProjectPlanner:
             "- If no new Work Unit is truly necessary, return the current plan unchanged.\n"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE (return one JSON object with this shape):\n"
+            "OUTPUT JSON SCHEMA (return one JSON instance that validates against this schema; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -284,7 +284,7 @@ class RuntimeProjectPlanner:
             "- Do not invent business rules or bypass project governance.\n"
             "- Return only one strict JSON object; no Markdown fences.\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE:\n"
+            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
@@ -318,7 +318,7 @@ class RuntimeProjectPlanner:
             "- Do not invent business rules or optional polish.\n"
             "- Return only one strict JSON object; no Markdown fences.\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT SCHEMA EXAMPLE:\n"
+            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
             f"{self._schema_json()}"
         )
 
