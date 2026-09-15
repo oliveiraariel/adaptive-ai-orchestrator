@@ -15,6 +15,7 @@ authority_model:
     - specifications/orchestrator/ORCHESTRATOR-REQUIREMENTS.md
     - specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md
     - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+    - docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md
     - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
     - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
     - docs/reviews/
@@ -72,6 +73,7 @@ artifact_groups:
     default_retrieval: targeted
     paths:
       - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+      - docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md
       - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
       - docs/architecture/ORCHESTRATOR-CAPABILITIES.md
       - docs/architecture/ORCHESTRATOR-KNOWLEDGE-MAP.md
@@ -89,6 +91,15 @@ artifact_groups:
       - docs/architecture/ORCHESTRATOR-REPLANNING.md
       - docs/architecture/ORCHESTRATOR-CONTINUITY-AND-LEARNING.md
       - docs/architecture/ARIEL-AGENT-SKILLS-INTEGRATION.md
+
+  communication_protocols:
+    authority: normative-runtime-contract
+    default_retrieval: true
+    paths:
+      - docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md
+      - specifications/protocols/README.md
+      - specifications/protocols/amep-message-ref-v1.schema.json
+      - specifications/protocols/amep-manifest-v1.schema.json
 
   development_discipline:
     authority: normative-process
@@ -172,6 +183,8 @@ dynamic_state:
   source_of_truth: adaptive-ai-orchestrator-core
   static_repository_files_are_not_live_state: true
   current_in_process_capabilities:
+    - adaptive-message-exchange-protocol-v1
+    - file-backed-payload-by-reference
     - dynamic-ready-frontier
     - continuous-bounded-worker-scheduling
     - claims-and-execution-identity
