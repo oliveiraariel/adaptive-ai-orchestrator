@@ -73,6 +73,13 @@ class RunOrchestrationRequest:
                 raise ValueError(f"{field_name} must not be empty.")
         if self.result_content_type not in {"application/json", "text/plain", "text/markdown"}:
             raise ValueError("result_content_type is unsupported.")
+        if self.result_json_schema is not None:
+            if not isinstance(self.result_json_schema, dict):
+                raise ValueError("result_json_schema must be an object.")
+            if self.result_content_type != "application/json":
+                raise ValueError(
+                    "result_json_schema requires result_content_type=application/json."
+                )
 
 
 @dataclass(frozen=True)
