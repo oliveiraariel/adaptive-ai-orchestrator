@@ -168,6 +168,10 @@ class RuntimeProjectPlanner:
                 ),
                 expected_output=("strict JSON project execution plan",),
                 acceptance_criteria=("runtime-completed",),
+                request_message_type="planner.request",
+                request_schema_name="planner-request",
+                result_message_type="planner.plan",
+                result_schema_name="planner-output",
             )
         )
         return result.output
