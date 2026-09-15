@@ -722,7 +722,8 @@ def test_gateway_automatically_fails_over_k27_to_luna_oauth_on_rate_limit(
         "moonshot/kimi-k2.7-code@moonshot:api-key",
         "openai/gpt-5.6-luna@openai:oauth-test",
     ]
-    fallback_message = json.loads(agent_calls[1]["message"])
+    fallback_ref = json.loads(agent_calls[1]["message"].splitlines()[-1])
+    fallback_message = client._message_store.read_reference(fallback_ref).json()
     assert fallback_message["configuration"]["thinking"] == "low"
     assert fallback_message["configuration"]["auth_profile"] == "openai:oauth-test"
     assert "adaptive-auth-product:openai-oauth" in (
@@ -1067,7 +1068,7 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         result = client.retrieve_result(external)
 
         assert result["output"] == content
-        assert result["result_transport"]["source"] == "adaptive-result-store"
+        assert result["result_transport"]["source"] == "adaptive-result-store+amep"
         assert result["result_transport"]["authoritative"] is True
         assert result["result_transport"]["result_bytes"] > 12000
         assert result["result_transport"]["complete"] is True
@@ -1077,8 +1078,13 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
 
         agent_request = holder["requests"][0]
         serialized_message = agent_request["params"]["message"]
-        message = json.loads(serialized_message)
-        assert serialized_message.startswith('{"worker_protocol":')
+        assert serialized_message.startswith(
+            "MANDATORY ADAPTIVE MESSAGE EXCHANGE PROTOCOL"
+        )
+        message_ref = json.loads(serialized_message.splitlines()[-1])
+        assert message_ref["type"] == "adaptive.message.ref"
+        assert message_ref["message_type"] == "work.assignment"
+        message = client._message_store.read_reference(message_ref).json()
         assert message["worker_protocol"]["name"] == "adaptive-worker-protocol"
         assert message["worker_protocol"]["version"] == 1
         assert message["worker_protocol"]["mandatory"] is True
@@ -1086,6 +1092,13 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
         assert message["worker_protocol"]["result_contract"]["adaptive_finalizes_manifest"] is True
         assert message["result_store"]["orchestration_id"] == "orch-store"
         assert message["result_store"]["work_unit_id"] == "wu-store"
+        assert message["worker_protocol"]["message_exchange_contract"]["mandatory"] is True
+        assert result["result_transport"]["message_ref"]["type"] == "adaptive.message.ref"
+        assert result["result_transport"]["message_ref"]["recipient"] == "adaptive"
+        result_message = client._message_store.read_reference(
+            result["result_transport"]["message_ref"]
+        )
+        assert result_message.content == content
         assert any(
             "Adaptive Worker Protocol publication rule" in item
             for item in message["constraints"]
