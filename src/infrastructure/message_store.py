@@ -331,10 +331,11 @@ class FileMessageStore:
             separators=(",", ":"),
         )
         self._atomic_write_text(target.reference_path, reference_text)
-        # Inbox publication is the final visibility step.
+        self._record_event(target, "PUBLISHED", target.sender)
+        # Inbox publication is deliberately the final visibility step. Once this
+        # file exists, recipients may discover and consume the message.
         target.inbox_path.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write_text(target.inbox_path, reference_text)
-        self._record_event(target, "PUBLISHED", target.sender)
 
         return self.read_reference(reference)
 
