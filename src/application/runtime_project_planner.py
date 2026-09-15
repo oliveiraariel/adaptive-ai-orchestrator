@@ -439,7 +439,15 @@ class RuntimeProjectPlanner:
 
     @classmethod
     def parse(cls, text: str, *, max_work_units: int) -> ProjectExecutionPlan:
-        payload = cls._decode_json_object(text)
+        try:
+            payload, _ = validate_structured_json(
+                text,
+                planner_output_schema(max_work_units),
+            )
+        except StructuredOutputContractError as exc:
+            raise ProjectPlanningError(str(exc)) from exc
+        if not isinstance(payload, dict):
+            raise ProjectPlanningError("Planner root value must be a JSON object.")
         summary = payload.get("summary")
         entries = payload.get("work_units")
         dependency_entries = payload.get("dependencies", [])
@@ -467,30 +475,6 @@ class RuntimeProjectPlanner:
             )
         except ProjectExecutionPlanError as exc:
             raise ProjectPlanningError(str(exc)) from exc
-
-    @staticmethod
-    def _decode_json_object(text: str) -> dict:
-        candidate = text.strip()
-        if candidate.startswith("```"):
-            lines = candidate.splitlines()
-            if len(lines) >= 3 and lines[-1].strip() == "```":
-                candidate = "\n".join(lines[1:-1])
-                if candidate.lstrip().startswith("json"):
-                    candidate = candidate.lstrip()[4:].lstrip()
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            start = candidate.find("{")
-            end = candidate.rfind("}")
-            if start < 0 or end <= start:
-                raise ProjectPlanningError("Planner did not return a JSON object.")
-            try:
-                payload = json.loads(candidate[start : end + 1])
-            except json.JSONDecodeError as exc:
-                raise ProjectPlanningError(f"Planner returned invalid JSON: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise ProjectPlanningError("Planner root value must be a JSON object.")
-        return payload
 
     @classmethod
     def _parse_work_unit(cls, entry: object) -> PlannedWorkUnit:
