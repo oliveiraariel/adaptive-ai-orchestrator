@@ -43,6 +43,10 @@ class RunOrchestrationRequest:
     requested_side_effects: Tuple[str, ...] = field(default_factory=tuple)
     human_approved: bool = False
     claimant_id: str = "adaptive-orchestrator-cli"
+    request_message_type: str = "work.assignment"
+    request_schema_name: str = "task-package"
+    result_message_type: str = "worker.result"
+    result_schema_name: str = "worker-result"
 
     def __post_init__(self) -> None:
         if not self.objective.strip():
@@ -55,6 +59,15 @@ class RunOrchestrationRequest:
             raise ValueError("acceptance_criteria must contain at least one item.")
         if not self.claimant_id.strip():
             raise ValueError("claimant_id must not be empty.")
+        for field_name in (
+            "request_message_type",
+            "request_schema_name",
+            "result_message_type",
+            "result_schema_name",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must not be empty.")
 
 
 @dataclass(frozen=True)
@@ -99,7 +112,7 @@ class RunOrchestration:
         task_id = f"task:{run_id}"
         work_unit = WorkUnit(id=WorkUnitId(work_unit_id), objective=request.objective, scope=request.scope, inputs=request.inputs, outputs=request.expected_output, criteria=request.acceptance_criteria)
         configuration = ResourceConfiguration(agent=request.agent, skills=request.skills, model=request.model, provider=request.provider, tools=request.tools, runtime="openclaw")
-        task_package = TaskPackage(task_id=task_id, work_unit_id=work_unit_id, objective=request.objective, orchestration_id=run_id, scope=request.scope, context=request.context, inputs=request.inputs, constraints=request.constraints, configuration=configuration, expected_output=request.expected_output, acceptance_criteria=request.acceptance_criteria, execution_policy=request.execution_policy, requested_side_effects=request.requested_side_effects)
+        task_package = TaskPackage(task_id=task_id, work_unit_id=work_unit_id, objective=request.objective, orchestration_id=run_id, scope=request.scope, context=request.context, inputs=request.inputs, constraints=request.constraints, configuration=configuration, expected_output=request.expected_output, acceptance_criteria=request.acceptance_criteria, execution_policy=request.execution_policy, requested_side_effects=request.requested_side_effects, request_message_type=request.request_message_type, request_schema_name=request.request_schema_name, result_message_type=request.result_message_type, result_schema_name=request.result_schema_name)
         dispatched = ExecutionCoordinator(runtime=self._runtime, claim_registry=self._claim_registry).dispatch_frontier(DispatchFrontierRequest(assignments=(WorkAssignment(work_unit=work_unit, configuration=configuration, task_package=task_package),), dependencies=(), claimant_id=request.claimant_id, concurrency_limit=1, human_approved_work_unit_ids=(work_unit_id,) if request.human_approved else ()))
         outcome = dispatched.outcomes[0]
         if outcome.status is not DispatchStatus.DISPATCHED or outcome.execution is None:
@@ -141,6 +154,10 @@ class RunOrchestration:
             acceptance_criteria=request.acceptance_criteria,
             execution_policy=request.execution_policy,
             requested_side_effects=request.requested_side_effects,
+            request_message_type=request.request_message_type,
+            request_schema_name=request.request_schema_name,
+            result_message_type=request.result_message_type,
+            result_schema_name=request.result_schema_name,
         )
         self._observability.emit("orchestration_started", orchestration_id=run_id)
         self._observability.emit(
