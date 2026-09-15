@@ -1,5 +1,7 @@
 # Adaptive AI Orchestrator
 
+[English](README.md) | [Português (Brasil)](README.pt-BR.md)
+
 ## Runtime observability
 
 Normal CLI executions used by the OpenClaw bridge automatically publish the
@@ -22,34 +24,34 @@ The **Adaptive AI Orchestrator** is a software system — not a single agent, sk
 
 ---
 
-## 🚀 Nova máquina? Comece aqui
+## 🚀 New machine? Start here
 
-Você **não precisa lembrar a configuração manual** do Adaptive + Ariel Agent Skills + OpenClaw.
+You **do not need to remember the manual setup** for Adaptive + Ariel Agent Skills + OpenClaw.
 
-Em uma máquina Linux Mint / Ubuntu / Debian compatível, o ponto de entrada oficial é:
+On a compatible Linux Mint / Ubuntu / Debian machine, the official entrypoint is:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
 ```
 
-Se não quiser decorar nem esse comando, abra [`COMECE-AQUI-NOVA-MAQUINA.md`](COMECE-AQUI-NOVA-MAQUINA.md). A página foi criada justamente para servir como ponto permanente de recuperação a partir do GitHub.
+If you do not want to memorize even that command, open [`COMECE-AQUI-NOVA-MAQUINA.md`](COMECE-AQUI-NOVA-MAQUINA.md). That page exists as a permanent recovery entrypoint from GitHub.
 
-O bootstrap instala/sincroniza os repositórios, prepara Python, OpenClaw, skills, bridge, Gateway, SecretRefs, verificações E2E e atalhos gráficos. Em uma máquina realmente nova, a única fronteira intencionalmente interativa é a autenticação pessoal do provedor/modelo quando o OpenClaw solicitar.
+The bootstrap installs or synchronizes the repositories, prepares Python, OpenClaw, skills, the bridge, Gateway, SecretRefs, E2E checks, and desktop launchers. On a genuinely new machine, the only intentionally interactive boundary is the user's own provider/model authentication when OpenClaw requests it.
 
 ---
 
-## 🧭 Iniciar projetos pelo OpenClaw
+## 🧭 Starting projects through OpenClaw
 
-Os prompts mestres genéricos para iniciar projetos futuros estão em [`docs/prompts/`](docs/prompts/README.md).
+Generic master prompts for future projects live under [`docs/prompts/`](docs/prompts/README.md).
 
 Use:
 
-- [`INICIAR-PROJETO-FRONTEND.md`](docs/prompts/INICIAR-PROJETO-FRONTEND.md) para frontend/web UI;
-- [`INICIAR-PROJETO-BACKEND.md`](docs/prompts/INICIAR-PROJETO-BACKEND.md) para backend/engineering;
-- [`CONTINUAR-PROJETO.md`](docs/prompts/CONTINUAR-PROJETO.md) para continuar uma linha de trabalho;
-- [`PARAR-E-FAZER-HANDOFF.md`](docs/prompts/PARAR-E-FAZER-HANDOFF.md) para encerrar preservando continuidade.
+- [`INICIAR-PROJETO-FRONTEND.md`](docs/prompts/INICIAR-PROJETO-FRONTEND.md) for frontend/web UI work;
+- [`INICIAR-PROJETO-BACKEND.md`](docs/prompts/INICIAR-PROJETO-BACKEND.md) for backend/engineering work;
+- [`CONTINUAR-PROJETO.md`](docs/prompts/CONTINUAR-PROJETO.md) to continue an existing line of work;
+- [`PARAR-E-FAZER-HANDOFF.md`](docs/prompts/PARAR-E-FAZER-HANDOFF.md) to stop while preserving continuity.
 
-Quando um projeto possuir governança e documentação próprias, prefira o prompt operacional específico daquele repositório.
+When a project has its own governance and documentation, prefer that repository's project-specific operational prompt.
 
 ---
 
