@@ -55,14 +55,6 @@ class ProjectPlanner(Protocol):
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
         ...
 
-    @staticmethod
-    def _is_contract_failure(exc: RunOrchestrationError) -> bool:
-        message = str(exc)
-        return (
-            "RESULT_SCHEMA_VALIDATION_FAILED" in message
-            or "AMEP application/json payload is invalid" in message
-        )
-
     def replan(
         self,
         request: ProjectPlanningRequest,
@@ -116,6 +108,14 @@ class RuntimeProjectPlanner:
             result="Recovered with one bounded Work Unit.",
         )
         return plan
+
+    @staticmethod
+    def _is_contract_failure(exc: RunOrchestrationError) -> bool:
+        message = str(exc)
+        return (
+            "RESULT_SCHEMA_VALIDATION_FAILED" in message
+            or "AMEP application/json payload is invalid" in message
+        )
 
     def replan(
         self,
