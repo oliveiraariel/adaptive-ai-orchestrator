@@ -86,13 +86,22 @@ It must:
 1. write the complete authoritative payload to `result.txt.tmp`;
 2. atomically rename it to `result.txt`;
 3. optionally publish `summary.md` the same way;
-4. write `manifest.json.tmp`;
-5. atomically rename the manifest to `manifest.json` **last**;
+4. **not** create, edit or finalize `manifest.json`;
+5. report runtime completion only after the final result file exists;
 6. keep its conversational reply short.
+
+After runtime completion, **Adaptive** reads the worker-owned result, calculates
+UTF-8 byte length and SHA-256, binds the Worker Protocol identity, and writes
+`manifest.json` last. The worker cannot choose or spoof completion/integrity
+metadata.
 
 The result tree is organized by **orchestration -> Work Unit -> execution**, not
 by agent name. A retry therefore receives another execution directory while the
 previous attempt remains available for audit/recovery.
+
+AMEP v1 now generalizes this file-backed result principle to all important
+Adaptive component boundaries. See
+`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`.
 
 ## Dependency fan-in by reference
 
@@ -175,6 +184,13 @@ Global Adaptive-owned operational state may continue under locations such as:
 Those records describe the orchestrator/runtime itself. They are distinct from
 project-owned worker results.
 
+
+## AMEP bridge
+
+A verified Worker Result Store result is now republished as an AMEP
+`worker.result` message and re-read through its verified AMEP reference before
+the application layer receives it. The Result Store remains a hardened
+compatibility profile; AMEP provides the universal inter-component protocol.
 
 ## Control plane vs result plane
 
