@@ -55,6 +55,14 @@ class ProjectPlanner(Protocol):
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
         ...
 
+    @staticmethod
+    def _is_contract_failure(exc: RunOrchestrationError) -> bool:
+        message = str(exc)
+        return (
+            "RESULT_SCHEMA_VALIDATION_FAILED" in message
+            or "AMEP application/json payload is invalid" in message
+        )
+
     def replan(
         self,
         request: ProjectPlanningRequest,
@@ -91,6 +99,8 @@ class RuntimeProjectPlanner:
             )
             return self.parse(result, max_work_units=request.max_work_units)
         except (ProjectPlanningError, RunOrchestrationError) as exc:
+            if isinstance(exc, RunOrchestrationError) and not self._is_contract_failure(exc):
+                raise
             failure = str(exc)
 
         recovered = self._run_planner(
@@ -134,6 +144,8 @@ class RuntimeProjectPlanner:
             )
             return self.parse(result, max_work_units=request.max_work_units)
         except (ProjectPlanningError, RunOrchestrationError) as exc:
+            if isinstance(exc, RunOrchestrationError) and not self._is_contract_failure(exc):
+                raise
             failure = str(exc)
 
         recovered = self._run_planner(
