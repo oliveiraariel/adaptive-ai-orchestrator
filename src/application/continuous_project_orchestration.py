@@ -18,6 +18,7 @@ from application.execution_coordinator import (
 from application.run_project_orchestration import (
     ParallelWaveRecord,
     ProjectOrchestrationError,
+    RecoveryPlanTopologyError,
     ProjectOrchestrationRequest,
     ProjectOrchestrationResult,
     ProjectRunStatus,
