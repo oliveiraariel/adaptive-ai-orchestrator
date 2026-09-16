@@ -243,7 +243,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 terminal=terminal,
             )
 
-        if checkpoint is None:
+        if checkpoint is None or admission_only:
             persist()
 
         with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
