@@ -134,6 +134,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     skills=list(spec.requested_skills), status="WAITING",
                 )
             attempts = {work_unit_id: 0 for work_unit_id in work_units}
+            strategy_generations = {work_unit_id: 1 for work_unit_id in work_units}
             outputs: dict[str, str] = {}
             output_refs: dict[str, str] = {}
             revision_feedback: dict[str, str] = {}
@@ -149,6 +150,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             self._restore_dependency_states(dependencies, checkpoint)
             attempts = self._restore_int_map(
                 checkpoint, "attempts", tuple(work_units)
+            )
+            strategy_generations = self._restore_strategy_generations(
+                checkpoint, tuple(work_units)
             )
             outputs = self._restore_str_map(checkpoint, "outputs")
             output_refs = self._restore_str_map(checkpoint, "output_refs")
@@ -205,6 +209,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 work_units=work_units,
                 dependencies=dependencies,
                 attempts=attempts,
+                strategy_generations=strategy_generations,
                 outputs=outputs,
                 output_refs=output_refs,
                 revision_feedback=revision_feedback,
@@ -612,6 +617,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         work_units: dict[str, WorkUnit],
         dependencies: Sequence[Dependency],
         attempts: dict[str, int],
+        strategy_generations: dict[str, int],
         outputs: dict[str, str],
         output_refs: dict[str, str],
         revision_feedback: dict[str, str],
@@ -656,6 +662,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 for item in dependencies
             ],
             "attempts": dict(attempts),
+            "strategy_generations": dict(strategy_generations),
             "outputs": dict(outputs),
             "output_refs": dict(output_refs),
             "revision_feedback": dict(revision_feedback),
@@ -686,6 +693,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "max_work_units": request.max_work_units,
             "max_waves": request.max_waves,
             "max_attempts_per_work_unit": request.max_attempts_per_work_unit,
+            "max_strategies_per_work_unit": request.max_strategies_per_work_unit,
             "max_replans": request.max_replans,
             "dependency_context_chars": request.dependency_context_chars,
             "human_approved": request.human_approved,
@@ -760,6 +768,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 max_waves=cls._require_nonnegative_int(raw, "max_waves"),
                 max_attempts_per_work_unit=cls._require_nonnegative_int(
                     raw, "max_attempts_per_work_unit"
+                ),
+                max_strategies_per_work_unit=(
+                    cls._require_nonnegative_int(
+                        raw, "max_strategies_per_work_unit"
+                    )
+                    if "max_strategies_per_work_unit" in raw
+                    else 2
                 ),
                 max_replans=cls._require_nonnegative_int(raw, "max_replans"),
                 dependency_context_chars=cls._require_nonnegative_int(
@@ -1037,6 +1052,28 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 )
             result[str(key)] = value
         return result
+
+    @classmethod
+    def _restore_strategy_generations(
+        cls,
+        checkpoint: dict,
+        expected_keys: Sequence[str],
+    ) -> dict[str, int]:
+        raw = checkpoint.get("strategy_generations")
+        if raw is None:
+            # Backward compatibility for checkpoints produced by recovery #47
+            # before strategy generations were persisted.
+            return {str(key): 1 for key in expected_keys}
+        restored = cls._restore_int_map(
+            {"strategy_generations": raw},
+            "strategy_generations",
+            expected_keys,
+        )
+        if any(value < 1 for value in restored.values()):
+            raise ProjectOrchestrationError(
+                "Checkpoint strategy generations must be at least 1."
+            )
+        return restored
 
     @staticmethod
     def _restore_str_map(checkpoint: dict, name: str) -> dict[str, str]:
