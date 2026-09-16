@@ -18,6 +18,7 @@ class WorkerBlockerType(str, Enum):
     ENVIRONMENT = "ENVIRONMENT"
     RUNTIME = "RUNTIME"
     EXTERNAL_DEPENDENCY = "EXTERNAL_DEPENDENCY"
+    PLANNING = "PLANNING"
     UNKNOWN = "UNKNOWN"
 
 
@@ -45,6 +46,13 @@ class WorkerCompletionSignal:
         )
 
     @property
+    def is_recoverable_planning_blocker(self) -> bool:
+        return (
+            self.status is WorkerCompletionStatus.BLOCKED
+            and self.blocker_type is WorkerBlockerType.PLANNING
+        )
+
+    @property
     def is_terminal_success(self) -> bool:
         return (
             self.status is WorkerCompletionStatus.COMPLETE
@@ -58,13 +66,15 @@ def parse_worker_completion(output: str) -> WorkerCompletionSignal:
     The footer is deliberately small and provider-neutral:
 
     ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED
-    ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY
+    ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY|PLANNING
     ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two
 
     Missing markers preserve backwards compatibility by returning UNKNOWN.
     A worker cannot create a terminal success while simultaneously declaring
     unmet criteria. Likewise, BLOCKED without a recognized external blocker is
-    not treated as a genuine stop condition by the orchestrator.
+    not treated as a genuine stop condition by the orchestrator. PLANNING is a
+    separate recoverable blocker for invalid delegated scope/write-paths or other
+    planner defects; it must trigger governed replanning rather than a terminal stop.
     """
 
     values: dict[str, str] = {}
