@@ -48,6 +48,28 @@ class StaticPlanner:
         return self._revised_plan or current_plan
 
 
+class SequencedReplanPlanner(StaticPlanner):
+    def __init__(
+        self,
+        plan: ProjectExecutionPlan,
+        revised_plans: list[ProjectExecutionPlan],
+    ) -> None:
+        super().__init__(plan)
+        self._revised_plans = list(revised_plans)
+        self.state_summaries: list[str] = []
+
+    def replan(
+        self,
+        request: ProjectPlanningRequest,
+        current_plan: ProjectExecutionPlan,
+        state_summary: str,
+    ) -> ProjectExecutionPlan:
+        self.replan_calls += 1
+        self.state_summaries.append(state_summary)
+        index = min(self.replan_calls - 1, len(self._revised_plans) - 1)
+        return self._revised_plans[index]
+
+
 class ConcurrentRuntime:
     def __init__(
         self,
@@ -1089,6 +1111,93 @@ def test_planning_scope_blocker_replans_before_retrying_original_work_unit() -> 
         "scope-repair",
         "verification",
     )
+
+
+def test_reversed_recovery_graph_is_rejected_then_replanned_with_correct_direction() -> None:
+    partial = (
+        "Frontend review still has unresolved findings.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: auth gate; editor action"
+    )
+    complete_review = (
+        "Frontend review accepted after remediation.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    remediation_done = (
+        "Frontend findings remediated.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    fanin_done = (
+        "fan-in accepted\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+
+    initial = ProjectExecutionPlan(
+        summary="review then fan-in",
+        work_units=(wu("review"), wu("fan-in")),
+        dependencies=(PlannedDependency("review", "fan-in"),),
+    )
+    invalid_recovery = ProjectExecutionPlan(
+        summary="incorrect recovery direction",
+        work_units=(wu("review"), wu("fan-in"), wu("remediation")),
+        dependencies=(
+            PlannedDependency("review", "fan-in"),
+            PlannedDependency("review", "remediation"),
+        ),
+    )
+    valid_recovery = ProjectExecutionPlan(
+        summary="correct recovery direction",
+        work_units=(wu("review"), wu("fan-in"), wu("remediation")),
+        dependencies=(
+            PlannedDependency("review", "fan-in"),
+            PlannedDependency("remediation", "review"),
+        ),
+    )
+    planner = SequencedReplanPlanner(
+        initial,
+        [invalid_recovery, valid_recovery],
+    )
+    runtime = SequencedOutputRuntime(
+        {
+            "review": [partial, partial, partial, partial, complete_review],
+            "remediation": [remediation_done],
+            "fan-in": [fanin_done],
+        }
+    )
+
+    result, actual_planner = run(
+        initial,
+        runtime,
+        planner=planner,
+        max_attempts=2,
+        max_strategies=2,
+        max_replans=2,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert actual_planner.replan_calls == 2
+    assert "Recovery dependency direction is invalid" in (
+        actual_planner.state_summaries[1]
+    )
+    remediation_index = next(
+        index
+        for index, task in enumerate(runtime.tasks)
+        if task.work_unit_id == "remediation"
+    )
+    final_review_index = max(
+        index
+        for index, task in enumerate(runtime.tasks)
+        if task.work_unit_id == "review"
+    )
+    assert remediation_index < final_review_index
+    assert result.completed_work_unit_ids == ("fan-in", "remediation", "review")
 
 
 def test_genuine_environment_blocker_remains_terminal() -> None:

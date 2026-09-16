@@ -18,6 +18,7 @@ from application.execution_coordinator import (
 from application.run_project_orchestration import (
     ParallelWaveRecord,
     ProjectOrchestrationError,
+    RecoveryPlanTopologyError,
     ProjectOrchestrationRequest,
     ProjectOrchestrationResult,
     ProjectRunStatus,
@@ -144,6 +145,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             replan_count = 0
             dispatch_generation = 0
             pending_replan = False
+            replan_feedback = ""
             recovered_active: list[dict] = []
         else:
             self._restore_work_unit_states(work_units, checkpoint)
@@ -177,6 +179,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 checkpoint, "dispatch_generation"
             )
             pending_replan = bool(checkpoint.get("pending_replan", False))
+            replan_feedback = str(checkpoint.get("replan_feedback") or "")
             recovered_active = self._require_list(
                 checkpoint, "active_executions"
             )
@@ -219,6 +222,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 replan_count=replan_count,
                 dispatch_generation=dispatch_generation,
                 pending_replan=pending_replan,
+                replan_feedback=replan_feedback,
                 active=tuple(active.values()),
                 terminal=terminal,
             )
@@ -315,17 +319,32 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             for work_unit_id, work_unit in work_units.items()
                             if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
                         }
-                        plan, new_ids = self._expand_plan(
-                            planner_request=planning_request,
-                            current_plan=plan,
-                            specs=specs,
-                            work_units=work_units,
-                            dependencies=dependencies,
-                            outputs=outputs,
-                            output_refs=output_refs,
-                            request=request,
-                        )
+                        try:
+                            plan, new_ids = self._expand_plan(
+                                planner_request=planning_request,
+                                current_plan=plan,
+                                specs=specs,
+                                work_units=work_units,
+                                dependencies=dependencies,
+                                outputs=outputs,
+                                output_refs=output_refs,
+                                request=request,
+                                planner_feedback=replan_feedback,
+                            )
+                        except RecoveryPlanTopologyError as exc:
+                            replan_count += 1
+                            replan_feedback = str(exc)
+                            pending_replan = replan_count < request.max_replans
+                            observability.emit(
+                                "recovery_plan_rejected",
+                                orchestration_id=orchestration_id,
+                                replan_count=replan_count,
+                                reason=replan_feedback,
+                            )
+                            persist()
+                            continue
                         replan_count += 1
+                        replan_feedback = ""
                         self._validate_replanned_edges(
                             old_edges=old_edges,
                             dependencies=dependencies,
@@ -706,6 +725,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         replan_count: int,
         dispatch_generation: int,
         pending_replan: bool,
+        replan_feedback: str,
         active: Sequence[tuple[DispatchOutcome, int]],
         terminal: bool,
     ) -> None:
@@ -753,6 +773,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "replan_count": replan_count,
             "dispatch_generation": dispatch_generation,
             "pending_replan": pending_replan,
+            "replan_feedback": replan_feedback,
             "active_executions": active_rows,
             "terminal": terminal,
         }
