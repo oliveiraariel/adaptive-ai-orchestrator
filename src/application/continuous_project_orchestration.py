@@ -109,10 +109,26 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             max_work_units=request.max_work_units,
             max_concurrency=request.max_concurrency,
         )
+        admission_only = (
+            checkpoint is not None
+            and checkpoint.get("phase") == "ADMITTED"
+            and "plan" not in checkpoint
+        )
+        if checkpoint is None:
+            self._save_admission_checkpoint(
+                orchestration_id=orchestration_id,
+                request=request,
+            )
+            observability.emit(
+                "orchestration_admitted",
+                orchestration_id=orchestration_id,
+                phase="ADMITTED",
+            )
         observability.emit(
             "orchestration_started",
             orchestration_id=orchestration_id,
             recovered=checkpoint is not None,
+            phase="ADMITTED" if admission_only else "EXECUTION",
         )
         plan = request.plan or self._planner.plan(planning_request)
         if len(plan.work_units) > request.max_work_units:
@@ -127,7 +143,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         }
         dependencies = [self._instantiate_dependency(item) for item in plan.dependencies]
 
-        if checkpoint is None:
+        if checkpoint is None or admission_only:
             for spec in plan.work_units:
                 observability.emit(
                     "work_unit_created", orchestration_id=orchestration_id,
@@ -706,6 +722,31 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         )
         return result
 
+    def _save_admission_checkpoint(
+        self,
+        *,
+        orchestration_id: str,
+        request: ProjectOrchestrationRequest,
+    ) -> None:
+        """Persist durable project admission before planner/runtime side effects.
+
+        The admission checkpoint intentionally contains no project plan yet.
+        If the controller or planner fails after admission, resume-project can
+        safely reconstruct the request and rerun planning under the same
+        orchestration identity instead of creating a duplicate orchestration.
+        """
+        if self._checkpoint_store is None:
+            return
+        self._checkpoint_store.save(
+            orchestration_id,
+            {
+                "orchestration_id": orchestration_id,
+                "phase": "ADMITTED",
+                "request": self._request_to_payload(request),
+                "terminal": False,
+            },
+        )
+
     def _save_checkpoint(
         self,
         *,
@@ -746,6 +787,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
         payload = {
             "orchestration_id": orchestration_id,
+            "phase": "EXECUTION",
             "request": self._request_to_payload(request),
             "plan": self._plan_to_payload(plan),
             "work_unit_states": {
@@ -839,11 +881,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 ),
             )
             plan_raw = checkpoint.get("plan")
-            if not isinstance(plan_raw, dict):
+            phase = str(checkpoint.get("phase") or "")
+            if isinstance(plan_raw, dict):
+                plan = cls._plan_from_payload(plan_raw)
+            elif phase == "ADMITTED":
+                plan = None
+            else:
                 raise ProjectOrchestrationError(
                     "Checkpoint is missing the project plan."
                 )
-            plan = cls._plan_from_payload(plan_raw)
             planner_agent = raw.get("planner_agent")
             if planner_agent is not None and not isinstance(planner_agent, str):
                 raise ProjectOrchestrationError(
