@@ -479,17 +479,30 @@ class OpenClawGatewayClient(OpenClawClient):
         external_id: str,
         run: GatewayRun,
     ) -> object:
-        result = self._wait_for_result(run.run_id)
-        status = self._normalize_wait_status(result.get("status"))
+        # The worker protocol makes the atomic publication of final result.txt
+        # an authoritative completion signal. A controller may disappear after
+        # that rename while OpenClaw still reports the run as RUNNING. Reconcile
+        # the exact persisted target first so recovery never waits forever for a
+        # stale Gateway lifecycle state.
+        stored = self._reconcile_persisted_worker_result(run)
+        if stored is not None:
+            result = {
+                "status": "ok",
+                "reconciled": True,
+                "stopReason": "adaptive-result-store",
+            }
+        else:
+            result = self._wait_for_result(run.run_id)
+            status = self._normalize_wait_status(result.get("status"))
 
-        if status == "TIMEOUT":
-            raise OpenClawGatewayError(
-                f"OpenClaw agent run '{run.run_id}' is still running."
-            )
+            if status == "TIMEOUT":
+                raise OpenClawGatewayError(
+                    f"OpenClaw agent run '{run.run_id}' is still running."
+                )
 
-        if status == "FAILED":
-            error = result.get("error") or "OpenClaw agent run failed."
-            raise OpenClawGatewayError(str(error))
+            if status == "FAILED":
+                error = result.get("error") or "OpenClaw agent run failed."
+                raise OpenClawGatewayError(str(error))
 
         output: str
         metadata: dict[str, Any] = {}
@@ -505,12 +518,11 @@ class OpenClawGatewayClient(OpenClawClient):
                 result_store=run.result_target.as_payload(),
             )
 
-        stored = None
-        if run.result_target is not None:
+        if stored is None and run.result_target is not None:
             try:
-                # Runtime completion only means the worker stopped. Adaptive now
-                # owns transport finalization and writes the integrity manifest
-                # deterministically after the worker's final result.txt exists.
+                # Normal runtime completion still follows the same Adaptive-owned
+                # finalizer. Recovery above only changes when that finalization is
+                # allowed to begin, never who owns the manifest.
                 stored = self._result_store.finalize_worker_result(run.result_target)
             except ResultStoreError as exc:
                 protocol_error = str(exc)
@@ -627,6 +639,23 @@ class OpenClawGatewayClient(OpenClawClient):
             "worker_protocol": protocol_result,
             **({"session_lifecycle": lifecycle} if lifecycle is not None else {}),
         }
+
+    def _reconcile_persisted_worker_result(
+        self,
+        run: GatewayRun,
+    ):
+        target = run.result_target
+        if target is None:
+            return None
+        if not target.result_path.exists() and not target.manifest_path.exists():
+            return None
+        try:
+            return self._result_store.reconcile_worker_result(target)
+        except ResultStoreError as exc:
+            raise OpenClawGatewayError(
+                "PERSISTED_RESULT_RECONCILIATION_FAILED: "
+                f"{exc}"
+            ) from exc
 
     def _build_failover_payload(
         self,
