@@ -1001,3 +1001,114 @@ def test_resume_fails_closed_when_recovered_execution_identity_mismatches() -> N
 
     assert runtime.submitted == []
 
+def test_planning_scope_blocker_replans_before_retrying_original_work_unit() -> None:
+    planning_block = (
+        "The delegated frontend bootstrap write_paths do not exist in this repository.\n"
+        "ADAPTIVE_REPLAN_REQUIRED: inspect the repository and repair the delegated scope\n"
+        "ADAPTIVE_WORK_STATUS: BLOCKED\n"
+        "ADAPTIVE_BLOCKER_TYPE: PLANNING\n"
+        "ADAPTIVE_UNMET_CRITERIA: correct bootstrap write paths"
+    )
+    scope_fixed = (
+        "Located the real plugin bootstrap paths and produced the corrected scope.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    bootstrap_done = (
+        "Frontend bootstrap is now wired through the real plugin paths.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    fanin_done = (
+        "verification complete\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    initial = ProjectExecutionPlan(
+        summary="bootstrap then verification",
+        work_units=(wu("bootstrap"), wu("verification")),
+        dependencies=(PlannedDependency("bootstrap", "verification"),),
+    )
+    revised = ProjectExecutionPlan(
+        summary="repair scope then bootstrap",
+        work_units=(
+            wu("bootstrap"),
+            wu("verification"),
+            wu("scope-repair"),
+        ),
+        dependencies=(
+            PlannedDependency("bootstrap", "verification"),
+            PlannedDependency("scope-repair", "bootstrap"),
+        ),
+    )
+    planner = StaticPlanner(initial, revised_plan=revised)
+    runtime = SequencedOutputRuntime(
+        {
+            "bootstrap": [planning_block, bootstrap_done],
+            "scope-repair": [scope_fixed],
+            "verification": [fanin_done],
+        }
+    )
+
+    result, actual_planner = run(
+        initial,
+        runtime,
+        planner=planner,
+        max_attempts=2,
+        max_strategies=2,
+        max_replans=2,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert actual_planner.replan_calls == 1
+    bootstrap_records = [
+        record for record in result.records if record.work_unit_id == "bootstrap"
+    ]
+    assert bootstrap_records[0].status == "RECOVERY_REQUIRED"
+    assert bootstrap_records[0].reason == "recovery-required:planning"
+    bootstrap_tasks = [
+        task for task in runtime.tasks if task.work_unit_id == "bootstrap"
+    ]
+    assert len(bootstrap_tasks) == 2
+    scope_index = next(
+        index
+        for index, task in enumerate(runtime.tasks)
+        if task.work_unit_id == "scope-repair"
+    )
+    final_bootstrap_index = max(
+        index
+        for index, task in enumerate(runtime.tasks)
+        if task.work_unit_id == "bootstrap"
+    )
+    assert scope_index < final_bootstrap_index
+    assert result.completed_work_unit_ids == (
+        "bootstrap",
+        "scope-repair",
+        "verification",
+    )
+
+
+def test_genuine_environment_blocker_remains_terminal() -> None:
+    plan = ProjectExecutionPlan(
+        summary="external environment boundary",
+        work_units=(wu("external-e2e"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "external-e2e": (
+                "A real external WordPress environment is required.\n"
+                "ADAPTIVE_WORK_STATUS: BLOCKED\n"
+                "ADAPTIVE_BLOCKER_TYPE: ENVIRONMENT\n"
+                "ADAPTIVE_UNMET_CRITERIA: external WordPress runtime"
+            )
+        }
+    )
+
+    result, _ = run(plan, runtime)
+
+    assert result.status is ProjectRunStatus.BLOCKED
+    assert result.blocked_work_unit_ids == ("external-e2e",)
+    assert result.recovery_required_work_unit_ids == ()

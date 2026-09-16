@@ -68,3 +68,17 @@ def test_missing_footer_preserves_legacy_unknown_state() -> None:
 
     assert signal.status is WorkerCompletionStatus.UNKNOWN
     assert signal.structured is False
+
+def test_planning_blocker_is_recoverable_not_terminal_external_blocker() -> None:
+    signal = parse_worker_completion(
+        """
+ADAPTIVE_WORK_STATUS: BLOCKED
+ADAPTIVE_BLOCKER_TYPE: PLANNING
+ADAPTIVE_UNMET_CRITERIA: delegated write_paths do not exist
+"""
+    )
+
+    assert signal.status is WorkerCompletionStatus.BLOCKED
+    assert signal.blocker_type is WorkerBlockerType.PLANNING
+    assert signal.is_recoverable_planning_blocker is True
+    assert signal.is_genuine_blocker is False
