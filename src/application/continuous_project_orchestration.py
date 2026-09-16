@@ -524,7 +524,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         try:
                             runtime_result = future.result()
                         except Exception as exc:  # adapter exception families vary
-                            self._handle_runtime_result_error(
+                            runtime_recovery_signal = self._handle_runtime_result_error(
                                 outcome=outcome,
                                 error=exc,
                                 generation=generation,
@@ -537,6 +537,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 revision_feedback=revision_feedback,
                                 max_attempts=request.max_attempts_per_work_unit,
                                 max_strategies=request.max_strategies_per_work_unit,
+                            )
+                            pending_replan = (
+                                pending_replan or runtime_recovery_signal
                             )
                             persist()
                             continue
@@ -1362,7 +1365,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         revision_feedback: dict[str, str],
         max_attempts: int,
         max_strategies: int,
-    ) -> None:
+    ) -> bool:
         assert outcome.claim is not None
         self._claims.release(outcome.claim)
         work_unit_id = outcome.work_unit_id
@@ -1403,6 +1406,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
         revision_feedback[work_unit_id] = feedback
         records.append(record)
+        return work_unit.state is WorkUnitState.RECOVERY_REQUIRED
 
     @staticmethod
     def _apply_strategy_exhaustion(
