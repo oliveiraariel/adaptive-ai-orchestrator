@@ -63,6 +63,7 @@ class ProjectOrchestrationError(RuntimeError):
 class ProjectRunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     PARTIAL = "PARTIAL"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
     BLOCKED = "BLOCKED"
 
 
@@ -79,6 +80,7 @@ class ProjectOrchestrationRequest:
     max_work_units: int = 24
     max_waves: int = 24
     max_attempts_per_work_unit: int = 2
+    max_strategies_per_work_unit: int = 2
     max_replans: int = 2
     dependency_context_chars: int = 6000
     execution_policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
@@ -98,6 +100,8 @@ class ProjectOrchestrationRequest:
             raise ValueError("max_waves must be between 1 and 256.")
         if self.max_attempts_per_work_unit < 1 or self.max_attempts_per_work_unit > 8:
             raise ValueError("max_attempts_per_work_unit must be between 1 and 8.")
+        if self.max_strategies_per_work_unit < 1 or self.max_strategies_per_work_unit > 4:
+            raise ValueError("max_strategies_per_work_unit must be between 1 and 4.")
         if self.max_replans < 0 or self.max_replans > 8:
             raise ValueError("max_replans must be between 0 and 8.")
         if self.dependency_context_chars < 256:
@@ -120,6 +124,7 @@ class WorkUnitExecutionRecord:
     result_ref: str | None = None
     result_authoritative: bool = False
     reason: str = ""
+    strategy: int = 1
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,7 @@ class ProjectOrchestrationResult:
     waves: tuple[ParallelWaveRecord, ...]
     max_parallelism_observed: int
     replan_count: int
+    recovery_required_work_unit_ids: tuple[str, ...] = ()
 
 
 class RunProjectOrchestration:
@@ -741,6 +747,7 @@ class RunProjectOrchestration:
         orchestration_id: str,
         attempts: int,
         max_attempts: int,
+        enforce_attempt_circuit_breaker: bool = True,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -820,7 +827,8 @@ class RunProjectOrchestration:
             )
         )
         if (
-            finalized.work_unit_state is WorkUnitState.REVISION_REQUIRED
+            enforce_attempt_circuit_breaker
+            and finalized.work_unit_state is WorkUnitState.REVISION_REQUIRED
             and attempts >= max_attempts
         ):
             work_unit.mark_blocked()
