@@ -120,3 +120,30 @@ def test_negative_criticality_is_rejected() -> None:
             objective="test",
             criticality=-1,
         )
+
+def test_work_unit_can_enter_and_resume_recovery_required() -> None:
+    work_unit = make_work_unit()
+    work_unit.mark_ready()
+    work_unit.start()
+    work_unit.start_evaluation()
+    work_unit.require_revision()
+
+    work_unit.mark_recovery_required()
+
+    assert work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+
+    work_unit.resume_after_recovery()
+
+    assert work_unit.state is WorkUnitState.REVISION_REQUIRED
+
+
+def test_completed_work_unit_cannot_enter_recovery_required() -> None:
+    work_unit = make_work_unit()
+    work_unit.mark_ready()
+    work_unit.start()
+    work_unit.start_evaluation()
+    work_unit.complete()
+
+    with pytest.raises(WorkUnitStateError):
+        work_unit.mark_recovery_required()
+

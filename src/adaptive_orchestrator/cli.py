@@ -169,6 +169,15 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-work-units", type=int, default=24)
     parser.add_argument("--max-waves", type=int, default=24)
     parser.add_argument("--max-attempts", type=int, default=2)
+    parser.add_argument(
+        "--max-strategies",
+        type=int,
+        default=2,
+        help=(
+            "Maximum distinct worker strategies per Work Unit before "
+            "project-level recovery is required."
+        ),
+    )
     parser.add_argument("--max-replans", type=int, default=2)
     parser.add_argument("--dependency-context-chars", type=int, default=6000)
     _add_policy_arguments(parser)
@@ -567,6 +576,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 max_work_units=args.max_work_units,
                 max_waves=args.max_waves,
                 max_attempts_per_work_unit=args.max_attempts,
+                max_strategies_per_work_unit=args.max_strategies,
                 max_replans=args.max_replans,
                 dependency_context_chars=args.dependency_context_chars,
                 execution_policy=_execution_policy(args),
@@ -620,6 +630,9 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "work_unit_count": result.work_unit_count,
                 "completed_work_unit_ids": list(result.completed_work_unit_ids),
                 "blocked_work_unit_ids": list(result.blocked_work_unit_ids),
+                "recovery_required_work_unit_ids": list(
+                    result.recovery_required_work_unit_ids
+                ),
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
@@ -661,6 +674,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                         "result_ref": record.result_ref,
                         "result_authoritative": record.result_authoritative,
                         "reason": record.reason,
+                        "strategy": record.strategy,
                     }
                     for record in result.records
                 ],
@@ -740,6 +754,9 @@ def _resume_project(args: argparse.Namespace) -> int:
                 "work_unit_count": result.work_unit_count,
                 "completed_work_unit_ids": list(result.completed_work_unit_ids),
                 "blocked_work_unit_ids": list(result.blocked_work_unit_ids),
+                "recovery_required_work_unit_ids": list(
+                    result.recovery_required_work_unit_ids
+                ),
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
@@ -768,6 +785,7 @@ def _resume_project(args: argparse.Namespace) -> int:
                         "result_ref": record.result_ref,
                         "result_authoritative": record.result_authoritative,
                         "reason": record.reason,
+                        "strategy": record.strategy,
                     }
                     for record in result.records
                 ],

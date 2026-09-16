@@ -10,6 +10,7 @@ class WorkUnitState(str, Enum):
     RUNNING = "RUNNING"
     EVALUATING = "EVALUATING"
     REVISION_REQUIRED = "REVISION_REQUIRED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
     REOPENED = "REOPENED"
@@ -95,6 +96,19 @@ class WorkUnit:
     def require_revision(self) -> None:
         self._transition(
             allowed={WorkUnitState.EVALUATING},
+            target=WorkUnitState.REVISION_REQUIRED,
+        )
+
+    def mark_recovery_required(self) -> None:
+        if self.state in {WorkUnitState.COMPLETED, WorkUnitState.CANCELLED, WorkUnitState.BLOCKED}:
+            raise WorkUnitStateError(
+                f"WorkUnit cannot require recovery from {self.state.value}."
+            )
+        self.state = WorkUnitState.RECOVERY_REQUIRED
+
+    def resume_after_recovery(self) -> None:
+        self._transition(
+            allowed={WorkUnitState.RECOVERY_REQUIRED},
             target=WorkUnitState.REVISION_REQUIRED,
         )
 
