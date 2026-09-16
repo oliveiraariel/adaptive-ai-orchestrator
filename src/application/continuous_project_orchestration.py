@@ -569,6 +569,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if work_unit.state is WorkUnitState.BLOCKED
             )
         )
+        recovery_required_ids = tuple(
+            sorted(
+                work_unit_id
+                for work_unit_id, work_unit in work_units.items()
+                if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+            )
+        )
         unfinished_ids = tuple(
             sorted(
                 work_unit_id
@@ -583,6 +590,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
         if len(completed_ids) == len(work_units):
             status = ProjectRunStatus.COMPLETED
+        elif recovery_required_ids and not blocked_ids:
+            status = ProjectRunStatus.RECOVERY_REQUIRED
         elif completed_ids:
             status = ProjectRunStatus.PARTIAL
         else:
@@ -600,6 +609,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             waves=tuple(dispatch_records),
             max_parallelism_observed=max_parallelism_observed,
             replan_count=replan_count,
+            recovery_required_work_unit_ids=recovery_required_ids,
         )
         persist(terminal=True)
         observability.emit(
@@ -975,6 +985,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "result_ref": item.result_ref,
             "result_authoritative": item.result_authoritative,
             "reason": item.reason,
+            "strategy": item.strategy,
         }
 
     @classmethod
@@ -1006,6 +1017,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 raw.get("result_authoritative", False)
             ),
             reason=str(raw.get("reason") or ""),
+            strategy=(
+                cls._require_nonnegative_int(raw, "strategy")
+                if "strategy" in raw
+                else 1
+            ),
         )
 
     @staticmethod
@@ -1156,6 +1172,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if item.state is WorkUnitState.BLOCKED
             )
         )
+        recovery_required_ids = tuple(
+            sorted(
+                key
+                for key, item in work_units.items()
+                if item.state is WorkUnitState.RECOVERY_REQUIRED
+            )
+        )
         unfinished_ids = tuple(
             sorted(
                 key
@@ -1170,6 +1193,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         )
         if len(completed_ids) == len(work_units):
             status = ProjectRunStatus.COMPLETED
+        elif recovery_required_ids and not blocked_ids:
+            status = ProjectRunStatus.RECOVERY_REQUIRED
         elif completed_ids:
             status = ProjectRunStatus.PARTIAL
         else:
@@ -1186,6 +1211,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             waves=tuple(dispatch_records),
             max_parallelism_observed=max_parallelism_observed,
             replan_count=replan_count,
+            recovery_required_work_unit_ids=recovery_required_ids,
         )
 
     def _build_continuous_assignment(
