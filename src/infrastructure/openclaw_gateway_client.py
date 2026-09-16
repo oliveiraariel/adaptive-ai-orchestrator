@@ -498,7 +498,7 @@ class OpenClawGatewayClient(OpenClawClient):
                 "stopReason": "adaptive-result-store",
             }
         else:
-            result = self._wait_for_result(run.run_id, run=run)
+            result = self._wait_for_result(run.run_id)
             status = self._normalize_wait_status(result.get("status"))
 
             if status == "TIMEOUT":
@@ -778,12 +778,7 @@ class OpenClawGatewayClient(OpenClawClient):
             return normalized.split("/", 1)[0]
         return "openai"
 
-    def _wait_for_result(
-        self,
-        run_id: str,
-        *,
-        run: GatewayRun | None = None,
-    ) -> dict[str, Any]:
+    def _wait_for_result(self, run_id: str) -> dict[str, Any]:
         """Poll bounded Gateway waits and reconcile worker publication on timeout.
 
         A normal fast terminal Gateway response remains the preferred lifecycle
@@ -792,7 +787,19 @@ class OpenClawGatewayClient(OpenClawClient):
         atomically published. That prevents a healthy completed worker from
         being held behind a stale RUNNING lifecycle while preserving the normal
         Gateway path when it is functioning.
+
+        The call shape intentionally remains one run_id argument because
+        lifecycle tests and adapters replace this seam. The matching GatewayRun
+        is recovered from the client's in-memory registry.
         """
+        run = next(
+            (
+                candidate
+                for candidate in self._runs.values()
+                if candidate.run_id == run_id
+            ),
+            None,
+        )
         deadline = time.monotonic() + self._config.agent_result_timeout_seconds
         while True:
             remaining = max(0.001, deadline - time.monotonic())
