@@ -197,3 +197,29 @@ def test_adapter_accepts_mandatory_protocol_result_after_result_verified() -> No
 
     assert result.execution.status is AgentRuntimeStatus.COMPLETED
     assert result.raw_result["output"] == "done"
+
+def test_verified_protocol_result_overrides_stale_running_gateway_state() -> None:
+    client = FakeOpenClawClient()
+    adapter = OpenClawAdapter(client)
+
+    execution = adapter.submit(make_task())
+    client.status = "running"
+    client.result = {
+        "output": "done after persisted-result reconciliation",
+        "worker_protocol": {
+            "name": "adaptive-worker-protocol",
+            "version": 1,
+            "required": True,
+            "completion_state": "RESULT_VERIFIED",
+        },
+        "result_transport": {
+            "source": "adaptive-result-store",
+            "authoritative": True,
+            "complete": True,
+        },
+    }
+
+    result = adapter.retrieve_result(execution)
+
+    assert result.execution.status is AgentRuntimeStatus.COMPLETED
+    assert result.raw_result["output"] == "done after persisted-result reconciliation"

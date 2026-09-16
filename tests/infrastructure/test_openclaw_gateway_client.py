@@ -1115,3 +1115,92 @@ def test_gateway_prefers_durable_result_store_for_large_machine_result(tmp_path)
     finally:
         server.shutdown()
         thread.join(timeout=1)
+
+def test_recovered_run_finalizes_existing_result_without_waiting_for_gateway(tmp_path) -> None:
+    store = FileResultStore(root=tmp_path / "runs", project_root=tmp_path)
+    identities = tmp_path / "identities.jsonl"
+    config = GatewayConfig(
+        url="ws://127.0.0.1:1",
+        run_identity_path=str(identities),
+        device_identity_path=str(tmp_path / "identity.json"),
+        archive_completed_sessions=False,
+    )
+    first = OpenClawGatewayClient(config, result_store=store)
+    target = store.prepare_target(
+        orchestration_id="orch-recovery",
+        work_unit_id="decimal",
+        execution_id="exec-recovery",
+    )
+    final_output = (
+        "decimal complete\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE\n"
+    )
+    target.result_path.write_text(final_output, encoding="utf-8")
+    first._persist_run_identity(
+        GatewayRun(
+            "run-recovery",
+            "agent:main:orchestrator:task-recovery",
+            {
+                "task_id": "task-recovery",
+                "orchestration_id": "orch-recovery",
+                "work_unit_id": "decimal",
+            },
+            result_target=target,
+        )
+    )
+
+    recovered = OpenClawGatewayClient(config, result_store=store)
+    recovered.recover_run("gateway:run-recovery")
+    recovered._wait_for_result = lambda _run_id: (_ for _ in ()).throw(
+        AssertionError("persisted complete result must be reconciled before agent.wait")
+    )  # type: ignore[method-assign]
+
+    result = recovered.retrieve_result("gateway:run-recovery")
+
+    assert result["reconciled"] is True
+    assert result["output"] == final_output
+    assert result["result_transport"]["authoritative"] is True
+    assert result["result_transport"]["complete"] is True
+    assert result["worker_protocol"]["completion_state"] == "RESULT_VERIFIED"
+    assert target.manifest_path.exists()
+
+
+def test_recovered_run_rejects_corrupt_persisted_result_manifest(tmp_path) -> None:
+    import pytest
+
+    store = FileResultStore(root=tmp_path / "runs", project_root=tmp_path)
+    identities = tmp_path / "identities.jsonl"
+    config = GatewayConfig(
+        url="ws://127.0.0.1:1",
+        run_identity_path=str(identities),
+        device_identity_path=str(tmp_path / "identity.json"),
+        archive_completed_sessions=False,
+    )
+    first = OpenClawGatewayClient(config, result_store=store)
+    target = store.prepare_target(
+        orchestration_id="orch-recovery",
+        work_unit_id="decimal",
+        execution_id="exec-recovery",
+    )
+    target.result_path.write_text("complete", encoding="utf-8")
+    target.manifest_path.write_text("{bad-json", encoding="utf-8")
+    first._persist_run_identity(
+        GatewayRun(
+            "run-recovery",
+            "agent:main:orchestrator:task-recovery",
+            {
+                "task_id": "task-recovery",
+                "orchestration_id": "orch-recovery",
+                "work_unit_id": "decimal",
+            },
+            result_target=target,
+        )
+    )
+
+    recovered = OpenClawGatewayClient(config, result_store=store)
+    recovered.recover_run("gateway:run-recovery")
+
+    with pytest.raises(OpenClawGatewayError, match="PERSISTED_RESULT_RECONCILIATION_FAILED"):
+        recovered.retrieve_result("gateway:run-recovery")

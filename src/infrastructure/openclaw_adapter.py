@@ -198,7 +198,7 @@ class OpenClawAdapter(AgentRuntime):
             external_id=external_id,
             status=AgentRuntimeStatus.SUBMITTED,
         )
-        self._executions[external_id] = execution
+        self._executions[execution.id] = execution
         return execution
 
     def get_status(self, execution: ExecutionReference) -> AgentRuntimeStatus:
@@ -223,6 +223,11 @@ class OpenClawAdapter(AgentRuntime):
             raw_result = self._client.retrieve_result(execution.external_id)
             self._enforce_worker_protocol_result(raw_result)
             status = self.get_status(execution)
+            if self._worker_protocol_result_verified(raw_result):
+                # A verified Adaptive Result Store result is the authoritative
+                # completion signal. Gateway lifecycle state can lag behind the
+                # worker's atomic final result publication after controller loss.
+                status = AgentRuntimeStatus.COMPLETED
         except Exception as exc:
             if state is not None:
                 self._audit.append(
@@ -386,6 +391,21 @@ class OpenClawAdapter(AgentRuntime):
         return AgentRuntimeResult(
             execution=updated,
             raw_result=raw_result,
+        )
+
+    @staticmethod
+    def _worker_protocol_result_verified(raw_result: object) -> bool:
+        if not isinstance(raw_result, dict):
+            return False
+        protocol = raw_result.get("worker_protocol")
+        transport = raw_result.get("result_transport")
+        return (
+            isinstance(protocol, dict)
+            and protocol.get("required") is True
+            and protocol.get("completion_state") == PROTOCOL_COMPLETION_STATE
+            and isinstance(transport, dict)
+            and transport.get("authoritative") is True
+            and transport.get("complete") is True
         )
 
     @staticmethod

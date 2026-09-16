@@ -43,6 +43,10 @@ from infrastructure.execution_liveness_store import (
     FileExecutionLivenessStore,
 )
 from infrastructure.openclaw_adapter import OpenClawAdapter
+from infrastructure.project_orchestration_checkpoint import (
+    FileProjectOrchestrationCheckpointStore,
+    ProjectOrchestrationCheckpointError,
+)
 from infrastructure.openclaw_gateway_client import (
     GatewayConfig,
     OpenClawGatewayClient,
@@ -103,6 +107,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_project_arguments(orchestrate)
+
+    resume_project = commands.add_parser(
+        "resume-project",
+        help=(
+            "Resume a durably checkpointed multi-Work-Unit project without "
+            "redispatching already active workers."
+        ),
+    )
+    resume_project.add_argument("--orchestration-id", required=True)
+    resume_project.add_argument(
+        "--session-id",
+        default=os.environ.get("ADAPTIVE_SESSION_ID"),
+    )
+    resume_project.add_argument("--skill-registry")
+    _add_gateway_arguments(resume_project)
 
     doctor = commands.add_parser(
         "doctor",
@@ -201,6 +220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _wait(args)
     if args.command == "orchestrate":
         return _orchestrate(args)
+    if args.command == "resume-project":
+        return _resume_project(args)
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
@@ -524,11 +545,15 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 max_work_units=args.max_work_units,
             )
 
+        checkpoint_store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
         result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
             skill_profiles=profiles,
+            checkpoint_store=checkpoint_store,
         ).execute(
             ProjectOrchestrationRequest(
                 objective=args.objective,
@@ -559,6 +584,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         SkillResolutionError,
         OpenClawGatewayError,
         ResultStoreError,
+        ProjectOrchestrationCheckpointError,
         ValueError,
     ) as exc:
         observability.emit(
@@ -613,6 +639,113 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "waves": [
                     {
                         "wave": wave.wave,
+                        "ready_work_unit_ids": list(wave.ready_work_unit_ids),
+                        "selected_work_unit_ids": list(wave.selected_work_unit_ids),
+                        "conflict_deferred_ids": list(wave.conflict_deferred_ids),
+                    }
+                    for wave in result.waves
+                ],
+                "records": [
+                    {
+                        "work_unit_id": record.work_unit_id,
+                        "role": record.role,
+                        "wave": record.wave,
+                        "attempt": record.attempt,
+                        "status": record.status,
+                        "skills": list(record.skills),
+                        "execution_id": record.execution_id,
+                        "external_id": record.external_id,
+                        "runtime_status": record.runtime_status,
+                        "verdict": record.verdict,
+                        "output": record.output,
+                        "result_ref": record.result_ref,
+                        "result_authoritative": record.result_authoritative,
+                        "reason": record.reason,
+                    }
+                    for record in result.records
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0 if completed else 3
+
+
+def _resume_project(args: argparse.Namespace) -> int:
+    observability = JsonlObservabilitySink(
+        canonical_observability_path(),
+        args.session_id,
+    )
+    try:
+        registry_path = (
+            Path(args.skill_registry).expanduser().resolve()
+            if args.skill_registry
+            else _find_skill_registry(required=True)
+        )
+        assert registry_path is not None
+        profiles = load_skill_profiles(registry_path)
+        runtime = _runtime(args)
+        claims = InMemoryClaimRegistry()
+        planner = RuntimeProjectPlanner(
+            runner=RunOrchestration(
+                runtime=runtime,
+                claim_registry=claims,
+            ),
+            skill_profiles=profiles,
+        )
+        checkpoint_store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        result = RunContinuousProjectOrchestration(
+            runtime=runtime,
+            claim_registry=claims,
+            planner=planner,
+            skill_profiles=profiles,
+            checkpoint_store=checkpoint_store,
+        ).resume(
+            args.orchestration_id,
+            observability=observability,
+        )
+    except (
+        OSError,
+        ProjectOrchestrationError,
+        ProjectPlanningError,
+        RunOrchestrationError,
+        SkillRegistryError,
+        SkillResolutionError,
+        OpenClawGatewayError,
+        ResultStoreError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        observability.emit(
+            "orchestration_completed",
+            orchestration_id=args.orchestration_id,
+            status="FAILED",
+            failure_category=_safe_failure_category(exc),
+            failure_code=_safe_failure_code(exc),
+        )
+        return _print_error(exc)
+
+    completed = result.status is ProjectRunStatus.COMPLETED
+    print(
+        json.dumps(
+            {
+                "ok": completed,
+                "mode": "resume-project",
+                "orchestration_id": result.orchestration_id,
+                "status": result.status.value,
+                "plan_summary": result.plan_summary,
+                "work_unit_count": result.work_unit_count,
+                "completed_work_unit_ids": list(result.completed_work_unit_ids),
+                "blocked_work_unit_ids": list(result.blocked_work_unit_ids),
+                "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
+                "max_parallelism_observed": result.max_parallelism_observed,
+                "replan_count": result.replan_count,
+                "dispatch_generations": [
+                    {
+                        "generation": wave.wave,
                         "ready_work_unit_ids": list(wave.ready_work_unit_ids),
                         "selected_work_unit_ids": list(wave.selected_work_unit_ids),
                         "conflict_deferred_ids": list(wave.conflict_deferred_ids),
