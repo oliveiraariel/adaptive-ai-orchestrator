@@ -36,10 +36,10 @@ class JsonlObservabilitySink:
         "model", "provider", "thinking", "attempt", "wave", "status", "verdict",
         "runtime_status",
         "usage", "cost",
-        "failure_category", "failure_code",
+        "failure_category", "failure_code", "phase",
     }
     _event_types = {
-        "orchestration_started", "work_unit_created", "work_unit_ready",
+        "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
         "worker_dispatched", "model_selected", "worker_started",
         "work_unit_status_changed", "worker_escalated", "evaluation_finalized",
         "orchestration_completed",
