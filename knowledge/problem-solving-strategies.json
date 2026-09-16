@@ -275,6 +275,43 @@
       "evidence": [
         "2026-09-15: a Planner smoke attempted max_waves=0 to prevent Work Unit dispatch, but the executor contract correctly required 1..256. Adaptive added explicit --plan-only mode; the real Planner then produced a schema-valid, semantically valid ProjectExecutionPlan with three Work Units while dispatching zero generated Work Units."
       ]
+    },
+    {
+      "id": "classify-git-state-before-safe-fast-forward",
+      "status": "validated",
+      "title": "Classify tracked WIP, staged changes, untracked generated files, and stash separately before blocking a safe fast-forward",
+      "triggers": [
+        "working tree not clean",
+        "git status",
+        "untracked files",
+        "__pycache__",
+        "pyc",
+        "stash exists",
+        "safe fast-forward",
+        "git pull --ff-only",
+        "preserve wip",
+        "repository update blocked"
+      ],
+      "guidance": [
+        "Do not equate a literally non-empty working tree with tracked WIP that makes an update unsafe.",
+        "Classify repository state into four independent categories before deciding: tracked unstaged modifications, staged modifications, untracked files, and historical stash entries.",
+        "Use git diff --name-only and git diff --cached --name-only to prove whether tracked/staged WIP exists; use git status --porcelain=v1 --untracked-files=all to inspect untracked files separately.",
+        "A historical stash can remain untouched while the current checkout is updated; its mere existence is not a reason to block a fast-forward.",
+        "Generated untracked caches such as __pycache__/ and *.pyc do not by themselves block a safe fast-forward when they do not collide with files the update needs to write.",
+        "If tracked and staged diffs are empty and the only untracked paths are disposable/generated caches, preserve those files physically and perform only a fast-forward update such as git pull --ff-only.",
+        "After the update, verify HEAD, git status, and git stash list so preservation is proven rather than assumed.",
+        "If Git reports that an untracked file would be overwritten, or if any tracked/staged modification exists, stop and preserve state for an explicit decision instead of cleaning or overwriting."
+      ],
+      "safety": [
+        "Never use git reset --hard, git clean, stash pop/apply/drop, or ad-hoc rm -rf merely to make a repository appear clean enough for an update.",
+        "Never create a new stash automatically when preservation policy forbids changing existing WIP state unless explicitly authorized.",
+        "Do not discard generated untracked files merely because they are not important; preservation and safe update can coexist.",
+        "Prefer git pull --ff-only so repository synchronization cannot silently create a merge commit.",
+        "Treat any path-collision warning from Git as a stop condition rather than deleting the untracked file."
+      ],
+      "evidence": [
+        "2026-09-16: during SGFP Stage 11, an ariel-agent-skills Bridge update was incorrectly blocked because __pycache__/ directories and a preexisting stash made the checkout look non-clean. The reusable correction is to classify tracked, staged, untracked, and stash state separately: only tracked/staged WIP or an actual untracked-path collision prevents a preservation-safe fast-forward; generated caches and historical stash entries may remain untouched."
+      ]
     }
   ]
 }
