@@ -82,6 +82,7 @@ class GatewayRun:
     runtime_attempt: int = 1
     result_target: ResultStoreTarget | None = None
     request_message_ref: dict[str, Any] | None = None
+    recovered: bool = False
 
 
 @dataclass(frozen=True)
@@ -247,6 +248,7 @@ class OpenClawGatewayClient(OpenClawClient):
                 if isinstance(record.get("request_message_ref"), dict)
                 else None
             ),
+            recovered=True,
         )
         self._runs[external_id] = run
         return run
@@ -484,7 +486,11 @@ class OpenClawGatewayClient(OpenClawClient):
         # that rename while OpenClaw still reports the run as RUNNING. Reconcile
         # the exact persisted target first so recovery never waits forever for a
         # stale Gateway lifecycle state.
-        stored = self._reconcile_persisted_worker_result(run)
+        stored = (
+            self._reconcile_persisted_worker_result(run)
+            if run.recovered
+            else None
+        )
         if stored is not None:
             result = {
                 "status": "ok",
