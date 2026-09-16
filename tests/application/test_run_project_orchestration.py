@@ -592,3 +592,218 @@ def test_worker_assignment_requires_structured_completion_footer() -> None:
     constraints = "\n".join(task.constraints)
     assert "ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED" in constraints
     assert "Missing implementation, wiring, tests" in constraints
+
+class MemoryProjectCheckpointStore:
+    def __init__(self, state: dict | None = None) -> None:
+        self.state = state
+        self.saves: list[dict] = []
+
+    def load(self, orchestration_id: str):
+        if self.state is None:
+            return None
+        if self.state.get("orchestration_id") != orchestration_id:
+            return None
+        return self.state
+
+    def save(self, orchestration_id: str, payload: dict) -> None:
+        assert payload["orchestration_id"] == orchestration_id
+        self.state = payload
+        self.saves.append(payload)
+
+
+class RecoverableProjectRuntime:
+    def __init__(self, *, wrong_recovery_identity: bool = False) -> None:
+        self.submitted: list[str] = []
+        self.recovered: list[str] = []
+        self.retrieve_calls: list[str] = []
+        self.tasks: dict[str, TaskPackage] = {}
+        self.wrong_recovery_identity = wrong_recovery_identity
+
+    def submit(self, task: TaskPackage) -> ExecutionReference:
+        self.submitted.append(task.work_unit_id)
+        execution = ExecutionReference(
+            id=f"execution:{task.work_unit_id}",
+            runtime="fake",
+            external_id=f"external:{task.work_unit_id}",
+            status=AgentRuntimeStatus.SUBMITTED,
+        )
+        self.tasks[execution.id] = task
+        return execution
+
+    def recover_execution(self, external_id: str) -> ExecutionReference:
+        self.recovered.append(external_id)
+        work_unit_id = external_id.split(":", 1)[-1]
+        execution_id = (
+            "execution:wrong"
+            if self.wrong_recovery_identity
+            else f"execution:{work_unit_id}"
+        )
+        return ExecutionReference(
+            id=execution_id,
+            runtime="fake",
+            external_id=external_id,
+            status=AgentRuntimeStatus.SUBMITTED,
+        )
+
+    def get_status(self, execution: ExecutionReference) -> AgentRuntimeStatus:
+        return AgentRuntimeStatus.COMPLETED
+
+    def retrieve_result(self, execution: ExecutionReference) -> AgentRuntimeResult:
+        self.retrieve_calls.append(execution.id)
+        work_unit_id = execution.external_id.split(":", 1)[-1]
+        output = (
+            f"done:{work_unit_id}\n"
+            "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+            "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+            "ADAPTIVE_UNMET_CRITERIA: NONE"
+        )
+        completed = replace(execution, status=AgentRuntimeStatus.COMPLETED)
+        return AgentRuntimeResult(
+            execution=completed,
+            raw_result={
+                "output": output,
+                "result_transport": {
+                    "source": "adaptive-result-store",
+                    "authoritative": True,
+                    "complete": True,
+                    "result_ref": f"/results/{work_unit_id}/manifest.json",
+                    "result_bytes": len(output.encode("utf-8")),
+                },
+            },
+        )
+
+    def cancel(self, execution: ExecutionReference) -> ExecutionReference:
+        return replace(execution, status=AgentRuntimeStatus.CANCELLED)
+
+
+def _lost_controller_checkpoint(
+    executor: RunContinuousProjectOrchestration,
+    request: ProjectOrchestrationRequest,
+    plan: ProjectExecutionPlan,
+) -> dict:
+    return {
+        "orchestration_id": "orch-recovery",
+        "request": executor._request_to_payload(request),
+        "plan": executor._plan_to_payload(plan),
+        "work_unit_states": {
+            "producer": "RUNNING",
+            "consumer": "PLANNED",
+        },
+        "dependency_states": [
+            {
+                "source_id": "producer",
+                "target_id": "consumer",
+                "required": True,
+                "status": "BLOCKED",
+            }
+        ],
+        "attempts": {"producer": 1, "consumer": 0},
+        "outputs": {},
+        "output_refs": {},
+        "revision_feedback": {},
+        "records": [],
+        "dispatch_records": [
+            {
+                "wave": 1,
+                "ready_work_unit_ids": ["producer"],
+                "selected_work_unit_ids": ["producer"],
+                "conflict_deferred_ids": [],
+            }
+        ],
+        "max_parallelism_observed": 1,
+        "replan_count": 0,
+        "dispatch_generation": 1,
+        "pending_replan": False,
+        "active_executions": [
+            {
+                "work_unit_id": "producer",
+                "generation": 1,
+                "execution_id": "execution:producer",
+                "external_id": "external:producer",
+                "runtime": "fake",
+            }
+        ],
+        "terminal": False,
+    }
+
+
+def test_resume_reconciles_active_worker_then_continues_frontier_without_redispatch() -> None:
+    plan = ProjectExecutionPlan(
+        summary="recover producer then continue consumer",
+        work_units=(wu("producer"), wu("consumer")),
+        dependencies=(PlannedDependency("producer", "consumer"),),
+    )
+    request = ProjectOrchestrationRequest(
+        objective="recover project",
+        orchestration_id="orch-recovery",
+        plan=plan,
+        max_concurrency=2,
+    )
+    runtime = RecoverableProjectRuntime()
+    store = MemoryProjectCheckpointStore()
+    executor = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+    )
+    store.state = _lost_controller_checkpoint(executor, request, plan)
+
+    result = executor.resume("orch-recovery")
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert runtime.recovered == ["external:producer"]
+    assert "producer" not in runtime.submitted
+    assert runtime.submitted == ["consumer"]
+    assert runtime.retrieve_calls.count("execution:producer") == 1
+    producer = next(
+        item for item in result.records if item.work_unit_id == "producer"
+    )
+    assert producer.verdict == "ACCEPTED"
+    assert producer.result_authoritative is True
+    assert result.completed_work_unit_ids == ("consumer", "producer")
+    assert store.state["terminal"] is True
+    assert store.state["active_executions"] == []
+
+    submissions_before_second_resume = list(runtime.submitted)
+    retrievals_before_second_resume = list(runtime.retrieve_calls)
+    second = executor.resume("orch-recovery")
+
+    assert second.status is ProjectRunStatus.COMPLETED
+    assert runtime.submitted == submissions_before_second_resume
+    assert runtime.retrieve_calls == retrievals_before_second_resume
+
+
+def test_resume_fails_closed_when_recovered_execution_identity_mismatches() -> None:
+    plan = ProjectExecutionPlan(
+        summary="identity validation",
+        work_units=(wu("producer"), wu("consumer")),
+        dependencies=(PlannedDependency("producer", "consumer"),),
+    )
+    request = ProjectOrchestrationRequest(
+        objective="recover project",
+        orchestration_id="orch-recovery",
+        plan=plan,
+    )
+    runtime = RecoverableProjectRuntime(wrong_recovery_identity=True)
+    store = MemoryProjectCheckpointStore()
+    executor = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+    )
+    store.state = _lost_controller_checkpoint(executor, request, plan)
+
+    import pytest
+
+    with pytest.raises(
+        Exception,
+        match="execution identity mismatch",
+    ):
+        executor.resume("orch-recovery")
+
+    assert runtime.submitted == []
+
