@@ -677,10 +677,10 @@ class RunProjectOrchestration:
             "Work only inside the delegated objective and declared scope. Do not expand authority.",
             "Return a concise result describing artifacts changed/produced, verification actually performed, blockers, and any next dependency-relevant fact.",
             "Missing implementation, wiring, tests, repositories, ports, or transactions that are already inside the authorized objective/scope are work to complete, not blockers. Continue the Work Unit instead of stopping merely because such changes are needed.",
-            "Use BLOCKED only for a genuine external stop: HUMAN_DECISION, AUTHORITY, ENVIRONMENT, RUNTIME, or EXTERNAL_DEPENDENCY. Ordinary implementation difficulty is not a blocker.",
+            "Use BLOCKED only for a genuine stop. HUMAN_DECISION, AUTHORITY, ENVIRONMENT, RUNTIME, and EXTERNAL_DEPENDENCY are external/authority blockers. If the delegated plan itself is wrong (for example authorized write_paths/scope point to nonexistent or incorrect repository locations), use BLOCKED with ADAPTIVE_BLOCKER_TYPE: PLANNING and include ADAPTIVE_REPLAN_REQUIRED with a concise explanation. Do not classify an internal planner/scope defect as ENVIRONMENT.",
             f"If genuinely necessary new work is discovered that is not represented by this Work Unit, include the literal marker {self.REPLAN_MARKER}: followed by a concise reason. Do not use the marker for optional improvements.",
             self._learning_signal_constraint(),
-            "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
+            "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY|PLANNING ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
         if spec.write_paths:
             constraints = (
@@ -798,8 +798,13 @@ class RunProjectOrchestration:
 
         verdict = evaluation.verdict
         reason = "evaluation-returned"
+        planning_recovery = False
         if completion.structured:
-            if completion.is_genuine_blocker:
+            if completion.is_recoverable_planning_blocker:
+                verdict = EvaluationVerdict.RETURNED
+                reason = "recovery-required:planning"
+                planning_recovery = True
+            elif completion.is_genuine_blocker:
                 verdict = EvaluationVerdict.BLOCKED
                 reason = f"worker-blocked:{completion.blocker_type.value}"
             elif completion.status is WorkerCompletionStatus.BLOCKED:
@@ -826,7 +831,9 @@ class RunProjectOrchestration:
                 orchestration_id=orchestration_id,
             )
         )
-        if (
+        if planning_recovery and work_unit.state is WorkUnitState.REVISION_REQUIRED:
+            work_unit.mark_recovery_required()
+        elif (
             enforce_attempt_circuit_breaker
             and finalized.work_unit_state is WorkUnitState.REVISION_REQUIRED
             and attempts >= max_attempts
@@ -858,7 +865,10 @@ class RunProjectOrchestration:
                 result_authoritative=result_authoritative,
                 reason=reason,
             ),
-            accepted and self.REPLAN_MARKER in output,
+            (
+                planning_recovery
+                or (accepted and self.REPLAN_MARKER in output)
+            ),
         )
 
     def _learning_signal_constraint(self) -> str:
