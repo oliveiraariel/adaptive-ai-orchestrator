@@ -240,6 +240,21 @@ class FileResultStore:
             raise ResultStoreError("Finalized result is not recoverable.")
         return stored
 
+    def reconcile_worker_result(self, target: ResultStoreTarget) -> StoredResult:
+        """Recover or finalize one worker result without changing verified bytes.
+
+        Recovery is intentionally idempotent. If Adaptive already finalized the
+        manifest, read and verify it instead of rewriting it. If the worker
+        published its final result.txt but the controller disappeared before
+        manifest finalization, finalize that exact target through the normal
+        Adaptive-owned integrity path.
+        """
+
+        existing = self.read_result(target)
+        if existing is not None:
+            return existing
+        return self.finalize_worker_result(target)
+
     def read_result(self, target: ResultStoreTarget) -> StoredResult | None:
         """Return a verified Adaptive-finalized result, or None before finalization."""
 
