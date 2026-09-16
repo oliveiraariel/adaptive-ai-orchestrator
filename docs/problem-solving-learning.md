@@ -173,6 +173,56 @@ The full forensic record for both strategies is:
 docs/incidents/2026-09-15-planner-bridge-runtime-and-plan-only.md
 ```
 
+### Classify Git state before blocking a safe fast-forward
+
+A repository can be preservation-safe for a fast-forward even when `git status`
+is not literally empty. Adaptive must distinguish four independent kinds of
+state before deciding whether synchronization is unsafe:
+
+1. tracked unstaged modifications;
+2. staged modifications;
+3. untracked files;
+4. historical stash entries.
+
+The decision procedure is:
+
+```text
+git diff --name-only
+git diff --cached --name-only
+git status --porcelain=v1 --untracked-files=all
+git stash list
+```
+
+If tracked and staged diffs are empty, and the only untracked files are generated
+artifacts such as `__pycache__/` or `*.pyc`, their presence alone does not
+justify blocking a `git pull --ff-only`. The generated files should be
+preserved physically; an existing stash should remain untouched.
+
+A stop is required when:
+
+- tracked or staged WIP exists;
+- Git reports that an untracked file would be overwritten by checkout/update;
+- the update cannot remain a fast-forward;
+- preservation invariants cannot be proven.
+
+The important distinction is:
+
+```text
+working tree is not literally empty
+!=
+tracked WIP would be overwritten
+```
+
+This prevents over-conservative recovery logic from halting orchestration merely
+because generated cache files or a historical stash are present, while still
+protecting real WIP.
+
+The 2026-09-16 Bridge update incident in SGFP Stage 11 is recorded at:
+
+```text
+docs/incidents/2026-09-16-safe-fast-forward-with-untracked-cache-and-stash.md
+```
+
 ## Runtime learning candidates
 
 Accepted workers may emit one explicit final-line signal:
