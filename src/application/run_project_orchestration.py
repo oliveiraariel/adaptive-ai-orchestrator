@@ -60,6 +60,10 @@ class ProjectOrchestrationError(RuntimeError):
     """Raised when project orchestration cannot preserve its invariants."""
 
 
+class RecoveryPlanTopologyError(ProjectOrchestrationError):
+    """Raised when recovery replanning creates unreachable remediation topology."""
+
+
 class ProjectRunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     PARTIAL = "PARTIAL"
@@ -927,12 +931,24 @@ class RunProjectOrchestration:
         outputs: dict[str, str],
         output_refs: dict[str, str],
         request: ProjectOrchestrationRequest,
+        planner_feedback: str = "",
     ) -> tuple[ProjectExecutionPlan, tuple[str, ...]]:
         replan = getattr(self._planner, "replan")
         state_summary = self._state_summary(work_units, outputs, output_refs)
+        if planner_feedback.strip():
+            state_summary += (
+                "\nRECOVERY_PLAN_VALIDATION_FEEDBACK:\n"
+                + planner_feedback.strip()
+            )
         revised = replan(planner_request, current_plan, state_summary)
 
         new_specs = [spec for spec in revised.work_units if spec.id not in specs]
+        self._validate_recovery_replan_topology(
+            revised=revised,
+            current_plan=current_plan,
+            work_units=work_units,
+            new_specs=new_specs,
+        )
         if len(specs) + len(new_specs) > request.max_work_units:
             raise ProjectOrchestrationError(
                 "Plan expansion would exceed max_work_units."
@@ -975,6 +991,70 @@ class RunProjectOrchestration:
             ),
         )
         return merged, tuple(spec.id for spec in new_specs)
+
+    @staticmethod
+    def _validate_recovery_replan_topology(
+        *,
+        revised: ProjectExecutionPlan,
+        current_plan: ProjectExecutionPlan,
+        work_units: dict[str, WorkUnit],
+        new_specs: Sequence[PlannedWorkUnit],
+    ) -> None:
+        recovery_ids = {
+            work_unit_id
+            for work_unit_id, work_unit in work_units.items()
+            if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+        }
+        if not recovery_ids or not new_specs:
+            return
+
+        new_ids = {spec.id for spec in new_specs}
+        old_edges = {
+            (item.source_id, item.target_id, item.required)
+            for item in current_plan.dependencies
+        }
+        new_required_edges = {
+            (item.source_id, item.target_id)
+            for item in revised.dependencies
+            if item.required
+            and (item.source_id, item.target_id, item.required) not in old_edges
+        }
+
+        reversed_edges = sorted(
+            (source_id, target_id)
+            for source_id, target_id in new_required_edges
+            if source_id in recovery_ids and target_id in new_ids
+        )
+        if reversed_edges:
+            rendered = ", ".join(
+                f"{source}->{target}" for source, target in reversed_edges
+            )
+            raise RecoveryPlanTopologyError(
+                "Recovery dependency direction is invalid: source_id must "
+                "complete before target_id becomes eligible. A new remediation "
+                "Work Unit must be upstream of the RECOVERY_REQUIRED Work Unit "
+                "(new-remediation -> original-recovery-unit), never downstream "
+                f"of it. Invalid edge(s): {rendered}."
+            )
+
+        for recovery_id in sorted(recovery_ids):
+            touches_new_recovery_work = any(
+                source_id in new_ids or target_id in new_ids
+                for source_id, target_id in new_required_edges
+            )
+            if not touches_new_recovery_work:
+                continue
+            has_upstream_recovery_edge = any(
+                source_id in new_ids and target_id == recovery_id
+                for source_id, target_id in new_required_edges
+            )
+            if not has_upstream_recovery_edge:
+                raise RecoveryPlanTopologyError(
+                    "Recovery plan added new Work Units but did not connect any "
+                    "new required prerequisite into RECOVERY_REQUIRED Work Unit "
+                    f"'{recovery_id}'. Dependency semantics are prerequisite "
+                    "source_id -> dependent target_id."
+                )
 
     @staticmethod
     def _state_summary(
