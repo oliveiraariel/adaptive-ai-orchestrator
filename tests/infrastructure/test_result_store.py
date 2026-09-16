@@ -306,3 +306,46 @@ def test_read_result_rejects_worker_authored_manifest_without_adaptive_publisher
 
     with pytest.raises(ResultStoreError, match="not finalized by the Adaptive"):
         store.read_result(target)
+
+def test_reconcile_worker_result_finalizes_once_and_reuses_verified_manifest(tmp_path) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(
+        orchestration_id="orch-recovery",
+        work_unit_id="wu-recovery",
+        execution_id="exec-recovery",
+    )
+    target.result_path.write_text("final worker result", encoding="utf-8")
+
+    first = store.reconcile_worker_result(target)
+    first_manifest = target.manifest_path.read_bytes()
+
+    second = store.reconcile_worker_result(target)
+    second_manifest = target.manifest_path.read_bytes()
+
+    assert first.content == "final worker result"
+    assert second.content == first.content
+    assert second.sha256 == first.sha256
+    assert second_manifest == first_manifest
+
+
+def test_reconcile_worker_result_fails_closed_on_invalid_existing_manifest(tmp_path) -> None:
+    store = FileResultStore(tmp_path)
+    target = store.prepare_target(
+        orchestration_id="orch-recovery",
+        work_unit_id="wu-recovery",
+        execution_id="exec-recovery",
+    )
+    target.result_path.write_text("final worker result", encoding="utf-8")
+    target.manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "publisher": "adaptive-result-store",
+                "orchestration_id": "wrong-orchestration",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResultStoreError, match="orchestration_id"):
+        store.reconcile_worker_result(target)
