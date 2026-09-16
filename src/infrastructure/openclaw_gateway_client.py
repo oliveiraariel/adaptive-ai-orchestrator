@@ -779,17 +779,54 @@ class OpenClawGatewayClient(OpenClawClient):
         return "openai"
 
     def _wait_for_result(self, run_id: str) -> dict[str, Any]:
-        """Poll bounded Gateway waits; timeout is an intermediate state."""
+        """Poll bounded Gateway waits and reconcile worker publication on timeout.
+
+        A normal fast terminal Gateway response remains the preferred lifecycle
+        signal. When Gateway keeps returning the intermediate TIMEOUT state,
+        Adaptive checks whether the exact worker Result Store target has been
+        atomically published. That prevents a healthy completed worker from
+        being held behind a stale RUNNING lifecycle while preserving the normal
+        Gateway path when it is functioning.
+
+        The call shape intentionally remains one run_id argument because
+        lifecycle tests and adapters replace this seam. The matching GatewayRun
+        is recovered from the client's in-memory registry.
+        """
+        run = next(
+            (
+                candidate
+                for candidate in self._runs.values()
+                if candidate.run_id == run_id
+            ),
+            None,
+        )
         deadline = time.monotonic() + self._config.agent_result_timeout_seconds
         while True:
             remaining = max(0.001, deadline - time.monotonic())
-            timeout_ms = min(self._config.agent_wait_timeout_ms, max(1, int(remaining * 1000)))
+            timeout_ms = min(
+                self._config.agent_wait_timeout_ms,
+                max(1, int(remaining * 1000)),
+            )
+            if run is not None and run.result_target is not None:
+                # Re-check the authoritative worker publication frequently
+                # without imposing a phase deadline on useful worker progress.
+                timeout_ms = min(timeout_ms, 5000)
             result = self._rpc(
                 "agent.wait",
                 {"runId": run_id, "timeoutMs": timeout_ms},
             )
             if self._normalize_wait_status(result.get("status")) != "TIMEOUT":
                 return result
+            if (
+                run is not None
+                and run.result_target is not None
+                and run.result_target.result_path.exists()
+            ):
+                return {
+                    "status": "ok",
+                    "reconciled": True,
+                    "stopReason": "adaptive-result-store",
+                }
             if self._config.agent_result_timeout_seconds <= 0 or time.monotonic() >= deadline:
                 return result
 

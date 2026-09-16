@@ -1204,3 +1204,64 @@ def test_recovered_run_rejects_corrupt_persisted_result_manifest(tmp_path) -> No
 
     with pytest.raises(OpenClawGatewayError, match="PERSISTED_RESULT_RECONCILIATION_FAILED"):
         recovered.retrieve_result("gateway:run-recovery")
+
+def test_live_run_reconciles_final_result_after_gateway_wait_timeout(tmp_path) -> None:
+    responses = {
+        "agent": {"runId": "run-live-reconcile", "acceptedAt": 123},
+        "agent.wait": {"status": "timeout"},
+    }
+    url, holder, server, thread = start_gateway(responses)
+    store = FileResultStore(root=tmp_path / "runs", project_root=tmp_path)
+    try:
+        client = OpenClawGatewayClient(
+            GatewayConfig(
+                url=url,
+                archive_completed_sessions=False,
+                agent_result_timeout_seconds=30,
+                agent_wait_timeout_ms=120000,
+            ),
+            result_store=store,
+        )
+        external = client.submit(
+            {
+                "task_id": "task-live-reconcile",
+                "orchestration_id": "orch-live-reconcile",
+                "work_unit_id": "wu-live-reconcile",
+                "objective": "publish result while gateway lifecycle is stale",
+                "scope": "",
+                "context": [],
+                "inputs": [],
+                "artifacts": [],
+                "decisions": [],
+                "dependencies": [],
+                "constraints": [],
+                "expected_output": ["done"],
+                "acceptance_criteria": ["runtime-completed"],
+                "configuration": {"agent": "agent-001"},
+            }
+        )
+        target = client._runs[external].result_target
+        assert target is not None
+        target.result_path.write_text(
+            "done\n"
+            "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+            "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+            "ADAPTIVE_UNMET_CRITERIA: NONE\n",
+            encoding="utf-8",
+        )
+
+        result = client.retrieve_result(external)
+
+        assert result["reconciled"] is True
+        assert result["result_transport"]["authoritative"] is True
+        assert result["result_transport"]["complete"] is True
+        assert result["worker_protocol"]["completion_state"] == "RESULT_VERIFIED"
+        assert target.manifest_path.exists()
+        methods = [request["method"] for request in holder["requests"]]
+        assert methods == ["agent", "agent.wait"]
+        wait_request = holder["requests"][-1]
+        assert wait_request["params"]["timeoutMs"] <= 5000
+    finally:
+        server.shutdown()
+        thread.join(timeout=1)
+
