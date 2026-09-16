@@ -6,6 +6,7 @@ from typing import Sequence
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntimeResult
+from application.project_orchestration_checkpoint import ProjectOrchestrationCheckpointStore
 from application.observability import NullObservabilitySink, ObservabilitySink
 from application.execution_coordinator import (
     DispatchFrontierRequest,
@@ -24,9 +25,14 @@ from application.run_project_orchestration import (
     WorkUnitExecutionRecord,
 )
 from application.runtime_project_planner import ProjectPlanningRequest
-from domain.dependency import Dependency
+from domain.dependency import Dependency, DependencyStatus
 from domain.evaluation import EvaluationVerdict
-from domain.project_execution_plan import PlannedWorkUnit
+from domain.execution_policy import AutonomyClass, ExecutionPolicy
+from domain.project_execution_plan import (
+    PlannedDependency,
+    PlannedWorkUnit,
+    ProjectExecutionPlan,
+)
 from domain.work_unit import WorkUnit, WorkUnitKind, WorkUnitState
 
 
@@ -45,11 +51,51 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
     and prevents graph mutation underneath in-flight work.
     """
 
+    def __init__(
+        self,
+        *args,
+        checkpoint_store: ProjectOrchestrationCheckpointStore | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._checkpoint_store = checkpoint_store
+
     def execute(
         self,
         request: ProjectOrchestrationRequest,
         *,
         observability: ObservabilitySink | None = None,
+    ) -> ProjectOrchestrationResult:
+        return self._execute(request, observability=observability, checkpoint=None)
+
+    def resume(
+        self,
+        orchestration_id: str,
+        *,
+        observability: ObservabilitySink | None = None,
+    ) -> ProjectOrchestrationResult:
+        if self._checkpoint_store is None:
+            raise ProjectOrchestrationError(
+                "Project resume requires a durable checkpoint store."
+            )
+        checkpoint = self._checkpoint_store.load(orchestration_id)
+        if checkpoint is None:
+            raise ProjectOrchestrationError(
+                f"No project checkpoint exists for orchestration '{orchestration_id}'."
+            )
+        request = self._request_from_checkpoint(checkpoint)
+        return self._execute(
+            request,
+            observability=observability,
+            checkpoint=checkpoint,
+        )
+
+    def _execute(
+        self,
+        request: ProjectOrchestrationRequest,
+        *,
+        observability: ObservabilitySink | None,
+        checkpoint: dict | None,
     ) -> ProjectOrchestrationResult:
         observability = observability or NullObservabilitySink()
         orchestration_id = request.orchestration_id or uuid4().hex
@@ -62,14 +108,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             max_work_units=request.max_work_units,
             max_concurrency=request.max_concurrency,
         )
-        observability.emit("orchestration_started", orchestration_id=orchestration_id)
+        observability.emit(
+            "orchestration_started",
+            orchestration_id=orchestration_id,
+            recovered=checkpoint is not None,
+        )
         plan = request.plan or self._planner.plan(planning_request)
-        for spec in plan.work_units:
-            observability.emit(
-                "work_unit_created", orchestration_id=orchestration_id,
-                work_unit_id=spec.id, role=spec.role,
-                skills=list(spec.requested_skills), status="WAITING",
-            )
         if len(plan.work_units) > request.max_work_units:
             raise ProjectOrchestrationError(
                 f"Plan contains {len(plan.work_units)} Work Units; "
@@ -81,19 +125,71 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             spec.id: self._instantiate_work_unit(spec) for spec in plan.work_units
         }
         dependencies = [self._instantiate_dependency(item) for item in plan.dependencies]
+
+        if checkpoint is None:
+            for spec in plan.work_units:
+                observability.emit(
+                    "work_unit_created", orchestration_id=orchestration_id,
+                    work_unit_id=spec.id, role=spec.role,
+                    skills=list(spec.requested_skills), status="WAITING",
+                )
+            attempts = {work_unit_id: 0 for work_unit_id in work_units}
+            outputs: dict[str, str] = {}
+            output_refs: dict[str, str] = {}
+            revision_feedback: dict[str, str] = {}
+            records: list[WorkUnitExecutionRecord] = []
+            dispatch_records: list[ParallelWaveRecord] = []
+            max_parallelism_observed = 0
+            replan_count = 0
+            dispatch_generation = 0
+            pending_replan = False
+            recovered_active: list[dict] = []
+        else:
+            self._restore_work_unit_states(work_units, checkpoint)
+            self._restore_dependency_states(dependencies, checkpoint)
+            attempts = self._restore_int_map(
+                checkpoint, "attempts", tuple(work_units)
+            )
+            outputs = self._restore_str_map(checkpoint, "outputs")
+            output_refs = self._restore_str_map(checkpoint, "output_refs")
+            revision_feedback = self._restore_str_map(
+                checkpoint, "revision_feedback"
+            )
+            records = [
+                self._record_from_payload(item)
+                for item in self._require_list(checkpoint, "records")
+            ]
+            dispatch_records = [
+                self._wave_from_payload(item)
+                for item in self._require_list(checkpoint, "dispatch_records")
+            ]
+            max_parallelism_observed = self._require_nonnegative_int(
+                checkpoint, "max_parallelism_observed"
+            )
+            replan_count = self._require_nonnegative_int(
+                checkpoint, "replan_count"
+            )
+            dispatch_generation = self._require_nonnegative_int(
+                checkpoint, "dispatch_generation"
+            )
+            pending_replan = bool(checkpoint.get("pending_replan", False))
+            recovered_active = self._require_list(
+                checkpoint, "active_executions"
+            )
+
         skill_sets = self._preflight_skill_sets(specs, request.agent)
         self._validate_graph(request, work_units, dependencies)
 
-        attempts = {work_unit_id: 0 for work_unit_id in work_units}
-        outputs: dict[str, str] = {}
-        output_refs: dict[str, str] = {}
-        revision_feedback: dict[str, str] = {}
-        records: list[WorkUnitExecutionRecord] = []
-        dispatch_records: list[ParallelWaveRecord] = []
-        max_parallelism_observed = 0
-        replan_count = 0
-        dispatch_generation = 0
-        pending_replan = False
+        if checkpoint is not None and checkpoint.get("terminal") is True:
+            return self._result_from_state(
+                orchestration_id=orchestration_id,
+                plan=plan,
+                work_units=work_units,
+                records=records,
+                dispatch_records=dispatch_records,
+                max_parallelism_observed=max_parallelism_observed,
+                replan_count=replan_count,
+            )
 
         active: dict[
             Future[AgentRuntimeResult],
@@ -101,7 +197,95 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         ] = {}
         active_by_id: dict[str, DispatchOutcome] = {}
 
+        if checkpoint is None:
+            self._save_checkpoint(
+                orchestration_id=orchestration_id,
+                request=request,
+                plan=plan,
+                work_units=work_units,
+                dependencies=dependencies,
+                attempts=attempts,
+                outputs=outputs,
+                output_refs=output_refs,
+                revision_feedback=revision_feedback,
+                records=records,
+                dispatch_records=dispatch_records,
+                max_parallelism_observed=max_parallelism_observed,
+                replan_count=replan_count,
+                dispatch_generation=dispatch_generation,
+                pending_replan=pending_replan,
+                active=(),
+                terminal=False,
+            )
+
         with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
+            if checkpoint is not None:
+                for item in recovered_active:
+                    work_unit_id = self._require_str(item, "work_unit_id")
+                    if work_unit_id not in work_units:
+                        raise ProjectOrchestrationError(
+                            f"Recovered execution references unknown Work Unit '{work_unit_id}'."
+                        )
+                    if work_units[work_unit_id].state is not WorkUnitState.RUNNING:
+                        raise ProjectOrchestrationError(
+                            f"Recovered active Work Unit '{work_unit_id}' is not RUNNING."
+                        )
+                    external_id = self._require_str(item, "external_id")
+                    expected_execution_id = self._require_str(item, "execution_id")
+                    generation = self._require_nonnegative_int(item, "generation")
+                    execution = self._runtime.recover_execution(external_id)
+                    if execution.id != expected_execution_id:
+                        raise ProjectOrchestrationError(
+                            "Recovered runtime execution identity mismatch for "
+                            f"Work Unit '{work_unit_id}'."
+                        )
+                    claim = self._claims.acquire(
+                        work_unit_id=work_unit_id,
+                        claimant_id=f"project:{orchestration_id}:recovery",
+                    )
+                    if claim is None:
+                        raise ProjectOrchestrationError(
+                            f"Recovered Work Unit '{work_unit_id}' is already claimed."
+                        )
+                    bound_claim = self._claims.bind_execution(
+                        claim,
+                        execution_id=execution.id,
+                    )
+                    outcome = DispatchOutcome(
+                        work_unit_id=work_unit_id,
+                        status=DispatchStatus.DISPATCHED,
+                        reason="recovered-existing-execution",
+                        execution=execution,
+                        claim=bound_claim,
+                    )
+                    future = executor.submit(
+                        self._runtime.retrieve_result,
+                        execution,
+                    )
+                    active[future] = (outcome, generation)
+                    active_by_id[work_unit_id] = outcome
+                    observability.emit(
+                        "worker_recovered",
+                        orchestration_id=orchestration_id,
+                        work_unit_id=work_unit_id,
+                        execution_id=execution.id,
+                        external_id=execution.external_id,
+                        attempt=attempts[work_unit_id],
+                        wave=generation,
+                        status="RECOVERED",
+                    )
+                running_without_execution = [
+                    work_unit_id
+                    for work_unit_id, work_unit in work_units.items()
+                    if work_unit.state is WorkUnitState.RUNNING
+                    and work_unit_id not in active_by_id
+                ]
+                if running_without_execution:
+                    raise ProjectOrchestrationError(
+                        "Checkpoint contains RUNNING Work Units without persisted "
+                        "execution identities: "
+                        + ", ".join(sorted(running_without_execution))
+                    )
             while True:
                 unfinished = self._unfinished(work_units)
 
