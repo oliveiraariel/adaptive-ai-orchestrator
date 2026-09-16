@@ -127,6 +127,26 @@ class ConcurrentRuntime:
         return replace(execution, status=AgentRuntimeStatus.CANCELLED)
 
 
+class SequencedOutputRuntime(ConcurrentRuntime):
+    def __init__(self, sequences: dict[str, list[str]]) -> None:
+        super().__init__()
+        self.sequences = {key: list(value) for key, value in sequences.items()}
+        self.calls: dict[str, int] = {}
+
+    def retrieve_result(self, execution: ExecutionReference) -> AgentRuntimeResult:
+        task = self._tasks_by_execution[execution.id]
+        work_unit_id = task.work_unit_id
+        index = self.calls.get(work_unit_id, 0)
+        self.calls[work_unit_id] = index + 1
+        sequence = self.sequences[work_unit_id]
+        output = sequence[min(index, len(sequence) - 1)]
+        completed = replace(execution, status=AgentRuntimeStatus.COMPLETED)
+        return AgentRuntimeResult(
+            execution=completed,
+            raw_result={"output": output},
+        )
+
+
 def wu(
     unit_id: str,
     *,
@@ -161,6 +181,7 @@ def run(
     policy: ExecutionPolicy | None = None,
     planner: StaticPlanner | None = None,
     max_attempts: int = 2,
+    max_strategies: int = 2,
     max_replans: int = 2,
 ):
     actual_planner = planner or StaticPlanner(plan)
@@ -175,6 +196,7 @@ def run(
             max_concurrency=max_concurrency,
             execution_policy=policy or ExecutionPolicy(),
             max_attempts_per_work_unit=max_attempts,
+            max_strategies_per_work_unit=max_strategies,
             max_replans=max_replans,
             plan=plan,
         )
@@ -492,7 +514,7 @@ def test_replan_signal_adds_new_required_work_then_resumes_frontier() -> None:
     assert actual_planner.replan_calls == 1
     assert result.completed_work_unit_ids == ("discover", "necessary-followup")
 
-def test_worker_partial_footer_cannot_complete_and_trips_attempt_circuit_breaker() -> None:
+def test_worker_partial_footer_exhausts_strategies_before_recovery_required() -> None:
     plan = ProjectExecutionPlan(
         summary="partial completion must remain open",
         work_units=(wu("partial-worker"),),
@@ -508,13 +530,174 @@ def test_worker_partial_footer_cannot_complete_and_trips_attempt_circuit_breaker
         }
     )
 
-    result, _ = run(plan, runtime, max_attempts=1)
+    result, planner = run(
+        plan,
+        runtime,
+        max_attempts=1,
+        max_strategies=2,
+        max_replans=1,
+    )
 
-    assert result.status is ProjectRunStatus.BLOCKED
+    assert result.status is ProjectRunStatus.RECOVERY_REQUIRED
     assert result.completed_work_unit_ids == ()
-    assert result.blocked_work_unit_ids == ("partial-worker",)
+    assert result.blocked_work_unit_ids == ()
+    assert result.recovery_required_work_unit_ids == ("partial-worker",)
+    assert len(runtime.tasks) == 2
+    assert result.records[0].reason.startswith(
+        "strategy-exhausted:1:replacement:2:worker-partial"
+    )
     assert result.records[-1].verdict == "RETURNED"
-    assert result.records[-1].reason == "circuit-breaker:max-attempts:worker-partial"
+    assert result.records[-1].status == "RECOVERY_REQUIRED"
+    assert result.records[-1].reason.startswith(
+        "recovery-required:strategies-exhausted:2:worker-partial"
+    )
+    assert planner.replan_calls == 1
+
+
+def test_strategy_a_fails_twice_then_strategy_b_succeeds_and_unlocks_dependency() -> None:
+    partial = (
+        "Still incomplete.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: unresolved item"
+    )
+    complete = (
+        "Recovered with a different approach.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    downstream = (
+        "downstream complete\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    plan = ProjectExecutionPlan(
+        summary="strategy replacement",
+        work_units=(wu("worker"), wu("downstream")),
+        dependencies=(PlannedDependency("worker", "downstream"),),
+    )
+    runtime = SequencedOutputRuntime(
+        {
+            "worker": [partial, partial, complete],
+            "downstream": [downstream],
+        }
+    )
+
+    result, _ = run(
+        plan,
+        runtime,
+        max_attempts=2,
+        max_strategies=2,
+        max_replans=0,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    worker_records = [
+        record for record in result.records if record.work_unit_id == "worker"
+    ]
+    assert [record.strategy for record in worker_records] == [1, 1, 2]
+    assert worker_records[1].reason.startswith(
+        "strategy-exhausted:1:replacement:2:"
+    )
+    strategy_two_task = [
+        task for task in runtime.tasks if task.work_unit_id == "worker"
+    ][2]
+    assert ":strategy:2:" in strategy_two_task.task_id
+    assert "materially different" in "\n".join(strategy_two_task.context)
+    assert result.completed_work_unit_ids == ("downstream", "worker")
+
+
+def test_exhausted_strategies_trigger_recovery_planner_remediation_then_resume() -> None:
+    partial = (
+        "Security findings remain.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: SEC-01; SEC-02"
+    )
+    complete_review = (
+        "Security review accepted after remediation.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    remediation_done = (
+        "SEC-01 and SEC-02 remediated.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    fanin_done = (
+        "fan-in accepted\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    initial = ProjectExecutionPlan(
+        summary="security review then fan-in",
+        work_units=(wu("security-review"), wu("fan-in")),
+        dependencies=(PlannedDependency("security-review", "fan-in"),),
+    )
+    revised = ProjectExecutionPlan(
+        summary="remediate security then re-review",
+        work_units=(
+            wu("security-review"),
+            wu("fan-in"),
+            wu("security-remediation"),
+        ),
+        dependencies=(
+            PlannedDependency("security-review", "fan-in"),
+            PlannedDependency("security-remediation", "security-review"),
+        ),
+    )
+    planner = StaticPlanner(initial, revised_plan=revised)
+    runtime = SequencedOutputRuntime(
+        {
+            "security-review": [
+                partial,
+                partial,
+                partial,
+                partial,
+                complete_review,
+            ],
+            "security-remediation": [remediation_done],
+            "fan-in": [fanin_done],
+        }
+    )
+
+    result, actual_planner = run(
+        initial,
+        runtime,
+        planner=planner,
+        max_attempts=2,
+        max_strategies=2,
+        max_replans=2,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert actual_planner.replan_calls == 1
+    assert "security-remediation" in result.completed_work_unit_ids
+    review_tasks = [
+        task for task in runtime.tasks if task.work_unit_id == "security-review"
+    ]
+    assert len(review_tasks) == 5
+    remediation_index = next(
+        index
+        for index, task in enumerate(runtime.tasks)
+        if task.work_unit_id == "security-remediation"
+    )
+    final_review_index = max(
+        index
+        for index, task in enumerate(runtime.tasks)
+        if task.work_unit_id == "security-review"
+    )
+    assert remediation_index < final_review_index
+    assert result.completed_work_unit_ids == (
+        "fan-in",
+        "security-remediation",
+        "security-review",
+    )
 
 
 def test_worker_genuine_human_blocker_stops_without_false_completion() -> None:
@@ -542,7 +725,7 @@ def test_worker_genuine_human_blocker_stops_without_false_completion() -> None:
     assert result.records[-1].reason == "worker-blocked:HUMAN_DECISION"
 
 
-def test_unsubstantiated_worker_blocker_is_retried_then_circuit_broken() -> None:
+def test_unsubstantiated_worker_blocker_exhausts_distinct_strategies() -> None:
     plan = ProjectExecutionPlan(
         summary="implementation difficulty is not blocker",
         work_units=(wu("implementation-worker"),),
@@ -558,14 +741,25 @@ def test_unsubstantiated_worker_blocker_is_retried_then_circuit_broken() -> None
         }
     )
 
-    result, _ = run(plan, runtime, max_attempts=2)
+    result, _ = run(
+        plan,
+        runtime,
+        max_attempts=2,
+        max_strategies=2,
+        max_replans=0,
+    )
 
-    assert result.status is ProjectRunStatus.BLOCKED
-    assert len(runtime.tasks) == 2
+    assert result.status is ProjectRunStatus.RECOVERY_REQUIRED
+    assert len(runtime.tasks) == 4
+    assert [record.strategy for record in result.records] == [1, 1, 2, 2]
     assert result.records[0].status == "REVISION_REQUIRED"
     assert result.records[0].reason == "worker-blocker-unsubstantiated"
-    assert result.records[-1].reason == (
-        "circuit-breaker:max-attempts:worker-blocker-unsubstantiated"
+    assert result.records[1].reason.startswith(
+        "strategy-exhausted:1:replacement:2:"
+    )
+    assert result.records[-1].status == "RECOVERY_REQUIRED"
+    assert result.records[-1].reason.startswith(
+        "recovery-required:strategies-exhausted:2:"
     )
 
 
