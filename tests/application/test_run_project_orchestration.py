@@ -943,6 +943,102 @@ def _lost_controller_checkpoint(
     }
 
 
+def test_execute_persists_admission_checkpoint_before_planner_runs() -> None:
+    store = MemoryProjectCheckpointStore()
+    plan = ProjectExecutionPlan(
+        summary="unused after planner failure",
+        work_units=(wu("only"),),
+    )
+
+    class InspectingPlanner(StaticPlanner):
+        def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
+            assert store.state is not None
+            assert store.state["orchestration_id"] == "orch-admitted"
+            assert store.state["phase"] == "ADMITTED"
+            assert store.state["terminal"] is False
+            assert "plan" not in store.state
+            raise RuntimeError("planner interrupted after admission")
+
+    executor = RunContinuousProjectOrchestration(
+        runtime=ConcurrentRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        planner=InspectingPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="planner interrupted after admission"):
+        executor.execute(
+            ProjectOrchestrationRequest(
+                objective="persist admission first",
+                orchestration_id="orch-admitted",
+            )
+        )
+
+    assert store.state is not None
+    assert store.state["phase"] == "ADMITTED"
+    assert store.state["terminal"] is False
+    assert len(store.saves) == 1
+
+
+def test_resume_from_admission_checkpoint_replans_same_orchestration() -> None:
+    store = MemoryProjectCheckpointStore()
+    plan = ProjectExecutionPlan(
+        summary="resume admitted project",
+        work_units=(wu("only"),),
+    )
+
+    class FailingPlanner(StaticPlanner):
+        def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
+            raise RuntimeError("planner interrupted")
+
+    first = RunContinuousProjectOrchestration(
+        runtime=ConcurrentRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        planner=FailingPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="planner interrupted"):
+        first.execute(
+            ProjectOrchestrationRequest(
+                objective="resume me",
+                orchestration_id="orch-admitted",
+            )
+        )
+
+    runtime = ConcurrentRuntime(
+        outputs={
+            "only": (
+                "done\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            )
+        }
+    )
+    resumed = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+    ).resume("orch-admitted")
+
+    assert resumed.status is ProjectRunStatus.COMPLETED
+    assert resumed.orchestration_id == "orch-admitted"
+    assert [task.work_unit_id for task in runtime.tasks] == ["only"]
+    assert store.state is not None
+    assert store.state["phase"] == "EXECUTION"
+    assert store.state["terminal"] is True
+    assert len(store.saves) >= 3
+
+
 def test_resume_reconciles_active_worker_then_continues_frontier_without_redispatch() -> None:
     plan = ProjectExecutionPlan(
         summary="recover producer then continue consumer",
