@@ -310,6 +310,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             (dependency.source_id, dependency.target_id, dependency.required)
                             for dependency in dependencies
                         }
+                        recovery_before = {
+                            work_unit_id
+                            for work_unit_id, work_unit in work_units.items()
+                            if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                        }
                         plan, new_ids = self._expand_plan(
                             planner_request=planning_request,
                             current_plan=plan,
@@ -326,9 +331,40 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             dependencies=dependencies,
                             work_units=work_units,
                         )
-                        pending_replan = False
+                        new_edges = {
+                            (
+                                dependency.source_id,
+                                dependency.target_id,
+                                dependency.required,
+                            )
+                            for dependency in dependencies
+                        } - old_edges
+                        recovery_resumed: set[str] = set()
+                        for work_unit_id in recovery_before:
+                            has_new_required_prerequisite = any(
+                                required and target_id == work_unit_id
+                                for _, target_id, required in new_edges
+                            )
+                            if not has_new_required_prerequisite:
+                                continue
+                            work_units[work_unit_id].resume_after_recovery()
+                            attempts[work_unit_id] = 0
+                            strategy_generations[work_unit_id] = 1
+                            revision_feedback[work_unit_id] = (
+                                "Recovery planner added prerequisite work. Preserve "
+                                "the current WIP and previous evidence; after the "
+                                "new prerequisite is satisfied, retry the original "
+                                "objective with a fresh strategy cycle.\n"
+                                + outputs.get(work_unit_id, "")
+                            )
+                            recovery_resumed.add(work_unit_id)
                         for work_unit_id in new_ids:
                             attempts[work_unit_id] = 0
+                            strategy_generations[work_unit_id] = 1
+                        unresolved_recovery = recovery_before - recovery_resumed
+                        pending_replan = bool(unresolved_recovery) and (
+                            replan_count < request.max_replans
+                        )
                         if new_ids:
                             skill_sets = self._preflight_skill_sets(specs, request.agent)
                         self._validate_graph(request, work_units, dependencies)
@@ -397,6 +433,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 orchestration_id=orchestration_id,
                                 wave=generation,
                                 attempt=attempts[work_unit_id] + 1,
+                                strategy_generation=strategy_generations[work_unit_id],
                                 spec=specs[work_unit_id],
                                 work_unit=work_units[work_unit_id],
                                 skills=skill_sets[work_unit_id],
@@ -450,7 +487,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     role=spec.role,
                                     skills=list(skill_sets[outcome.work_unit_id]),
                                     model=configuration.model, provider=configuration.provider,
-                                    attempt=attempts[outcome.work_unit_id], wave=generation,
+                                    attempt=attempts[outcome.work_unit_id],
+                                    strategy=strategy_generations[outcome.work_unit_id],
+                                    wave=generation,
                                     status="DISPATCHED",
                                 )
                                 continue
@@ -493,9 +532,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 work_units=work_units,
                                 skill_sets=skill_sets,
                                 attempts=attempts,
+                                strategy_generations=strategy_generations,
                                 records=records,
                                 revision_feedback=revision_feedback,
                                 max_attempts=request.max_attempts_per_work_unit,
+                                max_strategies=request.max_strategies_per_work_unit,
                             )
                             persist()
                             continue
@@ -511,6 +552,16 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             orchestration_id=orchestration_id,
                             attempts=attempts[work_unit_id],
                             max_attempts=request.max_attempts_per_work_unit,
+                            enforce_attempt_circuit_breaker=False,
+                        )
+                        record, recovery_signal = self._apply_strategy_exhaustion(
+                            record=record,
+                            work_unit=work_units[work_unit_id],
+                            attempts=attempts,
+                            strategy_generations=strategy_generations,
+                            work_unit_id=work_unit_id,
+                            max_attempts=request.max_attempts_per_work_unit,
+                            max_strategies=request.max_strategies_per_work_unit,
                         )
                         records.append(record)
                         observability.emit(
@@ -518,6 +569,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             work_unit_id=record.work_unit_id, execution_id=record.execution_id,
                             external_id=record.external_id, role=record.role,
                             skills=list(record.skills), attempt=record.attempt,
+                            strategy=record.strategy,
                             wave=record.wave, status=record.status,
                             runtime_status=record.runtime_status, verdict=record.verdict,
                         )
@@ -530,14 +582,28 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         ):
                             output_refs[work_unit_id] = record.result_ref
                         if record.verdict != EvaluationVerdict.ACCEPTED.value:
-                            revision_feedback[work_unit_id] = (
+                            feedback = (
                                 record.output
                                 or record.reason
                                 or "Previous result was not accepted."
                             )
+                            if record.reason.startswith("strategy-exhausted:"):
+                                feedback = (
+                                    "The previous worker strategy exhausted its "
+                                    "bounded attempts. Use a materially different "
+                                    "approach, inspect the current WIP first, preserve "
+                                    "valid prior work, and address the evaluator's "
+                                    "unmet criteria instead of repeating the same "
+                                    "method.\n" + feedback
+                                )
+                            revision_feedback[work_unit_id] = feedback
                         else:
                             revision_feedback.pop(work_unit_id, None)
-                        pending_replan = pending_replan or replan_signal
+                        pending_replan = (
+                            pending_replan
+                            or replan_signal
+                            or recovery_signal
+                        )
                         persist()
                     continue
 
@@ -1218,13 +1284,29 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         self,
         *,
         attempt: int,
+        strategy_generation: int,
         **kwargs,
     ) -> WorkAssignment:
         assignment = super()._build_assignment(**kwargs)
         task = assignment.task_package
+        strategy_context = (
+            f"Adaptive strategy generation: {strategy_generation}. "
+            "Generation 1 is the initial strategy."
+        )
+        if strategy_generation > 1:
+            strategy_context += (
+                " A previous strategy exhausted its bounded attempts. This is "
+                "a replacement strategy: inspect current WIP and prior feedback "
+                "first, preserve valid work, and use a materially different "
+                "problem-solving approach rather than repeating the exhausted one."
+            )
         unique_task = replace(
             task,
-            task_id=f"{task.task_id}:attempt-number:{attempt}",
+            task_id=(
+                f"{task.task_id}:strategy:{strategy_generation}:"
+                f"attempt-number:{attempt}"
+            ),
+            context=(*task.context, strategy_context),
         )
         return WorkAssignment(
             work_unit=assignment.work_unit,
@@ -1275,35 +1357,98 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         work_units: dict[str, WorkUnit],
         skill_sets: dict[str, tuple[str, ...]],
         attempts: dict[str, int],
+        strategy_generations: dict[str, int],
         records: list[WorkUnitExecutionRecord],
         revision_feedback: dict[str, str],
         max_attempts: int,
+        max_strategies: int,
     ) -> None:
         assert outcome.claim is not None
         self._claims.release(outcome.claim)
-        work_unit = work_units[outcome.work_unit_id]
+        work_unit_id = outcome.work_unit_id
+        work_unit = work_units[work_unit_id]
         if work_unit.state is WorkUnitState.RUNNING:
             work_unit.start_evaluation()
             work_unit.require_revision()
         reason = f"runtime-result-error:{error}"
-        revision_feedback[outcome.work_unit_id] = reason
-        if attempts[outcome.work_unit_id] >= max_attempts:
-            work_unit.mark_blocked()
-            reason = f"circuit-breaker:max-attempts:{reason}"
-        records.append(
-            WorkUnitExecutionRecord(
-                work_unit_id=outcome.work_unit_id,
-                role=specs[outcome.work_unit_id].role,
-                wave=generation,
-                attempt=attempts[outcome.work_unit_id],
-                status=work_unit.state.value,
-                skills=skill_sets[outcome.work_unit_id],
-                execution_id=(outcome.execution.id if outcome.execution else None),
-                external_id=(
-                    outcome.execution.external_id if outcome.execution else None
-                ),
-                reason=reason,
+        record = WorkUnitExecutionRecord(
+            work_unit_id=work_unit_id,
+            role=specs[work_unit_id].role,
+            wave=generation,
+            attempt=attempts[work_unit_id],
+            status=work_unit.state.value,
+            skills=skill_sets[work_unit_id],
+            execution_id=(outcome.execution.id if outcome.execution else None),
+            external_id=(
+                outcome.execution.external_id if outcome.execution else None
+            ),
+            reason=reason,
+            strategy=strategy_generations[work_unit_id],
+        )
+        record, _ = self._apply_strategy_exhaustion(
+            record=record,
+            work_unit=work_unit,
+            attempts=attempts,
+            strategy_generations=strategy_generations,
+            work_unit_id=work_unit_id,
+            max_attempts=max_attempts,
+            max_strategies=max_strategies,
+        )
+        feedback = record.reason
+        if record.reason.startswith("strategy-exhausted:"):
+            feedback = (
+                "The previous runtime strategy exhausted its bounded attempts. "
+                "Use a different recovery approach while preserving current WIP. "
+                + feedback
             )
+        revision_feedback[work_unit_id] = feedback
+        records.append(record)
+
+    @staticmethod
+    def _apply_strategy_exhaustion(
+        *,
+        record: WorkUnitExecutionRecord,
+        work_unit: WorkUnit,
+        attempts: dict[str, int],
+        strategy_generations: dict[str, int],
+        work_unit_id: str,
+        max_attempts: int,
+        max_strategies: int,
+    ) -> tuple[WorkUnitExecutionRecord, bool]:
+        current_strategy = strategy_generations[work_unit_id]
+        record = replace(record, strategy=current_strategy)
+        if (
+            work_unit.state is not WorkUnitState.REVISION_REQUIRED
+            or attempts[work_unit_id] < max_attempts
+        ):
+            return record, False
+
+        if current_strategy < max_strategies:
+            next_strategy = current_strategy + 1
+            strategy_generations[work_unit_id] = next_strategy
+            attempts[work_unit_id] = 0
+            return (
+                replace(
+                    record,
+                    reason=(
+                        f"strategy-exhausted:{current_strategy}:"
+                        f"replacement:{next_strategy}:{record.reason}"
+                    ),
+                ),
+                False,
+            )
+
+        work_unit.mark_recovery_required()
+        return (
+            replace(
+                record,
+                status=WorkUnitState.RECOVERY_REQUIRED.value,
+                reason=(
+                    "recovery-required:strategies-exhausted:"
+                    f"{current_strategy}:{record.reason}"
+                ),
+            ),
+            True,
         )
 
     @staticmethod
