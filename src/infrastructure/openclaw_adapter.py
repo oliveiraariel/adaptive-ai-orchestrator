@@ -198,7 +198,7 @@ class OpenClawAdapter(AgentRuntime):
             external_id=external_id,
             status=AgentRuntimeStatus.SUBMITTED,
         )
-        self._executions[external_id] = execution
+        self._executions[execution.id] = execution
         return execution
 
     def get_status(self, execution: ExecutionReference) -> AgentRuntimeStatus:
