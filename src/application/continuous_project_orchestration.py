@@ -197,7 +197,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         ] = {}
         active_by_id: dict[str, DispatchOutcome] = {}
 
-        if checkpoint is None:
+        def persist(*, terminal: bool = False) -> None:
             self._save_checkpoint(
                 orchestration_id=orchestration_id,
                 request=request,
@@ -214,9 +214,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 replan_count=replan_count,
                 dispatch_generation=dispatch_generation,
                 pending_replan=pending_replan,
-                active=(),
-                terminal=False,
+                active=tuple(active.values()),
+                terminal=terminal,
             )
+
+        if checkpoint is None:
+            persist()
 
         with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
             if checkpoint is not None:
@@ -286,6 +289,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         "execution identities: "
                         + ", ".join(sorted(running_without_execution))
                     )
+                persist()
             while True:
                 unfinished = self._unfinished(work_units)
 
@@ -323,6 +327,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         if new_ids:
                             skill_sets = self._preflight_skill_sets(specs, request.agent)
                         self._validate_graph(request, work_units, dependencies)
+                        persist()
                         continue
                     else:
                         pending_replan = False
@@ -350,6 +355,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         )
                     )
                 ready_ids = [item for item in ready_ids if item not in human_ready]
+                if human_ready:
+                    persist()
 
                 available_slots = request.max_concurrency - len(active)
                 if (
@@ -457,6 +464,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             max_parallelism_observed,
                             len(active),
                         )
+                        # Persist external execution identities before waiting so a
+                        # replacement controller can reconcile the same workers.
+                        persist()
 
                 if active:
                     completed, _ = wait(
@@ -482,6 +492,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 revision_feedback=revision_feedback,
                                 max_attempts=request.max_attempts_per_work_unit,
                             )
+                            persist()
                             continue
 
                         record, replan_signal = self._finalize_result(
@@ -522,6 +533,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         else:
                             revision_feedback.pop(work_unit_id, None)
                         pending_replan = pending_replan or replan_signal
+                        persist()
                     continue
 
                 # Nothing is active. If the scheduler cannot dispatch another
@@ -584,6 +596,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             max_parallelism_observed=max_parallelism_observed,
             replan_count=replan_count,
         )
+        persist(terminal=True)
         observability.emit(
             "orchestration_completed", orchestration_id=orchestration_id,
             status=result.status.value, summary=plan.summary[:500],
