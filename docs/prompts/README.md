@@ -16,6 +16,9 @@ NOVO TRABALHO DE API / ALTERAÇÃO DE CONTRATO DE API
 NOVO TRABALHO DE BACKEND / ENGINEERING
 → INICIAR-PROJETO-BACKEND.md
 
+GERAR NOVO ZIP / PACOTE / ARTEFATO PARA RETESTE
+→ GERAR-PACOTE-RETESTE.md
+
 CONTINUAR UMA LINHA DE TRABALHO
 → CONTINUAR-PROJETO.md
 
@@ -52,6 +55,28 @@ Trabalho que cria uma API ou altera um contrato de API externamente observável 
 A política não força REST, HTTP, OpenAPI, JSON ou framework específico. Ela exige descoberta do contrato real, compatibilidade, segurança, verificação e fechamento/fan-in de forma proporcional ao protocolo e ao projeto. Consumo normal de API de terceiros ou rotação de API key não é automaticamente classificado como geração de API.
 
 Detalhes: `docs/process/API-GENERATION-GOVERNANCE.md`.
+
+## Política obrigatória para ZIPs e outros artefatos de release
+
+Trabalho que cria ou regenera um pacote instalável/deployable deve obedecer a `ADAPTIVE_RELEASE_ARTIFACT_POLICY_V1`.
+
+A política também é aplicada automaticamente no `TaskPackage`; portanto o operador não precisa repetir em cada prompt regras como "crie um ZIP novo", "não reutilize o antigo", "inclua apenas runtime", "exclua segredos/testes/cache", "teste o arquivo" e "calcule SHA-256".
+
+Ela exige, de forma independente de stack:
+
+- fonte exata e working tree identificados;
+- gates locais aplicáveis executados contra o estado empacotado;
+- artefato novo após fix/hotfix/reteste;
+- composição runtime-only;
+- estrutura instalável validada para a plataforma real;
+- integridade do pacote e SHA-256;
+- evidência source → artifact;
+- distinção entre prontidão local e validação ambiental;
+- nenhuma autorização implícita para merge/deploy/instalação/publicação.
+
+`GERAR-PACOTE-RETESTE.md` é apenas um atalho humano. Com contexto já carregado, uma solicitação como **"Gere um novo ZIP para reteste ambiental"** deve ser suficiente para ativar a política.
+
+Detalhes: `docs/process/RELEASE-ARTIFACT-GOVERNANCE.md`.
 
 ## Princípio operacional v0.4+
 
@@ -126,7 +151,7 @@ Esse arquivo específico pode referenciar:
 - handoffs e fontes de continuidade;
 - regras específicas para paralelismo e integração.
 
-A partir daí, o prompt específico do projeto deve prevalecer sobre estes templates genéricos sempre que houver diferença de contexto ou governança. A política global de API continua funcionando como piso de engenharia; ela não deve sobrescrever fatos ou decisões canônicas do projeto.
+A partir daí, o prompt específico do projeto deve prevalecer sobre estes templates genéricos sempre que houver diferença de contexto ou governança. As políticas globais de API e artefato de release continuam funcionando como piso de engenharia; elas não devem sobrescrever fatos ou decisões canônicas do projeto.
 
 ## Como iniciar sem decorar o conteúdo
 
@@ -142,6 +167,14 @@ A partir daí, o prompt específico do projeto deve prevalecer sobre estes templ
 
 > Leia `docs/prompts/INICIAR-PROJETO-BACKEND.md` no repositório `oliveiraariel/adaptive-ai-orchestrator` e use esse Prompt Mestre para iniciar este projeto. Meu objetivo é: [objetivo].
 
+### Pacote para reteste
+
+> Gere um novo ZIP para reteste ambiental.
+
+Ou, quando quiser tornar a intenção explícita:
+
+> Leia `docs/prompts/GERAR-PACOTE-RETESTE.md` e gere o novo artefato conforme esse contrato.
+
 ### Continuar
 
 > Leia `docs/prompts/CONTINUAR-PROJETO.md` e continue a partir do estado atual.
@@ -154,6 +187,9 @@ A partir daí, o prompt específico do projeto deve prevalecer sobre estes templ
 
 Estes prompts não transformam automaticamente todo chat em trabalho orquestrado. Eles instruem explicitamente o OpenClaw a usar a bridge e o Adaptive para trabalho sério de projeto.
 
-A exceção relevante é a governança mínima de API: quando uma Work Unit efetivamente representa criação ou alteração de superfície de API, `TaskPackage` aplica `ADAPTIVE_API_GENERATION_POLICY_V1` independentemente de qual prompt originou a execução.
+Duas governanças mínimas são aplicadas automaticamente quando a Work Unit correspondente existe:
+
+- criação/alteração de superfície de API → `ADAPTIVE_API_GENERATION_POLICY_V1`;
+- criação/regeneração de artefato instalável/deployable → `ADAPTIVE_RELEASE_ARTIFACT_POLICY_V1`.
 
 Perguntas simples, explicações conceituais e tarefas triviais podem continuar sendo respondidas diretamente quando não houver motivo para iniciar uma orquestração de projeto.
