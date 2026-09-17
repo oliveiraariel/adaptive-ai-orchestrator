@@ -109,6 +109,14 @@ API work is locally complete only when the changed contract is implemented and w
 
 Remaining environment-dependent checks must be classified explicitly instead of being hidden behind a generic `DONE` status.
 
+## Release artifacts produced by API work
+
+API governance does not prescribe how a ZIP, plugin package, runtime bundle, or other installable artifact must be assembled. When the delegated work also **creates or regenerates a release artifact**, the separate runtime policy `ADAPTIVE_RELEASE_ARTIFACT_POLICY_V1` applies automatically at the same `TaskPackage` boundary.
+
+This separation is intentional: API governance protects contracts and trust boundaries, while release-artifact governance protects source-to-package traceability, runtime-only composition, archive integrity, checksum evidence, and the distinction between packaging and deployment authority.
+
+See `docs/process/RELEASE-ARTIFACT-GOVERNANCE.md`.
+
 ## Interaction with project governance
 
 This global policy is additive. The precedence is:
