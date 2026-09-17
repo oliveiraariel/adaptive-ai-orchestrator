@@ -71,22 +71,25 @@ def test_enforcement_appends_policy_once_and_preserves_existing_constraints() ->
     assert repeated == constraints
 
 
-def test_task_package_enforces_policy_at_common_execution_boundary() -> None:
+def test_task_package_enforces_policy_without_mutating_routing_constraints() -> None:
     task = TaskPackage(
         task_id="task-api-001",
         work_unit_id="wu-api-001",
         objective="Create a webhook endpoint for payment notifications.",
         scope="Only the payment notification API surface.",
+        decisions=("keep-existing-contract",),
         constraints=("preserve-existing-consumers",),
         configuration=make_configuration(),
         expected_output=("implementation", "tests"),
         acceptance_criteria=("contract-tests-pass",),
     )
 
-    assert task.constraints[0] == "preserve-existing-consumers"
+    assert task.constraints == ("preserve-existing-consumers",)
+    assert task.decisions[0] == "keep-existing-contract"
+    assert all(item in task.decisions for item in API_GENERATION_POLICY_CONSTRAINTS)
     assert any(
-        constraint.startswith(API_GENERATION_POLICY_MARKER)
-        for constraint in task.constraints
+        decision.startswith(API_GENERATION_POLICY_MARKER)
+        for decision in task.decisions
     )
 
 
@@ -95,10 +98,12 @@ def test_task_package_leaves_non_api_work_unchanged() -> None:
         task_id="task-doc-001",
         work_unit_id="wu-doc-001",
         objective="Update the project handoff document.",
+        decisions=("keep-history",),
         constraints=("preserve-history",),
         configuration=make_configuration(),
         expected_output=("documentation",),
         acceptance_criteria=("handoff-updated",),
     )
 
+    assert task.decisions == ("keep-history",)
     assert task.constraints == ("preserve-history",)
