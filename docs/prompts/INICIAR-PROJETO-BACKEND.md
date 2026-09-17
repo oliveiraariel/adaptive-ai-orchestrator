@@ -2,6 +2,8 @@
 
 Use este prompt para iniciar trabalho relevante de **backend, API, engenharia de software, serviços, banco de dados ou arquitetura de aplicação** em um projeto novo ou existente, especialmente quando o nível de maturidade do projeto ainda não é conhecido.
 
+> **API:** se o objetivo criar uma API ou alterar um contrato de API externamente observável, `ADAPTIVE_API_GENERATION_POLICY_V1` é obrigatória e independente de linguagem/framework/plataforma. Para uma entrada dedicada, prefira `docs/prompts/INICIAR-PROJETO-API.md`. O enforcement também ocorre no `TaskPackage`, portanto não depende apenas deste prompt.
+
 ## Prompt
 
 ```text
@@ -10,6 +12,10 @@ Quero iniciar ou continuar um trabalho profissional de backend/engenharia neste 
 Use o `adaptive-orchestrator-bridge` como porta de entrada para o
 Adaptive AI Orchestrator e use o modo multiagente de projeto para este
 trabalho não trivial.
+
+Se este objetivo criar uma API ou alterar um contrato de API externamente
+observável, aplique obrigatoriamente ADAPTIVE_API_GENERATION_POLICY_V1 sem
+forçar REST, HTTP, OpenAPI, linguagem, framework ou plataforma específica.
 
 O Adaptive deve possuir a responsabilidade de:
 - compreender o objetivo e o estado real do projeto;
