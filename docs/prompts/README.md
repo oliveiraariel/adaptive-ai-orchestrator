@@ -10,6 +10,9 @@ Eles são genéricos por projeto. Quando um repositório amadurecer e possuir go
 NOVO TRABALHO DE FRONTEND
 → INICIAR-PROJETO-FRONTEND.md
 
+NOVO TRABALHO DE API / ALTERAÇÃO DE CONTRATO DE API
+→ INICIAR-PROJETO-API.md
+
 NOVO TRABALHO DE BACKEND / ENGINEERING
 → INICIAR-PROJETO-BACKEND.md
 
@@ -21,6 +24,16 @@ PARAR E PRESERVAR CONTEXTO
 ```
 
 Não é necessário colar todos os prompts juntos.
+
+## Política obrigatória para APIs
+
+Trabalho que cria uma API ou altera um contrato de API externamente observável deve obedecer a `ADAPTIVE_API_GENERATION_POLICY_V1`, independentemente de linguagem, framework, plataforma ou protocolo.
+
+`INICIAR-PROJETO-API.md` é a entrada humana preferida para esse tipo de trabalho, mas **não é o único mecanismo de enforcement**. A política é aplicada no boundary comum de `TaskPackage`, para que uma Work Unit de API continue recebendo as obrigações mínimas mesmo quando o projeto entrou por outro prompt.
+
+A política não força REST, HTTP, OpenAPI, JSON ou framework específico. Ela exige descoberta do contrato real, compatibilidade, segurança, verificação e fechamento/fan-in de forma proporcional ao protocolo e ao projeto. Consumo normal de API de terceiros ou rotação de API key não é automaticamente classificado como geração de API.
+
+Detalhes: `docs/process/API-GENERATION-GOVERNANCE.md`.
 
 ## Princípio operacional v0.4+
 
@@ -95,13 +108,17 @@ Esse arquivo específico pode referenciar:
 - handoffs e fontes de continuidade;
 - regras específicas para paralelismo e integração.
 
-A partir daí, o prompt específico do projeto deve prevalecer sobre estes templates genéricos sempre que houver diferença de contexto ou governança.
+A partir daí, o prompt específico do projeto deve prevalecer sobre estes templates genéricos sempre que houver diferença de contexto ou governança. A política global de API continua funcionando como piso de engenharia; ela não deve sobrescrever fatos ou decisões canônicas do projeto.
 
 ## Como iniciar sem decorar o conteúdo
 
 ### Frontend
 
 > Leia `docs/prompts/INICIAR-PROJETO-FRONTEND.md` no repositório `oliveiraariel/adaptive-ai-orchestrator` e use esse Prompt Mestre para iniciar este projeto. Meu objetivo é: [objetivo].
+
+### API
+
+> Leia `docs/prompts/INICIAR-PROJETO-API.md` no repositório `oliveiraariel/adaptive-ai-orchestrator` e use esse Prompt Mestre. Meu objetivo é: [objetivo].
 
 ### Backend / Engineering
 
@@ -118,5 +135,7 @@ A partir daí, o prompt específico do projeto deve prevalecer sobre estes templ
 ## Limite importante
 
 Estes prompts não transformam automaticamente todo chat em trabalho orquestrado. Eles instruem explicitamente o OpenClaw a usar a bridge e o Adaptive para trabalho sério de projeto.
+
+A exceção relevante é a governança mínima de API: quando uma Work Unit efetivamente representa criação ou alteração de superfície de API, `TaskPackage` aplica `ADAPTIVE_API_GENERATION_POLICY_V1` independentemente de qual prompt originou a execução.
 
 Perguntas simples, explicações conceituais e tarefas triviais podem continuar sendo respondidas diretamente quando não houver motivo para iniciar uma orquestração de projeto.
