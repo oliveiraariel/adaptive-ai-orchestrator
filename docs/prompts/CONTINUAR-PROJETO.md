@@ -11,7 +11,15 @@ Use o `adaptive-orchestrator-bridge` em modo multiagente de projeto e mantenha o
 Adaptive AI Orchestrator como autoridade de coordenação desta linha de trabalho.
 
 Não refaça discovery, pesquisa, especificação ou decisões já concluídas sem
-necessidade. Consulte o último handoff e as fontes de verdade que ele referencia.
+necessidade. Consulte primeiro o handoff canônico definido pela governança do
+projeto. Se não houver override explícito, use `HANDOFF.md` na raiz do projeto.
+Arquivos datados em `docs/governanca/handoffs/` são snapshots históricos e não
+devem substituir `HANDOFF.md` como autoridade corrente. Não determine o handoff
+atual apenas ordenando nomes de arquivos por data.
+
+Se encontrar um handoff legado datado/descritivo sendo usado como estado atual e
+não existir `HANDOFF.md` canônico equivalente, normalize a continuidade conforme
+a skill `project-handoff` antes de prosseguir, sem perder WIP ou informação útil.
 
 Reavalie o Work Graph e a ready frontier a partir do estado atual.
 Não presuma uma fila sequencial por camada: se múltiplas Work Units estiverem

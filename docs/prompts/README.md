@@ -25,6 +25,24 @@ PARAR E PRESERVAR CONTEXTO
 
 Não é necessário colar todos os prompts juntos.
 
+## Padrão obrigatório de handoff
+
+Salvo quando a governança do projeto declarar explicitamente outro caminho, o estado corrente deve ser mantido em um único arquivo canônico:
+
+```text
+HANDOFF.md
+```
+
+Esse arquivo é atualizado no lugar. Nomes datados ou descritivos não devem ser usados para representar o handoff corrente.
+
+Snapshots históricos são opcionais. Quando forem realmente necessários e o projeto não possuir convenção própria, use:
+
+```text
+docs/governanca/handoffs/HANDOFF-YYYY-MM-DD-HHMM-<ESCOPO>.md
+```
+
+Snapshots devem ser marcados como históricos/não atuais e apontar para `HANDOFF.md`. A retomada sempre consulta primeiro o handoff canônico; não se determina a autoridade escolhendo o arquivo datado aparentemente mais recente. Handoffs legados usados como estado corrente devem ser normalizados para o caminho canônico sem perda de informação útil.
+
 ## Política obrigatória para APIs
 
 Trabalho que cria uma API ou altera um contrato de API externamente observável deve obedecer a `ADAPTIVE_API_GENERATION_POLICY_V1`, independentemente de linguagem, framework, plataforma ou protocolo.

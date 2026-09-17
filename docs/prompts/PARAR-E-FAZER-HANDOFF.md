@@ -2,6 +2,26 @@
 
 Use este prompt quando quiser encerrar uma sessão de trabalho de forma controlada, preservando continuidade sem iniciar novas Work Units.
 
+## Padrão obrigatório de nome e caminho
+
+Salvo quando a governança do próprio projeto declarar explicitamente outro caminho canônico, o handoff atual e autoritativo deve ser sempre:
+
+```text
+HANDOFF.md
+```
+
+`HANDOFF.md` é um ponteiro estável para o estado corrente e deve ser atualizado no lugar. Não crie um novo arquivo datado apenas porque a sessão terminou ou o handoff foi atualizado.
+
+Snapshots históricos são opcionais e só devem existir quando houver motivo real para preservar uma fotografia. Na ausência de convenção mais específica do projeto, use:
+
+```text
+docs/governanca/handoffs/HANDOFF-YYYY-MM-DD-HHMM-<ESCOPO>.md
+```
+
+O snapshot deve declarar que é histórico/não atual e apontar para o `HANDOFF.md` canônico. `<ESCOPO>` é opcional e deve ser curto e estável, por exemplo `ETAPA-11` ou `API-HOTFIX`.
+
+Se existir um handoff legado com nome datado/descritivo sendo usado como estado atual, migre o conteúdo autoritativo corrente para `HANDOFF.md` e remova ou arquive claramente o arquivo legado. Nunca deixe dois arquivos que pareçam simultaneamente ser o handoff atual.
+
 ## Prompt
 
 ```text
@@ -22,6 +42,19 @@ desta solicitação de encerramento, salvo se isso for indispensável apenas par
 restaurar consistência do estado.
 
 Use `project-handoff` para consolidar a continuidade desta sessão.
+
+PADRÃO DE ARQUIVO:
+- salvo override explícito da governança local, o handoff corrente deve ser
+  `HANDOFF.md` na raiz do projeto;
+- atualize `HANDOFF.md` no lugar; não gere um novo handoff datado para representar
+  o estado corrente;
+- se houver um handoff legado datado/descritivo sendo usado como corrente, migre
+  seu estado autoritativo para `HANDOFF.md` e remova-o ou arquive-o claramente;
+- snapshots históricos, quando realmente necessários, devem usar
+  `docs/governanca/handoffs/HANDOFF-YYYY-MM-DD-HHMM-<ESCOPO>.md`, ser marcados
+  como históricos/não atuais e apontar para o handoff canônico;
+- na retomada, `HANDOFF.md` é lido primeiro; não escolha autoridade ordenando
+  nomes datados.
 
 Entregue:
 - objetivo desta sessão;
