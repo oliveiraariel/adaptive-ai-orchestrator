@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Tuple
 from uuid import uuid4
 
+from domain.api_generation_policy import enforce_api_generation_policy
 from domain.context_strategy import ContextPolicy
 from domain.delegation_context import DelegationContext
 from domain.execution_policy import ExecutionPolicy
@@ -54,6 +55,17 @@ class TaskPackage:
             raise TaskPackageError(
                 "TaskPackage orchestration_id must not be empty."
             )
+
+        object.__setattr__(
+            self,
+            "constraints",
+            enforce_api_generation_policy(
+                objective=self.objective,
+                scope=self.scope,
+                context=self.context,
+                constraints=self.constraints,
+            ),
+        )
 
         if self.configuration is None:
             raise TaskPackageError(
