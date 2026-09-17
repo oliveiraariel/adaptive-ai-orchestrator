@@ -1,4 +1,4 @@
-from adaptive_orchestrator.cli import main
+from adaptive_orchestrator.resilient_cli import main
 
 
 if __name__ == "__main__":

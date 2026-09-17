@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.scripts]
-adaptive-orchestrator = "adaptive_orchestrator.cli:main"
+adaptive-orchestrator = "adaptive_orchestrator.resilient_cli:main"
 
 [project.optional-dependencies]
 gateway = [
