@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Tuple
 from uuid import uuid4
 
-from domain.api_generation_policy import enforce_api_generation_policy
+from domain.api_generation_policy import api_generation_policy_directives
 from domain.context_strategy import ContextPolicy
 from domain.delegation_context import DelegationContext
 from domain.execution_policy import ExecutionPolicy
@@ -56,16 +56,26 @@ class TaskPackage:
                 "TaskPackage orchestration_id must not be empty."
             )
 
-        object.__setattr__(
-            self,
-            "constraints",
-            enforce_api_generation_policy(
-                objective=self.objective,
-                scope=self.scope,
-                context=self.context,
-                constraints=self.constraints,
-            ),
+        api_directives = api_generation_policy_directives(
+            objective=self.objective,
+            scope=self.scope,
+            context=self.context,
+            constraints=self.constraints,
         )
+        if api_directives:
+            existing_decisions = {item.strip() for item in self.decisions}
+            object.__setattr__(
+                self,
+                "decisions",
+                (
+                    *self.decisions,
+                    *(
+                        directive
+                        for directive in api_directives
+                        if directive.strip() not in existing_decisions
+                    ),
+                ),
+            )
 
         if self.configuration is None:
             raise TaskPackageError(
