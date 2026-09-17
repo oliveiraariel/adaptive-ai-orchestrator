@@ -112,6 +112,25 @@ def api_generation_policy_applies(
     return True
 
 
+def api_generation_policy_directives(
+    *,
+    objective: str,
+    scope: str = "",
+    context: Iterable[str] = (),
+    constraints: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Return mandatory API directives when the delegated work is API work."""
+
+    if not api_generation_policy_applies(
+        objective=objective,
+        scope=scope,
+        context=context,
+        constraints=constraints,
+    ):
+        return ()
+    return API_GENERATION_POLICY_CONSTRAINTS
+
+
 def enforce_api_generation_policy(
     *,
     objective: str,
@@ -119,21 +138,30 @@ def enforce_api_generation_policy(
     context: Iterable[str] = (),
     constraints: Iterable[str] = (),
 ) -> tuple[str, ...]:
-    """Return constraints with mandatory API governance appended once."""
+    """Return constraints with mandatory API governance appended once.
+
+    This helper remains useful for callers whose routing/classification has
+    already completed. `TaskPackage` stores the automatic directives in its
+    decisions channel so governance text cannot accidentally change model-tier
+    selection merely by being injected.
+    """
 
     existing = tuple(constraints)
-    if not api_generation_policy_applies(
+    additions = api_generation_policy_directives(
         objective=objective,
         scope=scope,
         context=context,
         constraints=existing,
-    ):
+    )
+    if not additions:
         return existing
 
     normalized_existing = {item.strip() for item in existing}
-    additions = tuple(
-        item
-        for item in API_GENERATION_POLICY_CONSTRAINTS
-        if item.strip() not in normalized_existing
+    return (
+        *existing,
+        *(
+            item
+            for item in additions
+            if item.strip() not in normalized_existing
+        ),
     )
-    return (*existing, *additions)
