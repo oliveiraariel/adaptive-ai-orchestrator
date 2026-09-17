@@ -6,6 +6,7 @@ from domain.api_generation_policy import api_generation_policy_directives
 from domain.context_strategy import ContextPolicy
 from domain.delegation_context import DelegationContext
 from domain.execution_policy import ExecutionPolicy
+from domain.release_artifact_policy import release_artifact_policy_directives
 from domain.resource_configuration import ResourceConfiguration
 
 
@@ -56,13 +57,21 @@ class TaskPackage:
                 "TaskPackage orchestration_id must not be empty."
             )
 
-        api_directives = api_generation_policy_directives(
-            objective=self.objective,
-            scope=self.scope,
-            context=self.context,
-            constraints=self.constraints,
+        policy_directives = (
+            *api_generation_policy_directives(
+                objective=self.objective,
+                scope=self.scope,
+                context=self.context,
+                constraints=self.constraints,
+            ),
+            *release_artifact_policy_directives(
+                objective=self.objective,
+                scope=self.scope,
+                context=self.context,
+                constraints=self.constraints,
+            ),
         )
-        if api_directives:
+        if policy_directives:
             existing_decisions = {item.strip() for item in self.decisions}
             object.__setattr__(
                 self,
@@ -71,7 +80,7 @@ class TaskPackage:
                     *self.decisions,
                     *(
                         directive
-                        for directive in api_directives
+                        for directive in policy_directives
                         if directive.strip() not in existing_decisions
                     ),
                 ),
