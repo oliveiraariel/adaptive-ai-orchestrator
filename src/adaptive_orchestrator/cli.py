@@ -24,6 +24,8 @@ from application.run_orchestration import (
     RunOrchestrationError,
     RunOrchestrationRequest,
 )
+from application.investigation_strategy import RuntimeRecoveryStrategist
+from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.run_project_orchestration import (
     ProjectOrchestrationError,
     ProjectOrchestrationRequest,
@@ -123,6 +125,19 @@ def build_parser() -> argparse.ArgumentParser:
     resume_project.add_argument("--skill-registry")
     _add_gateway_arguments(resume_project)
 
+    pause_project = commands.add_parser(
+        "pause-project",
+        help=(
+            "Request a graceful pause for a durably checkpointed project. "
+            "No new workers are dispatched; active work is allowed to settle."
+        ),
+    )
+    pause_project.add_argument("--orchestration-id", required=True)
+    pause_project.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
     doctor = commands.add_parser(
         "doctor",
         help="Report inbound bridge prerequisites without revealing secrets.",
@@ -179,6 +194,31 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--max-replans", type=int, default=2)
+    parser.add_argument(
+        "--persistent-recovery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Keep strategy-exhausted technical work in strategist-guided recovery "
+            "epochs until success, a governed human/external stop, or developer pause."
+        ),
+    )
+    parser.add_argument(
+        "--max-recovery-epochs",
+        type=int,
+        default=0,
+        help="Optional recovery epoch cap; 0 means no fixed cap.",
+    )
+    parser.add_argument("--recovery-strategist-agent")
+    parser.add_argument(
+        "--learning-after-successful-retest",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Automatically trigger incident learning/dissemination after a recovery "
+            "retest reaches ACCEPTED."
+        ),
+    )
     parser.add_argument("--dependency-context-chars", type=int, default=6000)
     _add_policy_arguments(parser)
     _add_gateway_arguments(parser)
@@ -231,6 +271,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _orchestrate(args)
     if args.command == "resume-project":
         return _resume_project(args)
+    if args.command == "pause-project":
+        return _pause_project(args)
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
@@ -510,6 +552,9 @@ def _orchestrate(args: argparse.Namespace) -> int:
             runner=planner_runner,
             skill_profiles=profiles,
         )
+        persistent_recovery = PersistentRecoveryCoordinator(
+            strategist=RuntimeRecoveryStrategist(runner=planner_runner)
+        )
 
         if args.plan_only:
             planning_request = ProjectPlanningRequest(
@@ -563,6 +608,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             planner=planner,
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
+            persistent_recovery=persistent_recovery,
         ).execute(
             ProjectOrchestrationRequest(
                 objective=args.objective,
@@ -578,6 +624,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 max_attempts_per_work_unit=args.max_attempts,
                 max_strategies_per_work_unit=args.max_strategies,
                 max_replans=args.max_replans,
+                persistent_recovery=args.persistent_recovery,
+                max_recovery_epochs=args.max_recovery_epochs,
+                recovery_strategist_agent=args.recovery_strategist_agent,
+                learning_after_successful_retest=args.learning_after_successful_retest,
                 dependency_context_chars=args.dependency_context_chars,
                 execution_policy=_execution_policy(args),
                 human_approved=args.human_approved,
@@ -701,12 +751,16 @@ def _resume_project(args: argparse.Namespace) -> int:
         profiles = load_skill_profiles(registry_path)
         runtime = _runtime(args)
         claims = InMemoryClaimRegistry()
+        recovery_runner = RunOrchestration(
+            runtime=runtime,
+            claim_registry=claims,
+        )
         planner = RuntimeProjectPlanner(
-            runner=RunOrchestration(
-                runtime=runtime,
-                claim_registry=claims,
-            ),
+            runner=recovery_runner,
             skill_profiles=profiles,
+        )
+        persistent_recovery = PersistentRecoveryCoordinator(
+            strategist=RuntimeRecoveryStrategist(runner=recovery_runner)
         )
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
@@ -717,6 +771,7 @@ def _resume_project(args: argparse.Namespace) -> int:
             planner=planner,
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
+            persistent_recovery=persistent_recovery,
         ).resume(
             args.orchestration_id,
             observability=observability,
@@ -795,6 +850,59 @@ def _resume_project(args: argparse.Namespace) -> int:
         )
     )
     return 0 if completed else 3
+
+
+def _pause_project(args: argparse.Namespace) -> int:
+    try:
+        store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        checkpoint = store.load(args.orchestration_id)
+        if checkpoint is None:
+            raise ProjectOrchestrationError(
+                f"No project checkpoint exists for orchestration '{args.orchestration_id}'."
+            )
+        checkpoint["desired_state"] = "PAUSED"
+        store.save(args.orchestration_id, checkpoint)
+        active = checkpoint.get("active_executions")
+        records = checkpoint.get("records")
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "pause-project",
+                    "orchestration_id": args.orchestration_id,
+                    "desired_state": "PAUSED",
+                    "active_executions": active if isinstance(active, list) else [],
+                    "work_unit_states": checkpoint.get("work_unit_states", {}),
+                    "attempts": checkpoint.get("attempts", {}),
+                    "strategy_generations": checkpoint.get(
+                        "strategy_generations", {}
+                    ),
+                    "recovery_epoch_counts": checkpoint.get(
+                        "recovery_epoch_counts", {}
+                    ),
+                    "recent_records": (
+                        records[-10:] if isinstance(records, list) else []
+                    ),
+                    "note": (
+                        "Pause is graceful: no new work is dispatched after the "
+                        "controller observes the request; already active work may "
+                        "settle before the invocation returns PAUSED."
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (
+        OSError,
+        ProjectOrchestrationError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
 
 
 def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:
