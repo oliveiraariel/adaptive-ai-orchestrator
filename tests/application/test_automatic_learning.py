@@ -1,6 +1,9 @@
 from application.automatic_learning import AutomaticLearningCycle
 from application.incident_management import IncidentLifecycleManager
-from application.problem_solving_learning import ProblemSolvingLearningStore
+from application.problem_solving_learning import (
+    ProblemSolvingLearningStore,
+    ValidatedKnowledgeStore,
+)
 from domain.incident import IncidentSeverity, LearningScope
 from infrastructure.incident_registry import FileIncidentRegistry
 
@@ -32,9 +35,11 @@ def test_successful_retest_triggers_scoped_learning_and_dissemination(tmp_path):
     )
 
     learning_store = ProblemSolvingLearningStore(tmp_path / "learning.jsonl")
+    validated_store = ValidatedKnowledgeStore(tmp_path / "validated.jsonl")
     report = AutomaticLearningCycle(
         registry=registry,
         learning_store=learning_store,
+        validated_store=validated_store,
     ).successful_retest(
         incident.id,
         validation_refs=("tests/test_liveness.py::test_persisted_state_wins",),
@@ -42,6 +47,7 @@ def test_successful_retest_triggers_scoped_learning_and_dissemination(tmp_path):
 
     assert report.scope is LearningScope.ARCHITECTURAL
     assert report.runtime_candidate_recorded is True
+    assert report.validated_knowledge_recorded is True
     assert "adaptive:problem-solving" in report.targets
     assert "skills:engineering-lifecycle" in report.targets
     updated = registry.get(incident.id)
@@ -49,3 +55,4 @@ def test_successful_retest_triggers_scoped_learning_and_dissemination(tmp_path):
     assert updated.validation_refs
     assert updated.learning_scope is LearningScope.ARCHITECTURAL
     assert learning_store.path.read_text(encoding="utf-8").strip()
+    assert validated_store.path.read_text(encoding="utf-8").strip()
