@@ -822,6 +822,134 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             revision_feedback[work_unit_id] = feedback
                         else:
                             revision_feedback.pop(work_unit_id, None)
+                            reconciliation_target = specs[
+                                work_unit_id
+                            ].reconciles_work_unit_id
+                            if reconciliation_target:
+                                target = work_units[reconciliation_target]
+                                if target.state in {
+                                    WorkUnitState.REVISION_REQUIRED,
+                                    WorkUnitState.RECOVERY_REQUIRED,
+                                }:
+                                    target.complete_by_reconciliation()
+                                    for dependency in dependencies:
+                                        if dependency.source_id == reconciliation_target:
+                                            dependency.satisfy()
+                                    revision_feedback.pop(
+                                        reconciliation_target, None
+                                    )
+                                    recovery_guidance.pop(
+                                        reconciliation_target, None
+                                    )
+                                    recovery_replans_in_epoch[
+                                        reconciliation_target
+                                    ] = 0
+                                    outputs[reconciliation_target] = (
+                                        "Formally reconciled by accepted corrective "
+                                        f"Work Unit {work_unit_id}."
+                                    )
+                                    if (
+                                        record.result_authoritative
+                                        and record.result_ref
+                                    ):
+                                        output_refs[
+                                            reconciliation_target
+                                        ] = record.result_ref
+                                    reconciled_record = WorkUnitExecutionRecord(
+                                        work_unit_id=reconciliation_target,
+                                        role=specs[reconciliation_target].role,
+                                        wave=generation,
+                                        attempt=attempts[reconciliation_target],
+                                        status=WorkUnitState.COMPLETED.value,
+                                        skills=skill_sets[reconciliation_target],
+                                        execution_id=None,
+                                        external_id=None,
+                                        runtime_status=None,
+                                        verdict=EvaluationVerdict.ACCEPTED.value,
+                                        output=outputs[reconciliation_target],
+                                        result_ref=record.result_ref,
+                                        result_authoritative=(
+                                            record.result_authoritative
+                                        ),
+                                        reason=f"reconciled-by:{work_unit_id}",
+                                        strategy=strategy_generations[
+                                            reconciliation_target
+                                        ],
+                                    )
+                                    records.append(reconciled_record)
+                                    observability.emit(
+                                        "work_unit_reconciled",
+                                        orchestration_id=orchestration_id,
+                                        work_unit_id=reconciliation_target,
+                                        reconciled_by_work_unit_id=work_unit_id,
+                                        status="COMPLETED",
+                                        verdict="ACCEPTED",
+                                        reason="accepted-corrective-reconciliation",
+                                    )
+                                    if (
+                                        request.learning_after_successful_retest
+                                        and self._persistent_recovery is not None
+                                    ):
+                                        reconciliation_refs = [
+                                            (
+                                                "work-unit:"
+                                                f"{reconciliation_target}:"
+                                                f"reconciled-by:{work_unit_id}"
+                                            ),
+                                            (
+                                                "corrective-execution:"
+                                                f"{record.execution_id or 'unknown'}"
+                                            ),
+                                        ]
+                                        if record.result_ref:
+                                            reconciliation_refs.append(
+                                                record.result_ref
+                                            )
+                                        try:
+                                            reconciled_learning = (
+                                                self._persistent_recovery.successful_retest(
+                                                    orchestration_id=orchestration_id,
+                                                    work_unit_id=reconciliation_target,
+                                                    validation_refs=reconciliation_refs,
+                                                )
+                                            )
+                                        except Exception as exc:
+                                            observability.emit(
+                                                "automatic_learning_failed",
+                                                orchestration_id=orchestration_id,
+                                                work_unit_id=reconciliation_target,
+                                                failure_category=type(exc).__name__,
+                                            )
+                                        else:
+                                            if reconciled_learning is not None:
+                                                observability.emit(
+                                                    "automatic_learning_triggered",
+                                                    orchestration_id=orchestration_id,
+                                                    work_unit_id=reconciliation_target,
+                                                    incident_id=(
+                                                        reconciled_learning.incident_id
+                                                    ),
+                                                    scope=(
+                                                        reconciled_learning.scope.value
+                                                    ),
+                                                    targets=list(
+                                                        reconciled_learning.targets
+                                                    ),
+                                                    runtime_candidate_recorded=(
+                                                        reconciled_learning.runtime_candidate_recorded
+                                                    ),
+                                                )
+                                                if (
+                                                    reconciled_learning.targets
+                                                    and not reconciled_learning.closed
+                                                ):
+                                                    pending_replan = True
+                                                    replan_feedback = (
+                                                        "Corrective reconciliation "
+                                                        "succeeded but its learning "
+                                                        "lifecycle remains open for "
+                                                        f"incident {reconciled_learning.incident_id}."
+                                                    )
                             if (
                                 request.learning_after_successful_retest
                                 and self._persistent_recovery is not None
