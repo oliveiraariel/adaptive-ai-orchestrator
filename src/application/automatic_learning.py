@@ -13,6 +13,7 @@ from application.problem_solving_learning import (
     ValidatedKnowledgeStore,
 )
 from domain.incident import Incident, LearningScope
+from domain.learning_analysis import SuccessfulRetestLearningAnalysis
 from domain.learning_candidate import LearningCandidate
 from infrastructure.incident_registry import FileIncidentRegistry
 
@@ -33,6 +34,8 @@ class LearningIncorporationReport:
     problem: str
     solution: str
     validation_refs: tuple[str, ...]
+    learning_statement: str
+    analysis_confidence: float | None
 
 
 class AutomaticLearningCycle:
@@ -68,6 +71,7 @@ class AutomaticLearningCycle:
         *,
         validation_refs: Iterable[str],
         trigger: str = "successful-retest",
+        analysis: SuccessfulRetestLearningAnalysis | None = None,
     ) -> LearningIncorporationReport:
         lifecycle = IncidentLifecycleManager(self.registry)
         incident = self._require(incident_id)
@@ -80,8 +84,20 @@ class AutomaticLearningCycle:
             )
 
         validated = lifecycle.validate_fix(incident_id, validation_refs=refs)
-        scope = self.promotion_policy.classify(validated)
-        targets = self.dissemination_planner.targets(validated, scope)
+        if analysis is not None:
+            scope = (
+                analysis.scope
+                if analysis.should_promote
+                else LearningScope.LOCAL_ONLY
+            )
+            targets = self._merge_targets(
+                self.dissemination_planner.targets(validated, scope),
+                analysis.target_hints,
+                scope=scope,
+            )
+        else:
+            scope = self.promotion_policy.classify(validated)
+            targets = self.dissemination_planner.targets(validated, scope)
         dispositioned = lifecycle.set_learning_scope(
             incident_id,
             scope=scope,
@@ -89,36 +105,54 @@ class AutomaticLearningCycle:
         )
         candidate = lifecycle.extract_learning_candidate(incident_id)
 
-        recorded = self.learning_store.record(
-            strategy_id=f"incident-{dispositioned.fingerprint[:12]}",
-            trigger=self._safe_learning_text(
-                f"{dispositioned.category} in {dispositioned.component}: {dispositioned.symptom}"
-            ),
-            action=self._safe_learning_text(dispositioned.fix_summary),
-            result=self._safe_learning_text(
-                "Successful retest validated the remediation; learning dissemination is now governed by incident targets."
-            ),
-            orchestration_id=dispositioned.orchestration_id or dispositioned.id,
-            work_unit_id=dispositioned.work_unit_id or "incident-learning",
-            source="successful-incident-retest",
+        learning_statement = self._safe_learning_text(
+            analysis.learning_statement
+            if analysis is not None
+            else dispositioned.fix_summary
+        )
+        learning_trigger = self._safe_learning_text(
+            analysis.problem_summary
+            if analysis is not None
+            else (
+                f"{dispositioned.category} in {dispositioned.component}: "
+                f"{dispositioned.symptom}"
+            )
+        )
+        should_reuse = scope is not LearningScope.LOCAL_ONLY
+        recorded = (
+            self.learning_store.record(
+                strategy_id=f"incident-{dispositioned.fingerprint[:12]}",
+                trigger=learning_trigger,
+                action=learning_statement,
+                result=self._safe_learning_text(
+                    "Successful retest validated the remediation; learning dissemination is now governed by incident targets."
+                ),
+                orchestration_id=dispositioned.orchestration_id or dispositioned.id,
+                work_unit_id=dispositioned.work_unit_id or "incident-learning",
+                source="successful-incident-retest",
+            )
+            if should_reuse
+            else False
         )
         lesson_id = f"incident-{dispositioned.fingerprint[:12]}"
-        validated_recorded = self.validated_store.record(
-            lesson_id=lesson_id,
-            title=self._safe_learning_text(
-                f"{dispositioned.component}: validated incident learning"
-            ),
-            trigger=self._safe_learning_text(
-                f"{dispositioned.category} in {dispositioned.component}: {dispositioned.symptom}"
-            ),
-            guidance=self._safe_learning_text(dispositioned.fix_summary),
-            result=self._safe_learning_text(
-                "The remediation passed the successful retest evidence attached to this incident."
-            ),
-            scope=scope.value,
-            targets=targets,
-            evidence=refs,
-            project_id=dispositioned.project_id,
+        validated_recorded = (
+            self.validated_store.record(
+                lesson_id=lesson_id,
+                title=self._safe_learning_text(
+                    f"{dispositioned.component}: validated incident learning"
+                ),
+                trigger=learning_trigger,
+                guidance=learning_statement,
+                result=self._safe_learning_text(
+                    "The remediation passed the successful retest evidence attached to this incident."
+                ),
+                scope=scope.value,
+                targets=targets,
+                evidence=refs,
+                project_id=dispositioned.project_id,
+            )
+            if should_reuse
+            else False
         )
         dissemination_completed: tuple[str, ...] = ()
         consistency_passed = False
@@ -159,6 +193,17 @@ class AutomaticLearningCycle:
                     evidence_refs=(),
                 )
 
+        if scope is LearningScope.LOCAL_ONLY:
+            incorporation_refs = (f"incident-history:{incident_id}",)
+            lifecycle.mark_consistency(
+                incident_id,
+                passed=True,
+                evidence_refs=incorporation_refs,
+            )
+            consistency_passed = True
+            lifecycle.close(incident_id)
+            closed = True
+
         self.registry.append_event(
             incident_id,
             "automatic_learning_triggered",
@@ -198,7 +243,52 @@ class AutomaticLearningCycle:
             problem=dispositioned.root_cause,
             solution=dispositioned.fix_summary,
             validation_refs=refs,
+            learning_statement=learning_statement,
+            analysis_confidence=(
+                analysis.confidence if analysis is not None else None
+            ),
         )
+
+    @staticmethod
+    def _merge_targets(
+        planned: Iterable[str],
+        hints: Iterable[str],
+        *,
+        scope: LearningScope,
+    ) -> tuple[str, ...]:
+        if scope is LearningScope.LOCAL_ONLY:
+            return ()
+        allowed: list[str] = []
+        for raw in (*tuple(planned), *tuple(hints)):
+            target = str(raw).strip()[:120]
+            if not target:
+                continue
+            if target == "project:knowledge":
+                if scope is LearningScope.PROJECT_SPECIFIC:
+                    allowed.append(target)
+                continue
+            if target.startswith("skills:"):
+                skill_id = target.split(":", 1)[1]
+                if skill_id and all(
+                    char.isalnum() or char in {"-", "_"}
+                    for char in skill_id
+                ):
+                    allowed.append(target)
+                continue
+            if target.startswith("adaptive:"):
+                suffix = target.split(":", 1)[1]
+                if suffix and all(
+                    char.isalnum() or char in {"-", "_"}
+                    for char in suffix
+                ):
+                    allowed.append(target)
+        if scope is LearningScope.PROJECT_SPECIFIC:
+            allowed.append("project:knowledge")
+        else:
+            # Prevent a non-project lesson from being accidentally scoped only
+            # to a project target suggested by an analyst.
+            allowed = [item for item in allowed if item != "project:knowledge"]
+        return tuple(dict.fromkeys(allowed))
 
     def _require(self, incident_id: str) -> Incident:
         incident = self.registry.get(incident_id)
