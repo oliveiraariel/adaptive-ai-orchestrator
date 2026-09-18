@@ -860,14 +860,18 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                                 learning_report.runtime_candidate_recorded
                                             ),
                                         )
-                                        if learning_report.targets:
+                                        if (
+                                            learning_report.targets
+                                            and not learning_report.closed
+                                        ):
                                             pending_replan = True
                                             replan_feedback = (
                                                 "Successful retest triggered the "
-                                                "automatic learning lifecycle. "
-                                                "Complete the governed learning "
-                                                "dissemination obligations for incident "
-                                                f"{learning_report.incident_id}. "
+                                                "automatic learning lifecycle, but "
+                                                "runtime incorporation/consistency did "
+                                                "not close the incident. Complete the "
+                                                "remaining governed learning obligations "
+                                                f"for incident {learning_report.incident_id}. "
                                                 "Targets: "
                                                 + ", ".join(learning_report.targets)
                                             )
