@@ -8,7 +8,10 @@ from application.incident_management import (
     KnowledgeDisseminationPlanner,
     KnowledgePromotionPolicy,
 )
-from application.problem_solving_learning import ProblemSolvingLearningStore
+from application.problem_solving_learning import (
+    ProblemSolvingLearningStore,
+    ValidatedKnowledgeStore,
+)
 from domain.incident import Incident, LearningScope
 from domain.learning_candidate import LearningCandidate
 from infrastructure.incident_registry import FileIncidentRegistry
@@ -22,6 +25,7 @@ class LearningIncorporationReport:
     targets: tuple[str, ...]
     candidate: LearningCandidate
     runtime_candidate_recorded: bool
+    validated_knowledge_recorded: bool
     problem: str
     solution: str
     validation_refs: tuple[str, ...]
@@ -43,11 +47,13 @@ class AutomaticLearningCycle:
         learning_store: ProblemSolvingLearningStore | None = None,
         promotion_policy: KnowledgePromotionPolicy | None = None,
         dissemination_planner: KnowledgeDisseminationPlanner | None = None,
+        validated_store: ValidatedKnowledgeStore | None = None,
     ) -> None:
         self.registry = registry or FileIncidentRegistry()
         self.learning_store = learning_store or ProblemSolvingLearningStore.from_env()
         self.promotion_policy = promotion_policy or KnowledgePromotionPolicy()
         self.dissemination_planner = dissemination_planner or KnowledgeDisseminationPlanner()
+        self.validated_store = validated_store or ValidatedKnowledgeStore.from_env()
 
     def successful_retest(
         self,
@@ -89,6 +95,23 @@ class AutomaticLearningCycle:
             work_unit_id=dispositioned.work_unit_id or "incident-learning",
             source="successful-incident-retest",
         )
+        validated_recorded = self.validated_store.record(
+            lesson_id=f"incident-{dispositioned.fingerprint[:12]}",
+            title=self._safe_learning_text(
+                f"{dispositioned.component}: validated incident learning"
+            ),
+            trigger=self._safe_learning_text(
+                f"{dispositioned.category} in {dispositioned.component}: {dispositioned.symptom}"
+            ),
+            guidance=self._safe_learning_text(dispositioned.fix_summary),
+            result=self._safe_learning_text(
+                "The remediation passed the successful retest evidence attached to this incident."
+            ),
+            scope=scope.value,
+            targets=targets,
+            evidence=refs,
+            project_id=dispositioned.project_id,
+        )
         self.registry.append_event(
             incident_id,
             "automatic_learning_triggered",
@@ -97,6 +120,7 @@ class AutomaticLearningCycle:
                 "scope": scope.value,
                 "target_count": len(targets),
                 "runtime_candidate_recorded": recorded,
+                "validated_knowledge_recorded": validated_recorded,
             },
         )
         return LearningIncorporationReport(
@@ -106,6 +130,7 @@ class AutomaticLearningCycle:
             targets=targets,
             candidate=candidate,
             runtime_candidate_recorded=recorded,
+            validated_knowledge_recorded=validated_recorded,
             problem=dispositioned.root_cause,
             solution=dispositioned.fix_summary,
             validation_refs=refs,
