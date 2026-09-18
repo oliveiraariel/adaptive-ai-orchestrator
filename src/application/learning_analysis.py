@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
+from application.problem_solving_learning import ProblemSolvingKnowledgeBase
 from application.run_orchestration import RunOrchestration, RunOrchestrationRequest
 from domain.incident import LearningScope
 from domain.learning_analysis import SuccessfulRetestLearningAnalysis
@@ -60,16 +61,36 @@ class RuntimeSuccessfulRetestLearningAnalyst:
         if item is not LearningScope.UNDECIDED
     }
 
-    def __init__(self, *, runner: RunOrchestration) -> None:
+    def __init__(
+        self,
+        *,
+        runner: RunOrchestration,
+        knowledge_base: ProblemSolvingKnowledgeBase | None = None,
+    ) -> None:
         self._runner = runner
+        self._knowledge = (
+            knowledge_base or ProblemSolvingKnowledgeBase.load_default()
+        )
 
     def analyze(
         self,
         request: SuccessfulRetestLearningRequest,
     ) -> SuccessfulRetestLearningAnalysis:
+        learned = self._knowledge.render_guidance(
+            "\n".join(
+                (
+                    request.project_objective,
+                    request.work_unit_objective,
+                    *request.previous_attempts,
+                    request.accepted_result_summary,
+                )
+            ),
+            skills=("investigation", "debugging", "testing"),
+            project_id=request.project_id,
+        )
         result = self._runner.execute(
             RunOrchestrationRequest(
-                objective=self._prompt(request),
+                objective=self._prompt(request, learned),
                 agent=request.agent,
                 skills=(
                     "investigation",
@@ -175,7 +196,10 @@ class RuntimeSuccessfulRetestLearningAnalyst:
         )
 
     @staticmethod
-    def _prompt(request: SuccessfulRetestLearningRequest) -> str:
+    def _prompt(
+        request: SuccessfulRetestLearningRequest,
+        learned_guidance: str = "",
+    ) -> str:
         prior = "\n".join(f"- {item}" for item in request.previous_attempts)
         refs = "\n".join(f"- {item}" for item in request.validation_refs)
         return (
@@ -191,7 +215,20 @@ class RuntimeSuccessfulRetestLearningAnalyst:
             f"PREVIOUS UNSUCCESSFUL ATTEMPTS:\n{prior}\n\n"
             f"ACCEPTED RETEST RESULT:\n{request.accepted_result_summary[:4000]}\n\n"
             f"VALIDATION REFERENCES:\n{refs}\n\n"
-            "Return exactly this JSON shape:\n"
+            + (
+                "RELEVANT EXISTING ADAPTIVE LEARNING:\n"
+                + learned_guidance
+                + "\n\n"
+                if learned_guidance
+                else ""
+            )
+            + (
+                "Treat existing learning as comparison context: decide whether "
+                "the retest confirms, narrows, extends, or does not add a "
+                "reusable lesson. Do not duplicate a broader lesson merely by "
+                "rephrasing it.\n\n"
+            )
+            + "Return exactly this JSON shape:\n"
             '{"problem_summary":"...","root_cause":"...",'
             '"solution_summary":"...","learning_statement":"...",'
             '"scope":"PROJECT_SPECIFIC|RUNTIME_SPECIFIC|PROVIDER_SPECIFIC|'
