@@ -911,6 +911,44 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                                     orchestration_id=orchestration_id,
                                                     work_unit_id=reconciliation_target,
                                                     validation_refs=reconciliation_refs,
+                                                    project_objective=request.objective,
+                                                    project_id=request.project_id,
+                                                    work_unit_objective=specs[
+                                                        reconciliation_target
+                                                    ].objective,
+                                                    previous_attempts=tuple(
+                                                        (
+                                                            f"attempt={item.attempt}; "
+                                                            f"strategy={item.strategy}; "
+                                                            f"status={item.status}; "
+                                                            f"verdict={item.verdict or ''}; "
+                                                            f"reason={item.reason}; "
+                                                            f"output={(item.output or '')[:1200]}"
+                                                        )
+                                                        for item in records
+                                                        if (
+                                                            item.work_unit_id
+                                                            == reconciliation_target
+                                                            and not item.reason.startswith(
+                                                                "reconciled-by:"
+                                                            )
+                                                            and item.verdict
+                                                            != EvaluationVerdict.ACCEPTED.value
+                                                        )
+                                                    ),
+                                                    accepted_result_summary=(
+                                                        record.output
+                                                        or (
+                                                            "Accepted corrective Work Unit "
+                                                            f"{work_unit_id} reconciled "
+                                                            f"{reconciliation_target}."
+                                                        )
+                                                    ),
+                                                    agent=(
+                                                        request.recovery_strategist_agent
+                                                        or request.planner_agent
+                                                        or request.agent
+                                                    ),
                                                 )
                                             )
                                         except Exception as exc:
@@ -966,6 +1004,36 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                             orchestration_id=orchestration_id,
                                             work_unit_id=work_unit_id,
                                             validation_refs=validation_refs,
+                                            project_objective=request.objective,
+                                            project_id=request.project_id,
+                                            work_unit_objective=specs[
+                                                work_unit_id
+                                            ].objective,
+                                            previous_attempts=tuple(
+                                                (
+                                                    f"attempt={item.attempt}; "
+                                                    f"strategy={item.strategy}; "
+                                                    f"status={item.status}; "
+                                                    f"verdict={item.verdict or ''}; "
+                                                    f"reason={item.reason}; "
+                                                    f"output={(item.output or '')[:1200]}"
+                                                )
+                                                for item in records[:-1]
+                                                if (
+                                                    item.work_unit_id
+                                                    == work_unit_id
+                                                    and item.verdict
+                                                    != EvaluationVerdict.ACCEPTED.value
+                                                )
+                                            ),
+                                            accepted_result_summary=(
+                                                record.output or "Accepted retest."
+                                            ),
+                                            agent=(
+                                                request.recovery_strategist_agent
+                                                or request.planner_agent
+                                                or request.agent
+                                            ),
                                         )
                                     )
                                 except Exception as exc:
