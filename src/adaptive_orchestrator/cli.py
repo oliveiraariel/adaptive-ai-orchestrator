@@ -26,6 +26,7 @@ from application.run_orchestration import (
 )
 from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
+from application.orchestration_supervisor import ProjectOrchestrationSupervisor
 from application.run_project_orchestration import (
     ProjectOrchestrationError,
     ProjectOrchestrationRequest,
@@ -137,6 +138,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-root",
         default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
     )
+
+    supervise_projects = commands.add_parser(
+        "supervise-projects",
+        help=(
+            "Reconcile non-terminal checkpointed projects and resume only those "
+            "whose controller heartbeat is missing/stale. Use --watch for an "
+            "active persistence loop."
+        ),
+    )
+    supervise_projects.add_argument("--watch", action="store_true")
+    supervise_projects.add_argument("--interval-seconds", type=float, default=15.0)
+    supervise_projects.add_argument("--stale-after-seconds", type=float, default=45.0)
+    supervise_projects.add_argument(
+        "--session-id",
+        default=os.environ.get("ADAPTIVE_SESSION_ID"),
+    )
+    supervise_projects.add_argument("--skill-registry")
+    _add_gateway_arguments(supervise_projects)
 
     doctor = commands.add_parser(
         "doctor",
@@ -273,6 +292,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _resume_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
+    if args.command == "supervise-projects":
+        return _supervise_projects(args)
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
@@ -850,6 +871,71 @@ def _resume_project(args: argparse.Namespace) -> int:
         )
     )
     return 0 if completed else 3
+
+
+def _supervise_projects(args: argparse.Namespace) -> int:
+    if args.interval_seconds <= 0:
+        return _print_error(ValueError("interval-seconds must be positive"))
+    if args.stale_after_seconds <= 0:
+        return _print_error(ValueError("stale-after-seconds must be positive"))
+
+    project_root = Path(args.project_root).expanduser().resolve()
+    try:
+        supervisor = ProjectOrchestrationSupervisor(
+            project_root=project_root,
+            stale_after_seconds=args.stale_after_seconds,
+        )
+    except (OSError, ValueError, ProjectOrchestrationCheckpointError) as exc:
+        return _print_error(exc)
+
+    def resume_one(orchestration_id: str) -> None:
+        child = argparse.Namespace(**vars(args))
+        child.command = "resume-project"
+        child.orchestration_id = orchestration_id
+        code = _resume_project(child)
+        if code not in {0, 3}:
+            raise ProjectOrchestrationError(
+                f"Automatic resume failed for {orchestration_id} with exit code {code}."
+            )
+
+    while True:
+        try:
+            directives = supervisor.directives()
+            resumed = supervisor.run_once(resume_one)
+        except (
+            OSError,
+            ProjectOrchestrationError,
+            ProjectOrchestrationCheckpointError,
+            ValueError,
+        ) as exc:
+            return _print_error(exc)
+
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "supervise-projects",
+                    "watch": bool(args.watch),
+                    "resumed_orchestration_ids": list(resumed),
+                    "directives": [
+                        {
+                            "orchestration_id": item.orchestration_id,
+                            "action": item.action,
+                            "reason": item.reason,
+                            "desired_state": item.desired_state,
+                            "active_execution_count": item.active_execution_count,
+                            "last_controller_heartbeat_at": item.last_controller_heartbeat_at,
+                        }
+                        for item in directives
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        if not args.watch:
+            return 0
+        time.sleep(args.interval_seconds)
 
 
 def _pause_project(args: argparse.Namespace) -> int:
