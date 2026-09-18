@@ -113,6 +113,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_project_arguments(orchestrate)
 
+    project_status = commands.add_parser(
+        "project-status",
+        help=(
+            "Read the authoritative durable checkpoint for one project "
+            "orchestration without dispatching or resuming work."
+        ),
+    )
+    project_status.add_argument("--orchestration-id", required=True)
+    project_status.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
     resume_project = commands.add_parser(
         "resume-project",
         help=(
@@ -213,6 +226,13 @@ def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--objective", required=True)
+    parser.add_argument(
+        "--orchestration-id",
+        help=(
+            "Optional caller-allocated project orchestration id. Fresh orchestrate "
+            "refuses to reuse an id that already has a durable checkpoint."
+        ),
+    )
     parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
@@ -321,6 +341,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _wait(args)
     if args.command == "orchestrate":
         return _orchestrate(args)
+    if args.command == "project-status":
+        return _project_status(args)
     if args.command == "resume-project":
         return _resume_project(args)
     if args.command == "pause-project":
@@ -659,7 +681,9 @@ def _start_orchestration_guardian(
 
 
 def _orchestrate(args: argparse.Namespace) -> int:
-    orchestration_id = uuid4().hex
+    orchestration_id = _normalize_orchestration_id(
+        getattr(args, "orchestration_id", None)
+    ) or uuid4().hex
     observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
     try:
         registry_path = (
@@ -730,6 +754,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
         )
+        if checkpoint_store.load(orchestration_id) is not None:
+            raise ProjectOrchestrationError(
+                "Fresh orchestrate refused an existing orchestration id; "
+                "use resume-project for the durable project instead."
+            )
         _start_orchestration_guardian(
             args,
             orchestration_id=orchestration_id,
@@ -877,6 +906,104 @@ def _orchestrate(args: argparse.Namespace) -> int:
         )
     )
     return 0 if completed else 3
+
+
+def _normalize_orchestration_id(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("orchestration_id must not be empty.")
+    if len(normalized) > 128:
+        raise ValueError("orchestration_id must be at most 128 characters.")
+    if any(character.isspace() for character in normalized):
+        raise ValueError("orchestration_id must not contain whitespace.")
+    return normalized
+
+
+def _project_checkpoint_status_payload(
+    orchestration_id: str,
+    checkpoint: dict,
+) -> dict[str, object]:
+    raw_states = checkpoint.get("work_unit_states")
+    states = raw_states if isinstance(raw_states, dict) else {}
+    completed = sorted(
+        key for key, value in states.items() if value == "COMPLETED"
+    )
+    blocked = sorted(
+        key for key, value in states.items() if value == "BLOCKED"
+    )
+    recovery_required = sorted(
+        key for key, value in states.items() if value == "RECOVERY_REQUIRED"
+    )
+    unfinished = sorted(
+        key
+        for key, value in states.items()
+        if value not in {"COMPLETED", "CANCELLED", "BLOCKED"}
+    )
+    terminal = checkpoint.get("terminal") is True
+    desired_state = str(checkpoint.get("desired_state") or "RUNNING")
+
+    if states and len(completed) == len(states):
+        status = ProjectRunStatus.COMPLETED.value
+    elif recovery_required and not blocked:
+        status = ProjectRunStatus.RECOVERY_REQUIRED.value
+    elif completed:
+        status = ProjectRunStatus.PARTIAL.value
+    elif terminal:
+        status = ProjectRunStatus.BLOCKED.value
+    elif desired_state == "PAUSED":
+        status = "PAUSED"
+    else:
+        status = "RUNNING"
+
+    active = checkpoint.get("active_executions")
+    return {
+        "ok": True,
+        "mode": "project-status",
+        "orchestration_id": orchestration_id,
+        "status": status,
+        "terminal": terminal,
+        "desired_state": desired_state,
+        "phase": checkpoint.get("phase"),
+        "work_unit_count": len(states),
+        "completed_work_unit_ids": completed,
+        "blocked_work_unit_ids": blocked,
+        "recovery_required_work_unit_ids": recovery_required,
+        "unfinished_work_unit_ids": unfinished,
+        "active_execution_count": len(active) if isinstance(active, list) else 0,
+        "pending_replan": bool(checkpoint.get("pending_replan", False)),
+        "replan_count": checkpoint.get("replan_count", 0),
+    }
+
+
+def _project_status(args: argparse.Namespace) -> int:
+    try:
+        orchestration_id = _normalize_orchestration_id(args.orchestration_id)
+        assert orchestration_id is not None
+        store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        checkpoint = store.load(orchestration_id)
+        if checkpoint is None:
+            raise ProjectOrchestrationError(
+                f"No project checkpoint exists for orchestration '{orchestration_id}'."
+            )
+        print(
+            json.dumps(
+                _project_checkpoint_status_payload(orchestration_id, checkpoint),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (
+        OSError,
+        ProjectOrchestrationError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
 
 
 def _resume_project(args: argparse.Namespace) -> int:
