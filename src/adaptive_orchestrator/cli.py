@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from uuid import uuid4
@@ -149,6 +150,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     supervise_projects.add_argument("--watch", action="store_true")
+    supervise_projects.add_argument(
+        "--orchestration-id",
+        help=(
+            "Optionally supervise only one orchestration. This is used by the "
+            "detached per-orchestration recovery guardian."
+        ),
+    )
+    supervise_projects.add_argument(
+        "--exit-when-terminal",
+        action="store_true",
+        help="Exit watch mode once the targeted orchestration becomes terminal.",
+    )
+    supervise_projects.add_argument(
+        "--startup-grace-seconds",
+        type=float,
+        default=90.0,
+        help=(
+            "How long a targeted watcher may wait for durable admission before "
+            "exiting when no checkpoint ever materializes."
+        ),
+    )
     supervise_projects.add_argument("--interval-seconds", type=float, default=15.0)
     supervise_projects.add_argument("--stale-after-seconds", type=float, default=45.0)
     supervise_projects.add_argument(
@@ -201,6 +223,15 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--skill-registry")
     parser.add_argument("--plan-file")
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument(
+        "--auto-supervisor",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Start a detached per-orchestration Adaptive supervisor so recovery "
+            "continues if the launching controller/session disappears."
+        ),
+    )
     parser.add_argument("--max-concurrency", type=int, default=4)
     parser.add_argument("--max-work-units", type=int, default=24)
     parser.add_argument("--max-waves", type=int, default=24)
@@ -556,6 +587,77 @@ def _wait(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
 
+def _start_orchestration_guardian(
+    args: argparse.Namespace,
+    *,
+    orchestration_id: str,
+    observability: JsonlObservabilitySink,
+) -> None:
+    """Start one detached Adaptive watcher for the orchestration lifecycle.
+
+    The guardian does not retry or plan work itself. It invokes Adaptive's
+    deterministic ProjectOrchestrationSupervisor, which observes the durable
+    checkpoint/controller heartbeat and resumes the same orchestration id only
+    after the controller is missing or stale.
+    """
+    if not getattr(args, "auto_supervisor", True):
+        return
+    if os.environ.get("ADAPTIVE_SUPERVISOR_GUARDIAN") == "1":
+        return
+
+    project_root = Path(args.project_root).expanduser().resolve()
+    if not project_root.is_dir():
+        raise ValueError(
+            f"Adaptive project root does not exist or is not a directory: {project_root}"
+        )
+
+    command = [
+        sys.executable,
+        "-m",
+        "adaptive_orchestrator",
+        "supervise-projects",
+        "--watch",
+        "--orchestration-id",
+        orchestration_id,
+        "--exit-when-terminal",
+        "--project-root",
+        str(project_root),
+        "--gateway-url",
+        str(args.gateway_url),
+        "--wait-timeout-ms",
+        str(args.wait_timeout_ms),
+    ]
+    if getattr(args, "session_id", None):
+        command.extend(("--session-id", str(args.session_id)))
+    if getattr(args, "skill_registry", None):
+        command.extend(("--skill-registry", str(args.skill_registry)))
+
+    environment = os.environ.copy()
+    environment["ADAPTIVE_SUPERVISOR_GUARDIAN"] = "1"
+    try:
+        subprocess.Popen(
+            command,
+            cwd=str(project_root),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise ProjectOrchestrationError(
+            "Unable to start the persistent Adaptive recovery supervisor."
+        ) from exc
+
+    observability.emit(
+        "orchestration_supervisor_started",
+        orchestration_id=orchestration_id,
+        status="WATCHING",
+        mode="detached-per-orchestration",
+    )
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
     orchestration_id = uuid4().hex
     observability = JsonlObservabilitySink(canonical_observability_path(), args.session_id)
@@ -627,6 +729,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
 
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
+        )
+        _start_orchestration_guardian(
+            args,
+            orchestration_id=orchestration_id,
+            observability=observability,
         )
         result = RunContinuousProjectOrchestration(
             runtime=runtime,
@@ -902,8 +1009,20 @@ def _supervise_projects(args: argparse.Namespace) -> int:
         return _print_error(ValueError("interval-seconds must be positive"))
     if args.stale_after_seconds <= 0:
         return _print_error(ValueError("stale-after-seconds must be positive"))
+    if args.startup_grace_seconds <= 0:
+        return _print_error(ValueError("startup-grace-seconds must be positive"))
+    if args.exit_when_terminal and not args.orchestration_id:
+        return _print_error(
+            ValueError("exit-when-terminal requires orchestration-id")
+        )
 
     project_root = Path(args.project_root).expanduser().resolve()
+    target_orchestration_id = (
+        str(args.orchestration_id).strip()
+        if args.orchestration_id
+        else None
+    )
+    started_at = time.monotonic()
     try:
         supervisor = ProjectOrchestrationSupervisor(
             project_root=project_root,
@@ -923,9 +1042,30 @@ def _supervise_projects(args: argparse.Namespace) -> int:
             )
 
     while True:
+        if target_orchestration_id and args.exit_when_terminal:
+            try:
+                target_state = supervisor.checkpoints.load(target_orchestration_id)
+            except ProjectOrchestrationCheckpointError as exc:
+                return _print_error(exc)
+            if isinstance(target_state, dict) and target_state.get("terminal") is True:
+                return 0
+            if (
+                target_state is None
+                and time.monotonic() - started_at >= args.startup_grace_seconds
+            ):
+                # No durable admission ever materialized. The launching bridge
+                # owns its pre-admission retry; this guardian must not invent a
+                # new orchestration.
+                return 0
+
         try:
-            directives = supervisor.directives()
-            resumed = supervisor.run_once(resume_one)
+            directives = supervisor.directives(
+                orchestration_id=target_orchestration_id
+            )
+            resumed = supervisor.run_once(
+                resume_one,
+                orchestration_id=target_orchestration_id,
+            )
         except (
             OSError,
             ProjectOrchestrationError,
@@ -940,6 +1080,7 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                     "ok": True,
                     "mode": "supervise-projects",
                     "watch": bool(args.watch),
+                    "target_orchestration_id": target_orchestration_id,
                     "resumed_orchestration_ids": list(resumed),
                     "directives": [
                         {
@@ -955,10 +1096,20 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 },
                 ensure_ascii=False,
                 sort_keys=True,
-            )
+            ),
+            flush=True,
         )
         if not args.watch:
             return 0
+
+        if target_orchestration_id and args.exit_when_terminal:
+            try:
+                target_state = supervisor.checkpoints.load(target_orchestration_id)
+            except ProjectOrchestrationCheckpointError as exc:
+                return _print_error(exc)
+            if isinstance(target_state, dict) and target_state.get("terminal") is True:
+                return 0
+
         time.sleep(args.interval_seconds)
 
 

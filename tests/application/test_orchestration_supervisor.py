@@ -104,3 +104,37 @@ def test_supervisor_honors_developer_pause(tmp_path):
     directive = supervisor.directives()[0]
     assert directive.action == "PAUSED"
     assert supervisor.run_once(lambda _: (_ for _ in ()).throw(AssertionError())) == ()
+
+
+
+def test_supervisor_can_target_one_orchestration_without_touching_others(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    store = FileProjectOrchestrationCheckpointStore(project_root=project)
+    for orchestration_id in ("orch-a", "orch-b"):
+        store.save(
+            orchestration_id,
+            {
+                "orchestration_id": orchestration_id,
+                "desired_state": "RUNNING",
+                "active_executions": [],
+                "terminal": False,
+            },
+        )
+
+    supervisor = ProjectOrchestrationSupervisor(
+        project_root=project,
+        stale_after_seconds=45,
+        wall_clock=lambda: 100.0,
+    )
+
+    directives = supervisor.directives(orchestration_id="orch-b")
+    assert [item.orchestration_id for item in directives] == ["orch-b"]
+
+    called = []
+    resumed = supervisor.run_once(
+        lambda orchestration_id: called.append(orchestration_id),
+        orchestration_id="orch-b",
+    )
+    assert resumed == ("orch-b",)
+    assert called == ["orch-b"]

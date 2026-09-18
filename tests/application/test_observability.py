@@ -104,6 +104,12 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         status="PAUSED",
         terminal=False,
     )
+    sink.emit(
+        "orchestration_supervisor_started",
+        orchestration_id="orch-1",
+        status="WATCHING",
+        mode="detached-per-orchestration",
+    )
 
     events = [
         json.loads(line)
@@ -115,6 +121,7 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         "recovery_strategy_analyzed",
         "automatic_learning_triggered",
         "orchestration_paused",
+        "orchestration_supervisor_started",
     ]
     assert events[1]["reconciled_by_work_unit_id"] == "wu-fix"
     assert events[2]["incident_id"] == "INC-1"
@@ -123,3 +130,5 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         "adaptive:problem-solving",
         "skills:debugging",
     ]
+
+    assert events[-1]["mode"] == "detached-per-orchestration"

@@ -187,6 +187,8 @@ It scans non-terminal project checkpoints and controller heartbeat evidence:
 
 The resumed Orchestrator reconciles the same persisted active execution identities. The Supervisor does not invent workers or plans.
 
+Normal CLI project execution starts a detached, per-orchestration supervisor guardian by default. The guardian is scoped to the same `orchestration_id`, observes while the controller heartbeat is fresh, resumes only after the controller becomes missing/stale, and exits when the targeted checkpoint becomes terminal. If durable admission never materializes, it exits after a bounded startup grace period instead of inventing a replacement orchestration. `--no-auto-supervisor` is an explicit diagnostic/operational opt-out, not the normal mode.
+
 ## 4. Failure and recovery states
 
 ### Ordinary RETURNED
@@ -260,6 +262,8 @@ Configuration:
 
 A failed recovery-plan topology consumes only the per-epoch replanning budget. After that budget is exhausted, the next epoch reanalyzes rather than blindly repeating the same planner request.
 
+Exhaustion is scoped to the attempted worker/strategy/path. It is not equivalent to exhaustion of the objective. When the current path is exhausted and no governed stop applies, Adaptive must reanalyse the remaining solution frontier and may dispatch a materially different worker/strategy through the Orchestrator.
+
 ## 6. Recovery topology
 
 For an original Work Unit `U` in `RECOVERY_REQUIRED`, a new remediation `R` needed before retry must be represented as:
@@ -311,9 +315,13 @@ The deterministic supervisor:
 4. does not duplicate a project whose controller heartbeat is fresh;
 5. acquires an orchestration-specific supervisor lease;
 6. resumes the **same orchestration id** when the controller is missing/stale;
-7. lets the resumed Orchestrator recover the same external executions from checkpoint.
+7. lets the resumed Orchestrator recover the same external executions from checkpoint;
+8. lets Result Store verification override a stale runtime `RUNNING` lifecycle when a valid final worker result was already atomically published;
+9. returns control to the normal retry/strategy/Recovery Strategist path when the recovered result is still semantically incomplete.
 
-A host/service manager may keep this supervisor command alive. The process-manager choice remains deployment-specific; the recovery semantics live in Adaptive.
+For normal CLI project execution, Adaptive now starts this persistence mechanism proactively as a detached per-orchestration guardian. It is therefore not necessary for the OpenClaw caller or a human to type “tente novamente” merely because the launching controller/session ended. The guardian does **not** create a new orchestration and does **not** duplicate scheduling logic: it only watches and invokes the supported resume path for the existing durable orchestration.
+
+A host/service manager may still run a broader `supervise-projects --watch` service for deployment-level coverage. The process-manager choice remains deployment-specific; the recovery semantics live in Adaptive.
 
 ## 9. Incident lifecycle
 
