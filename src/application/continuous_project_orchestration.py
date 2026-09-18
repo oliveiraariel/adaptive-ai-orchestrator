@@ -162,6 +162,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             dispatch_generation = 0
             pending_replan = False
             replan_feedback = ""
+            recovery_epoch_counts = {work_unit_id: 0 for work_unit_id in work_units}
+            recovery_replans_in_epoch = {work_unit_id: 0 for work_unit_id in work_units}
+            recovery_guidance: dict[str, str] = {}
             recovered_active: list[dict] = []
         else:
             self._restore_work_unit_states(work_units, checkpoint)
@@ -196,6 +199,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
             pending_replan = bool(checkpoint.get("pending_replan", False))
             replan_feedback = str(checkpoint.get("replan_feedback") or "")
+            recovery_epoch_counts = self._restore_optional_int_map(
+                checkpoint, "recovery_epoch_counts", tuple(work_units), default=0
+            )
+            recovery_replans_in_epoch = self._restore_optional_int_map(
+                checkpoint, "recovery_replans_in_epoch", tuple(work_units), default=0
+            )
+            recovery_guidance = self._restore_str_map_optional(
+                checkpoint, "recovery_guidance"
+            )
             recovered_active = self._require_list(
                 checkpoint, "active_executions"
             )
@@ -239,6 +251,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 dispatch_generation=dispatch_generation,
                 pending_replan=pending_replan,
                 replan_feedback=replan_feedback,
+                recovery_epoch_counts=recovery_epoch_counts,
+                recovery_replans_in_epoch=recovery_replans_in_epoch,
+                recovery_guidance=recovery_guidance,
                 active=tuple(active.values()),
                 terminal=terminal,
             )
