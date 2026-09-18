@@ -132,6 +132,13 @@
           },
           "parallel_safe": {
             "type": "boolean"
+          },
+          "reconciles_work_unit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
           }
         }
       }
