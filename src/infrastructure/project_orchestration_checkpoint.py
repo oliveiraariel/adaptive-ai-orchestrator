@@ -66,6 +66,32 @@ class FileProjectOrchestrationCheckpointStore:
             )
         return state
 
+    def list_all(self) -> tuple[tuple[str, dict[str, Any]], ...]:
+        """Return readable checkpoint states with their authoritative ids."""
+        if not self.root.is_dir():
+            return ()
+        items: list[tuple[str, dict[str, Any]]] = []
+        for path in sorted(self.root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            orchestration_id = payload.get("orchestration_id")
+            state = payload.get("state")
+            if (
+                payload.get("schema_version") != self.SCHEMA_VERSION
+                or not isinstance(orchestration_id, str)
+                or not orchestration_id.strip()
+                or not isinstance(state, dict)
+            ):
+                continue
+            if self.path_for(orchestration_id) != path:
+                continue
+            items.append((orchestration_id, state))
+        return tuple(items)
+
     def save(self, orchestration_id: str, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             raise TypeError("Project orchestration checkpoint payload must be an object.")
