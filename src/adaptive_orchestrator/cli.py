@@ -178,6 +178,7 @@ def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider")
     parser.add_argument("--tool", action="append", default=[])
     parser.add_argument("--scope", default="")
+    parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
     parser.add_argument("--input", action="append", default=[])
     parser.add_argument("--constraint", action="append", default=[])
@@ -339,6 +340,10 @@ def _run(args: argparse.Namespace) -> int:
                 provider=args.provider,
                 tools=tuple(args.tool),
                 scope=args.scope,
+                project_id=(
+                    args.project_id
+                    or Path(args.project_root).expanduser().resolve().name
+                ),
                 context=tuple(args.context),
                 inputs=tuple(args.input),
                 constraints=tuple(args.constraint),
