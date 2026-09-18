@@ -5,6 +5,7 @@ from application.problem_solving_learning import (
     ValidatedKnowledgeStore,
 )
 from domain.incident import IncidentSeverity, LearningScope
+from domain.learning_analysis import SuccessfulRetestLearningAnalysis
 from infrastructure.incident_registry import FileIncidentRegistry
 
 
@@ -63,3 +64,63 @@ def test_successful_retest_triggers_scoped_learning_and_dissemination(tmp_path):
     assert set(updated.dissemination_completed) == set(updated.dissemination_targets)
     assert learning_store.path.read_text(encoding="utf-8").strip()
     assert validated_store.path.read_text(encoding="utf-8").strip()
+
+
+def test_local_only_successful_retest_closes_without_leaking_reusable_knowledge(tmp_path):
+    registry = FileIncidentRegistry(root=tmp_path / "incidents-local")
+    incident = registry.create_or_recur(
+        category="successful-retest",
+        component="project-only-form",
+        symptom="A one-off project form label failed a retest.",
+        severity=IncidentSeverity.LOW,
+        source="orchestrator-retest",
+        project_id="project-a",
+        orchestration_id="orch-local",
+        work_unit_id="U-local",
+        blocking=False,
+        topics=("testing",),
+    )
+    assert incident is not None
+    lifecycle = IncidentLifecycleManager(registry)
+    lifecycle.confirm_root_cause(
+        incident.id,
+        root_cause="A project-local label had the wrong literal text.",
+        confidence=0.95,
+    )
+    lifecycle.record_fix(
+        incident.id,
+        fix_summary="Correct the one project-local literal label.",
+    )
+
+    provisional = ProblemSolvingLearningStore(tmp_path / "local-provisional.jsonl")
+    validated = ValidatedKnowledgeStore(tmp_path / "local-validated.jsonl")
+    analysis = SuccessfulRetestLearningAnalysis(
+        problem_summary="One project-local literal label was wrong.",
+        root_cause="The project-local literal text was incorrect.",
+        solution_summary="Correct the literal label.",
+        learning_statement="This correction is too local to reuse outside the incident history.",
+        scope=LearningScope.LOCAL_ONLY,
+        target_hints=("skills:debugging", "adaptive:problem-solving"),
+        confidence=0.96,
+        should_promote=False,
+        evidence_rationale="The evidence concerns only one literal label in one project.",
+    )
+
+    report = AutomaticLearningCycle(
+        registry=registry,
+        learning_store=provisional,
+        validated_store=validated,
+    ).successful_retest(
+        incident.id,
+        validation_refs=("test:project-local-label",),
+        analysis=analysis,
+    )
+
+    assert report.scope is LearningScope.LOCAL_ONLY
+    assert report.targets == ()
+    assert report.runtime_candidate_recorded is False
+    assert report.validated_knowledge_recorded is False
+    assert report.consistency_passed is True
+    assert report.closed is True
+    assert not provisional.path.exists()
+    assert not validated.path.exists()
