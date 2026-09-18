@@ -19,6 +19,8 @@ from application.run_project_orchestration import (
     ProjectRunStatus,
 )
 from application.runtime_project_planner import ProjectPlanningRequest
+from domain.incident import LearningScope
+from domain.learning_analysis import SuccessfulRetestLearningAnalysis
 from domain.investigation import (
     CandidateRecoveryPath,
     RecoveryDisposition,
@@ -151,6 +153,43 @@ class FakeRecoveryStrategist:
             human_decision_required=False,
             external_research_required=False,
             confidence=0.9,
+        )
+
+
+class FakeLearningAnalyst:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def analyze(self, request):
+        self.requests.append(request)
+        return SuccessfulRetestLearningAnalysis(
+            problem_summary=(
+                "The first attempt did not satisfy the acceptance contract."
+            ),
+            root_cause=(
+                "The successful retest used the missing verification/correction "
+                "identified by the prior returned attempt."
+            ),
+            solution_summary=(
+                "Apply the acceptance feedback, preserve prior valid work, and "
+                "retest the same Work Unit."
+            ),
+            learning_statement=(
+                "A successful retest after returned work should preserve the "
+                "failed-path evidence and promote only the reusable correction pattern."
+            ),
+            scope=LearningScope.GENERALIZABLE,
+            target_hints=(
+                "adaptive:problem-solving",
+                "skills:debugging",
+                "skills:testing",
+            ),
+            confidence=0.91,
+            should_promote=True,
+            evidence_rationale=(
+                "The same Work Unit changed from returned to accepted after the "
+                "specific correction was applied."
+            ),
         )
 
 
@@ -346,4 +385,84 @@ def test_accepted_corrective_child_can_formally_reconcile_original_without_rerun
     incident = registry.list_all()[0]
     assert incident.status.value == "CLOSED"
     assert incident.validation_refs
+    assert validated.path.is_file()
+
+
+def test_successful_ordinary_revision_retest_triggers_learning_without_strategy_exhaustion(tmp_path):
+    partial = (
+        "One acceptance item remains.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: add the missing verification"
+    )
+    complete = (
+        "Missing verification added; retest accepted.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    plan = ProjectExecutionPlan(
+        summary="ordinary revision retest",
+        work_units=(_wu("revision-worker"),),
+    )
+    runtime = SequencedRuntime({"revision-worker": [partial, complete]})
+    planner = RecoveryPlanner(plan, plan)
+    registry = FileIncidentRegistry(tmp_path / "incidents-ordinary-retest")
+    validated = ValidatedKnowledgeStore(tmp_path / "validated-ordinary-retest.jsonl")
+    analyst = FakeLearningAnalyst()
+    strategist = FakeRecoveryStrategist()
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=strategist,
+        registry=registry,
+        learning_analyst=analyst,
+        learning_cycle=AutomaticLearningCycle(
+            registry=registry,
+            learning_store=ProblemSolvingLearningStore(
+                tmp_path / "provisional-ordinary-retest.jsonl"
+            ),
+            validated_store=validated,
+        ),
+    )
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Complete ordinary revision and learn from the retest.",
+            orchestration_id="orch-ordinary-retest",
+            project_id="project-a",
+            max_attempts_per_work_unit=2,
+            max_strategies_per_work_unit=1,
+            max_replans=0,
+            persistent_recovery=True,
+            plan=plan,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert strategist.requests == []
+    assert len(analyst.requests) == 1
+    assert analyst.requests[0].previous_attempts
+    assert [task.work_unit_id for task in runtime.tasks] == [
+        "revision-worker",
+        "revision-worker",
+    ]
+
+    incident = registry.list_all()[0]
+    assert incident.category == "successful-retest"
+    assert incident.status.value == "CLOSED"
+    assert incident.resolution_epoch == 0
+    assert incident.learning_scope is LearningScope.GENERALIZABLE
+    assert "skills:testing" in incident.dissemination_targets
+    assert incident.consistency_check_passed is True
+
+    report = coordinator.stop_report(incident.id)
+    assert report["closed"] is True
+    assert "successful retest" in report["what_was_learned"].lower()
+    assert report["learning_analysis_confidence"] == 0.91
+    assert report["incorporated_in"]
     assert validated.path.is_file()
