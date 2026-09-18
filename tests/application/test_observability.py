@@ -57,3 +57,59 @@ def test_observability_override_wins(monkeypatch, tmp_path) -> None:
     override = tmp_path / "override.jsonl"
     monkeypatch.setenv("ADAPTIVE_OBSERVABILITY_LOG", str(override))
     assert canonical_observability_path() == override
+
+
+def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    sink = JsonlObservabilitySink(path)
+
+    sink.emit(
+        "worker_recovered",
+        orchestration_id="orch-1",
+        work_unit_id="wu-1",
+        execution_id="exec-1",
+        external_id="run-1",
+        status="RECOVERED",
+    )
+    sink.emit(
+        "recovery_strategy_analyzed",
+        orchestration_id="orch-1",
+        work_unit_id="wu-1",
+        incident_id="INC-1",
+        recovery_epoch=2,
+        recommended_path_id="path-c",
+        disposition="REPLAN_WITH_PREREQUISITE",
+        confidence=0.9,
+    )
+    sink.emit(
+        "automatic_learning_triggered",
+        orchestration_id="orch-1",
+        work_unit_id="wu-1",
+        incident_id="INC-1",
+        scope="ARCHITECTURAL",
+        targets=["adaptive:problem-solving", "skills:debugging"],
+        runtime_candidate_recorded=True,
+    )
+    sink.emit(
+        "orchestration_paused",
+        orchestration_id="orch-1",
+        status="PAUSED",
+        terminal=False,
+    )
+
+    events = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event_type"] for event in events] == [
+        "worker_recovered",
+        "recovery_strategy_analyzed",
+        "automatic_learning_triggered",
+        "orchestration_paused",
+    ]
+    assert events[1]["incident_id"] == "INC-1"
+    assert events[1]["recovery_epoch"] == 2
+    assert events[2]["targets"] == [
+        "adaptive:problem-solving",
+        "skills:debugging",
+    ]
