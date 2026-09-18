@@ -85,6 +85,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 f"No project checkpoint exists for orchestration '{orchestration_id}'."
             )
         request = self._request_from_checkpoint(checkpoint)
+        if checkpoint.get("desired_state") == "PAUSED":
+            checkpoint["desired_state"] = "RUNNING"
+            self._checkpoint_store.save(orchestration_id, checkpoint)
         return self._execute(
             request,
             observability=observability,
@@ -332,6 +335,17 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 persist()
             while True:
                 unfinished = self._unfinished(work_units)
+                pause_requested = self._pause_requested(orchestration_id)
+                if pause_requested and not active:
+                    persist(terminal=False)
+                    observability.emit(
+                        "orchestration_paused",
+                        orchestration_id=orchestration_id,
+                        status="PAUSED",
+                        terminal=False,
+                        reason="developer-requested-pause",
+                    )
+                    break
 
                 # A replan signal is itself pending orchestration work. Process it
                 # before declaring the current graph terminal, because the worker
@@ -604,7 +618,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if human_ready:
                     persist()
 
-                available_slots = request.max_concurrency - len(active)
+                available_slots = 0 if pause_requested else request.max_concurrency - len(active)
                 if (
                     not pending_replan
                     and available_slots > 0
@@ -913,6 +927,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
         if len(completed_ids) == len(work_units):
             status = ProjectRunStatus.COMPLETED
+        elif self._pause_requested(orchestration_id):
+            status = ProjectRunStatus.PAUSED
         elif recovery_required_ids and not blocked_ids:
             status = ProjectRunStatus.RECOVERY_REQUIRED
         elif completed_ids:
@@ -934,12 +950,21 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             replan_count=replan_count,
             recovery_required_work_unit_ids=recovery_required_ids,
         )
-        persist(terminal=True)
+        persist(terminal=result.status is not ProjectRunStatus.PAUSED)
         observability.emit(
             "orchestration_completed", orchestration_id=orchestration_id,
             status=result.status.value, summary=plan.summary[:500],
         )
         return result
+
+    def _pause_requested(self, orchestration_id: str) -> bool:
+        if self._checkpoint_store is None:
+            return False
+        checkpoint = self._checkpoint_store.load(orchestration_id)
+        return bool(
+            isinstance(checkpoint, dict)
+            and checkpoint.get("desired_state") == "PAUSED"
+        )
 
     def _save_admission_checkpoint(
         self,
@@ -962,6 +987,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "orchestration_id": orchestration_id,
                 "phase": "ADMITTED",
                 "request": self._request_to_payload(request),
+                "desired_state": "RUNNING",
                 "terminal": False,
             },
         )
@@ -1007,9 +1033,20 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "runtime": outcome.execution.runtime,
                 }
             )
+        existing_checkpoint = (
+            self._checkpoint_store.load(orchestration_id)
+            if self._checkpoint_store is not None
+            else None
+        )
+        desired_state = (
+            str(existing_checkpoint.get("desired_state") or "RUNNING")
+            if isinstance(existing_checkpoint, dict)
+            else "RUNNING"
+        )
         payload = {
             "orchestration_id": orchestration_id,
             "phase": "EXECUTION",
+            "desired_state": desired_state,
             "request": self._request_to_payload(request),
             "plan": self._plan_to_payload(plan),
             "work_unit_states": {
