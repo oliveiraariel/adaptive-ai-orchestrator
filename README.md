@@ -171,6 +171,13 @@ manual-only premium models
 Adaptive-routed Luna work fails closed when the configured OpenAI OAuth profile
 is missing, preventing accidental fallback to a paid OpenAI Platform API key.
 
+## Recovery Loop
+
+**Recovery Loop** is the canonical conversational short name for the **Adaptive Persistent Recovery & Learning Lifecycle**.
+
+It is a subsystem coordinated by the Orchestrator, not a separate authority layer. Normal project tasks do not need to explicitly invoke it: Adaptive activates recovery/learning behavior proactively when retrabalho, strategy exhaustion, retest, or learning conditions require it.
+
+The canonical architecture document is [`docs/architecture/RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md).
 ## Execution integrity
 
 Field operation exposed several important distinctions that are now part of the executable contract:
