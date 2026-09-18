@@ -48,11 +48,18 @@ def test_successful_retest_triggers_scoped_learning_and_dissemination(tmp_path):
     assert report.scope is LearningScope.ARCHITECTURAL
     assert report.runtime_candidate_recorded is True
     assert report.validated_knowledge_recorded is True
+    assert report.consistency_passed is True
+    assert report.closed is True
+    assert set(report.dissemination_completed) == set(report.targets)
+    assert report.incorporation_refs
     assert "adaptive:problem-solving" in report.targets
     assert "skills:engineering-lifecycle" in report.targets
     updated = registry.get(incident.id)
     assert updated is not None
     assert updated.validation_refs
     assert updated.learning_scope is LearningScope.ARCHITECTURAL
+    assert updated.status.value == "CLOSED"
+    assert updated.consistency_check_passed is True
+    assert set(updated.dissemination_completed) == set(updated.dissemination_targets)
     assert learning_store.path.read_text(encoding="utf-8").strip()
     assert validated_store.path.read_text(encoding="utf-8").strip()
