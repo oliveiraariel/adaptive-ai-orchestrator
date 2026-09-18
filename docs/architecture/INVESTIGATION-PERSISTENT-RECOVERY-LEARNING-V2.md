@@ -130,17 +130,43 @@ It does **not**:
 - close incidents;
 - promote its own conclusions to permanent knowledge.
 
-### 3.3 Operational workers
+### 3.3 Learning Curator
+
+The Learning Curator is the second logical mode of the high-responsibility `investigation` Skill.
+
+It runs after a Work Unit that previously failed/returned/revised reaches an accepted retest, including an ordinary revision that recovered **before** strategy exhaustion.
+
+It receives:
+
+- before/after attempt evidence;
+- accepted retest result;
+- validation references;
+- project identity;
+- relevant validated/provisional Adaptive knowledge.
+
+It returns a structured recommendation:
+
+- problem/root cause supported by evidence;
+- successful remediation;
+- reusable learning statement;
+- learning scope;
+- target hints for Adaptive/project/runtime/selected Skills;
+- confidence;
+- whether the lesson should be promoted at all.
+
+It is read-only. It does not edit knowledge or Skills. Adaptive core filters targets, promotes learning, verifies incorporation, and closes the lifecycle.
+
+### 3.4 Operational workers
 
 Operational workers execute only the Work Units admitted by the Orchestrator. They can use the appropriate implementation/testing/debugging/review Skill set and receive relevant validated learning overlays selected by Adaptive.
 
-### 3.4 Incident Supervisor
+### 3.5 Incident Supervisor
 
 The Incident Supervisor preserves unresolved defects/investigations as obligations across sessions and prioritizes diagnosis, research, validation and learning work.
 
 A `PAUSED_BY_DEVELOPER` incident stays persisted but is not automatically scheduled until resumed.
 
-### 3.5 Project Orchestration Supervisor
+### 3.6 Project Orchestration Supervisor
 
 The Project Orchestration Supervisor is deterministic, not an LLM.
 
@@ -302,7 +328,15 @@ An incident does not disappear merely because a worker/chat/session ended.
 
 ## 10. Successful retest as learning trigger
 
-A successful retest after an active investigation/recovery is an automatic learning trigger.
+A successful retest after **any prior unsuccessful attempt** is an automatic learning-analysis trigger.
+
+This includes:
+
+- ordinary `RETURNED` / `REVISION_REQUIRED` correction that succeeds within the normal bounded retry/strategy cycle;
+- persistent Investigation / Recovery that succeeds in a later recovery epoch;
+- accepted corrective-child reconciliation of an original returned Work Unit.
+
+A first-attempt success is not treated as a retest and does not create learning merely because it completed.
 
 Adaptive records:
 
@@ -313,7 +347,7 @@ Adaptive records:
 - affected topics/context;
 - confidence.
 
-The learning cycle then decides scope using `KnowledgePromotionPolicy`.
+The Learning Curator first produces a structured recommendation. Adaptive then validates/narrows that recommendation and combines it with deterministic `KnowledgePromotionPolicy` / dissemination safeguards.
 
 Possible scopes include:
 
@@ -357,6 +391,8 @@ Examples:
 
 Validated runtime lessons carry target identifiers such as `skills:debugging`. Adaptive injects relevant targeted learning only into workers that selected those Skills.
 
+`LOCAL_ONLY` learning is retained in incident history but is **not** written into reusable validated/provisional guidance, preventing a one-off correction from leaking globally.
+
 This provides immediate operational assimilation while source-controlled Skill changes remain governable, reviewable dissemination artifacts.
 
 ## 12. Learning safety
@@ -390,6 +426,7 @@ Recovery lifecycle events are allowlisted/versioned operational events.
 The implementation accepts, among others:
 
 - `worker_recovered`;
+- `work_unit_reconciled`;
 - `recovery_strategy_analyzed`;
 - `automatic_learning_triggered`;
 - `automatic_learning_failed`;
@@ -438,6 +475,8 @@ Investigation/recovery:
 
 Learning:
 
+- `src/application/learning_analysis.py`
+- `src/domain/learning_analysis.py`
 - `src/application/automatic_learning.py`
 - `src/application/problem_solving_learning.py`
 - `src/application/knowledge_consistency.py`
@@ -455,21 +494,24 @@ Execution integration:
 - `src/adaptive_orchestrator/resilient_project_orchestration.py`
 - `src/adaptive_orchestrator/cli.py`
 
-## 17. Validation required before Issue #38 can close
+## 17. Validation state before Issue #38 can close
 
-This branch must not close Issue #38 merely because the architecture exists.
+The implementation has automated repository-level coverage for the lifecycle, but Issue #38 remains open until the owner accepts the implementation after representative runtime/environmental validation.
 
-Required proof:
+Automated proof includes:
 
-- unit tests for strategist parsing and safety;
+- strategist parsing and safety;
+- Learning Curator structured analysis;
+- ordinary successful-retest learning trigger;
+- local-only learning non-leakage;
 - persistent recovery epoch tests;
-- pause/resume tests;
+- developer pause/resume checkpoint behavior;
 - controller-death supervisor tests;
 - no duplicate resume with fresh heartbeat/lease;
 - observability event-contract regression;
-- successful-retest automatic learning test;
-- targeted validated knowledge reuse test;
-- representative E2E:
+- successful-retest automatic learning/dissemination/closure;
+- targeted validated knowledge reuse;
+- representative in-process E2E:
   - operational worker returns/fails;
   - strategy exhausts;
   - Recovery Strategist proposes new path;
@@ -480,4 +522,4 @@ Required proof:
   - consistency gate passes;
   - incident closes.
 
-Until those gates are green, the implementation remains a Draft PR.
+Repository CI must remain green across Adaptive core, Ariel Agent Skills and Control Room. A live OpenClaw/provider execution is still the recommended final environmental proof before Issue #38 is closed or the Draft PR is promoted for merge.
