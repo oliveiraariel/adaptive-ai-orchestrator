@@ -807,6 +807,55 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             revision_feedback[work_unit_id] = feedback
                         else:
                             revision_feedback.pop(work_unit_id, None)
+                            if (
+                                request.learning_after_successful_retest
+                                and self._persistent_recovery is not None
+                            ):
+                                validation_refs = [
+                                    f"work-unit:{work_unit_id}:accepted",
+                                    f"execution:{record.execution_id or 'unknown'}",
+                                ]
+                                if record.result_ref:
+                                    validation_refs.append(record.result_ref)
+                                try:
+                                    learning_report = (
+                                        self._persistent_recovery.successful_retest(
+                                            orchestration_id=orchestration_id,
+                                            work_unit_id=work_unit_id,
+                                            validation_refs=validation_refs,
+                                        )
+                                    )
+                                except Exception as exc:
+                                    observability.emit(
+                                        "automatic_learning_failed",
+                                        orchestration_id=orchestration_id,
+                                        work_unit_id=work_unit_id,
+                                        failure_category=type(exc).__name__,
+                                    )
+                                else:
+                                    if learning_report is not None:
+                                        observability.emit(
+                                            "automatic_learning_triggered",
+                                            orchestration_id=orchestration_id,
+                                            work_unit_id=work_unit_id,
+                                            incident_id=learning_report.incident_id,
+                                            scope=learning_report.scope.value,
+                                            targets=list(learning_report.targets),
+                                            runtime_candidate_recorded=(
+                                                learning_report.runtime_candidate_recorded
+                                            ),
+                                        )
+                                        if learning_report.targets:
+                                            pending_replan = True
+                                            replan_feedback = (
+                                                "Successful retest triggered the "
+                                                "automatic learning lifecycle. "
+                                                "Complete the governed learning "
+                                                "dissemination obligations for incident "
+                                                f"{learning_report.incident_id}. "
+                                                "Targets: "
+                                                + ", ".join(learning_report.targets)
+                                            )
                         pending_replan = (
                             pending_replan
                             or replan_signal
