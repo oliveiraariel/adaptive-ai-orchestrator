@@ -338,17 +338,156 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 # that requested replanning may have been the last current Work
                 # Unit and the replan may legitimately add the next required unit.
                 if pending_replan and not active:
-                    if replan_count >= request.max_replans:
-                        pending_replan = False
-                    elif hasattr(self._planner, "replan"):
-                        old_edges = {
-                            (dependency.source_id, dependency.target_id, dependency.required)
-                            for dependency in dependencies
-                        }
+                    recovery_before = {
+                        work_unit_id
+                        for work_unit_id, work_unit in work_units.items()
+                        if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                    }
+                    persistent_recovery_active = bool(
+                        recovery_before
+                        and request.persistent_recovery
+                        and self._persistent_recovery is not None
+                    )
+
+                    if persistent_recovery_active:
+                        per_epoch_replan_limit = max(1, request.max_replans)
+                        for work_unit_id in sorted(recovery_before):
+                            if (
+                                recovery_replans_in_epoch[work_unit_id]
+                                >= per_epoch_replan_limit
+                            ):
+                                recovery_replans_in_epoch[work_unit_id] = 0
+                                recovery_guidance.pop(work_unit_id, None)
+
+                            if recovery_replans_in_epoch[work_unit_id] != 0:
+                                continue
+                            if recovery_guidance.get(work_unit_id):
+                                continue
+                            if (
+                                request.max_recovery_epochs > 0
+                                and recovery_epoch_counts[work_unit_id]
+                                >= request.max_recovery_epochs
+                            ):
+                                work_units[work_unit_id].mark_blocked()
+                                records.append(
+                                    WorkUnitExecutionRecord(
+                                        work_unit_id=work_unit_id,
+                                        role=specs[work_unit_id].role,
+                                        wave=dispatch_generation + 1,
+                                        attempt=attempts[work_unit_id],
+                                        status=WorkUnitState.BLOCKED.value,
+                                        skills=skill_sets[work_unit_id],
+                                        verdict="BLOCKED",
+                                        reason="persistent-recovery:max-epochs-reached",
+                                        strategy=strategy_generations[work_unit_id],
+                                    )
+                                )
+                                observability.emit(
+                                    "work_unit_status_changed",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    role=specs[work_unit_id].role,
+                                    status="BLOCKED",
+                                    verdict="BLOCKED",
+                                    reason="persistent-recovery:max-epochs-reached",
+                                )
+                                continue
+
+                            history = tuple(
+                                (
+                                    f"attempt={record.attempt}; strategy={record.strategy}; "
+                                    f"status={record.status}; verdict={record.verdict or ''}; "
+                                    f"reason={record.reason}"
+                                )
+                                for record in records
+                                if record.work_unit_id == work_unit_id
+                            )
+                            cycle = self._persistent_recovery.analyze(
+                                project_objective=request.objective,
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id,
+                                work_unit_objective=specs[work_unit_id].objective,
+                                state_summary=self._state_summary(
+                                    work_units, outputs, output_refs
+                                ),
+                                attempt_history=history,
+                                constraints=request.constraints,
+                                agent=(
+                                    request.recovery_strategist_agent
+                                    or request.planner_agent
+                                    or request.agent
+                                ),
+                                failure_class="strategy-exhausted",
+                            )
+                            recovery_epoch_counts[work_unit_id] = cycle.recovery_epoch
+                            recovery_guidance[work_unit_id] = (
+                                cycle.analysis.planner_guidance()
+                            )
+                            observability.emit(
+                                "recovery_strategy_analyzed",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id,
+                                incident_id=cycle.incident_id,
+                                recovery_epoch=cycle.recovery_epoch,
+                                recommended_path_id=cycle.analysis.recommended_path_id,
+                                disposition=cycle.analysis.disposition.value,
+                                confidence=cycle.analysis.confidence,
+                            )
+                            if cycle.analysis.human_decision_required:
+                                work_units[work_unit_id].mark_blocked()
+                                records.append(
+                                    WorkUnitExecutionRecord(
+                                        work_unit_id=work_unit_id,
+                                        role=specs[work_unit_id].role,
+                                        wave=dispatch_generation + 1,
+                                        attempt=attempts[work_unit_id],
+                                        status=WorkUnitState.BLOCKED.value,
+                                        skills=skill_sets[work_unit_id],
+                                        verdict="BLOCKED",
+                                        reason="recovery-strategist:human-decision-required",
+                                        strategy=strategy_generations[work_unit_id],
+                                    )
+                                )
+
                         recovery_before = {
                             work_unit_id
-                            for work_unit_id, work_unit in work_units.items()
-                            if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                            for work_unit_id in recovery_before
+                            if work_units[work_unit_id].state
+                            is WorkUnitState.RECOVERY_REQUIRED
+                        }
+                        guidance = [
+                            recovery_guidance[work_unit_id]
+                            for work_unit_id in sorted(recovery_before)
+                            if recovery_guidance.get(work_unit_id)
+                        ]
+                        if guidance:
+                            replan_feedback = "\n\n".join(
+                                item
+                                for item in (
+                                    replan_feedback.strip(),
+                                    *guidance,
+                                )
+                                if item
+                            )
+
+                    can_replan = hasattr(self._planner, "replan") and (
+                        persistent_recovery_active
+                        or replan_count < request.max_replans
+                    )
+                    if not recovery_before and persistent_recovery_active:
+                        pending_replan = False
+                        persist()
+                        continue
+                    if not can_replan:
+                        pending_replan = False
+                    else:
+                        old_edges = {
+                            (
+                                dependency.source_id,
+                                dependency.target_id,
+                                dependency.required,
+                            )
+                            for dependency in dependencies
                         }
                         try:
                             plan, new_ids = self._expand_plan(
@@ -364,8 +503,14 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                         except RecoveryPlanTopologyError as exc:
                             replan_count += 1
+                            for work_unit_id in recovery_before:
+                                recovery_replans_in_epoch[work_unit_id] += 1
                             replan_feedback = str(exc)
-                            pending_replan = replan_count < request.max_replans
+                            pending_replan = (
+                                bool(recovery_before)
+                                if persistent_recovery_active
+                                else replan_count < request.max_replans
+                            )
                             observability.emit(
                                 "recovery_plan_rejected",
                                 orchestration_id=orchestration_id,
@@ -374,7 +519,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             persist()
                             continue
+
                         replan_count += 1
+                        for work_unit_id in recovery_before:
+                            recovery_replans_in_epoch[work_unit_id] += 1
                         replan_feedback = ""
                         self._validate_replanned_edges(
                             old_edges=old_edges,
@@ -401,27 +549,34 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             attempts[work_unit_id] = 0
                             strategy_generations[work_unit_id] = 1
                             revision_feedback[work_unit_id] = (
-                                "Recovery planner added prerequisite work. Preserve "
-                                "the current WIP and previous evidence; after the "
-                                "new prerequisite is satisfied, retry the original "
+                                "Recovery Strategist and planner added prerequisite "
+                                "work. Preserve current WIP and prior evidence; after "
+                                "the prerequisite is accepted, retry the original "
                                 "objective with a fresh strategy cycle.\n"
-                                + outputs.get(work_unit_id, "")
+                                + recovery_guidance.get(work_unit_id, "")
                             )
+                            recovery_replans_in_epoch[work_unit_id] = 0
+                            recovery_guidance.pop(work_unit_id, None)
                             recovery_resumed.add(work_unit_id)
                         for work_unit_id in new_ids:
                             attempts[work_unit_id] = 0
                             strategy_generations[work_unit_id] = 1
+                            recovery_epoch_counts[work_unit_id] = 0
+                            recovery_replans_in_epoch[work_unit_id] = 0
                         unresolved_recovery = recovery_before - recovery_resumed
-                        pending_replan = bool(unresolved_recovery) and (
-                            replan_count < request.max_replans
+                        pending_replan = (
+                            bool(unresolved_recovery)
+                            if persistent_recovery_active
+                            else bool(unresolved_recovery)
+                            and replan_count < request.max_replans
                         )
                         if new_ids:
-                            skill_sets = self._preflight_skill_sets(specs, request.agent)
+                            skill_sets = self._preflight_skill_sets(
+                                specs, request.agent
+                            )
                         self._validate_graph(request, work_units, dependencies)
                         persist()
                         continue
-                    else:
-                        pending_replan = False
 
                 if not unfinished and not active:
                     break
