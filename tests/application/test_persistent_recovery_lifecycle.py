@@ -35,7 +35,11 @@ from infrastructure.claim_registry import InMemoryClaimRegistry
 from infrastructure.incident_registry import FileIncidentRegistry
 
 
-def _wu(unit_id: str) -> PlannedWorkUnit:
+def _wu(
+    unit_id: str,
+    *,
+    reconciles_work_unit_id: str | None = None,
+) -> PlannedWorkUnit:
     return PlannedWorkUnit(
         id=unit_id,
         objective=f"Execute {unit_id}",
@@ -44,6 +48,7 @@ def _wu(unit_id: str) -> PlannedWorkUnit:
         expected_output=("result",),
         acceptance_criteria=("runtime-completed",),
         parallel_safe=True,
+        reconciles_work_unit_id=reconciles_work_unit_id,
     )
 
 
@@ -253,3 +258,92 @@ def test_strategy_exhaustion_reanalyzes_executes_retests_learns_and_closes(tmp_p
     assert report["validation_refs"]
     assert validated.path.is_file()
     assert provisional.path.is_file()
+
+
+def test_accepted_corrective_child_can_formally_reconcile_original_without_rerun(tmp_path):
+    partial = (
+        "Original work returned.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: exact corrective finding"
+    )
+    corrective = (
+        "Exact corrective finding fully satisfied.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+
+    initial = ProjectExecutionPlan(
+        summary="returned original",
+        work_units=(_wu("original"),),
+    )
+    revised = ProjectExecutionPlan(
+        summary="corrective child reconciles original",
+        work_units=(
+            _wu("original"),
+            _wu(
+                "corrective",
+                reconciles_work_unit_id="original",
+            ),
+        ),
+        dependencies=(PlannedDependency("corrective", "original"),),
+    )
+    planner = RecoveryPlanner(initial, revised)
+    runtime = SequencedRuntime(
+        {
+            "original": [partial],
+            "corrective": [corrective],
+        }
+    )
+
+    registry = FileIncidentRegistry(tmp_path / "incidents-reconcile")
+    validated = ValidatedKnowledgeStore(tmp_path / "validated-reconcile.jsonl")
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=FakeRecoveryStrategist(),
+        registry=registry,
+        learning_cycle=AutomaticLearningCycle(
+            registry=registry,
+            learning_store=ProblemSolvingLearningStore(
+                tmp_path / "provisional-reconcile.jsonl"
+            ),
+            validated_store=validated,
+        ),
+    )
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Resolve returned work through exact corrective evidence.",
+            orchestration_id="orch-reconcile-child",
+            project_id="project-a",
+            max_attempts_per_work_unit=1,
+            max_strategies_per_work_unit=1,
+            max_replans=1,
+            persistent_recovery=True,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert [task.work_unit_id for task in runtime.tasks] == [
+        "original",
+        "corrective",
+    ]
+    reconciled = [
+        record
+        for record in result.records
+        if record.work_unit_id == "original"
+        and record.reason == "reconciled-by:corrective"
+    ]
+    assert len(reconciled) == 1
+    assert reconciled[0].verdict == "ACCEPTED"
+    incident = registry.list_all()[0]
+    assert incident.status.value == "CLOSED"
+    assert incident.validation_refs
+    assert validated.path.is_file()
