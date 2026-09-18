@@ -9,6 +9,7 @@ from application.planner_output_contract import (
     planner_output_schema,
 )
 from application.problem_solving_learning import ProblemSolvingKnowledgeBase
+from application.incident_supervisor import IncidentSupervisor
 from application.run_orchestration import (
     RunOrchestration,
     RunOrchestrationError,
@@ -78,10 +79,12 @@ class RuntimeProjectPlanner:
         runner: RunOrchestration,
         skill_profiles: Sequence[SkillProfile],
         knowledge_base: ProblemSolvingKnowledgeBase | None = None,
+        incident_supervisor: IncidentSupervisor | None = None,
     ) -> None:
         self._runner = runner
         self._skill_profiles = tuple(skill_profiles)
         self._knowledge = knowledge_base or ProblemSolvingKnowledgeBase.load_default()
+        self._incident_supervisor = incident_supervisor or IncidentSupervisor()
 
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
         try:
@@ -255,6 +258,7 @@ class RuntimeProjectPlanner:
             "- When local remediation, diagnosis, corrected scope discovery, or prerequisite work can unblock a RECOVERY_REQUIRED Work Unit, add the smallest bounded new Work Unit(s). Dependency direction is source_id -> target_id, where source must complete first. Therefore recovery MUST point new-remediation -> original-recovery-unit. Never point original-recovery-unit -> new-remediation, because that makes remediation unreachable while the original remains RECOVERY_REQUIRED.\n"
             "- Preserve the original RECOVERY_REQUIRED Work Unit so it can be retried only after the new prerequisite is accepted.\n"
             "- New required dependency edges must be real prerequisites and must keep the graph acyclic.\n"
+            "- If a new corrective Work Unit fully satisfies the exact acceptance surface of a returned/recovery Work Unit so that rerunning the original is unnecessary, set reconciles_work_unit_id on the corrective unit to the original id and include the required corrective -> original edge. Use this only for exact evidence-backed reconciliation; otherwise leave it null and retest the original normally.\n"
             "- Prefer direct remediation, fan-in, integration, or verification over duplicating already completed analysis.\n"
             "- If no safe graph change can make progress, return the current plan unchanged rather than inventing work.\n"
             f"{self._planning_rules()}\n\n"
@@ -348,13 +352,15 @@ class RuntimeProjectPlanner:
             )
         )
         guidance = self._knowledge.render_guidance(text)
-        if not guidance:
+        incident_obligations = self._incident_supervisor.render_planner_obligations()
+        sections = [item for item in (guidance, incident_obligations) if item]
+        if not sections:
             return ""
         return (
-            guidance
-            + "\nTreat this experience as process guidance only. It does not "
-            "override project facts, approved requirements, security policy, or "
-            "human approval boundaries."
+            "\n".join(sections)
+            + "\nTreat learned experience and active-incident obligations as process "
+            "guidance only. They do not override project facts, approved requirements, "
+            "security policy, side-effect authority, or human approval boundaries."
         )
 
     @staticmethod
@@ -376,6 +382,7 @@ class RuntimeProjectPlanner:
             "- Read-only units use requested_side_effects=[] and write_paths=[]. File-editing units request filesystem.write. Do not request deploy/publication/destructive effects unless the user objective explicitly authorizes them.\n"
             "- Use acceptance_criteria=[\"runtime-completed\"] unless a literal machine-verifiable marker is truly available. Put semantic verification into explicit testing/review/integration Work Units instead of pretending string matching proves correctness.\n"
             "- Include fan-in integration or verification units when multiple parallel results must be reconciled.\n"
+            "- reconciles_work_unit_id is normally null. Use it only for an evidence-backed corrective unit that can formally satisfy an already-returned/recovery unit without rerunning it, and always pair it with a required corrective -> original dependency edge.\n"
             "- HUMAN_ACTION is for genuine human-only or approval-required work; do not fabricate an agent for it.\n"
             "- requested_skills may contain only ids from AVAILABLE SKILLS. required_capabilities should describe what the Work Unit needs; the orchestrator may minimize the final skill set."
         )
@@ -422,6 +429,7 @@ class RuntimeProjectPlanner:
                     "priority": item.priority,
                     "criticality": item.criticality,
                     "parallel_safe": item.parallel_safe,
+                    "reconciles_work_unit_id": item.reconciles_work_unit_id,
                 }
                 for item in plan.work_units
             ],
@@ -515,6 +523,11 @@ class RuntimeProjectPlanner:
             priority=cls._non_negative_int(entry, "priority", default=0),
             criticality=cls._non_negative_int(entry, "criticality", default=0),
             parallel_safe=cls._bool(entry, "parallel_safe", default=True),
+            reconciles_work_unit_id=(
+                str(entry["reconciles_work_unit_id"]).strip()
+                if entry.get("reconciles_work_unit_id") is not None
+                else None
+            ),
         )
 
     @classmethod

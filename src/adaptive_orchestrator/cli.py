@@ -24,6 +24,10 @@ from application.run_orchestration import (
     RunOrchestrationError,
     RunOrchestrationRequest,
 )
+from application.investigation_strategy import RuntimeRecoveryStrategist
+from application.persistent_recovery import PersistentRecoveryCoordinator
+from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
+from application.orchestration_supervisor import ProjectOrchestrationSupervisor
 from application.run_project_orchestration import (
     ProjectOrchestrationError,
     ProjectOrchestrationRequest,
@@ -123,6 +127,37 @@ def build_parser() -> argparse.ArgumentParser:
     resume_project.add_argument("--skill-registry")
     _add_gateway_arguments(resume_project)
 
+    pause_project = commands.add_parser(
+        "pause-project",
+        help=(
+            "Request a graceful pause for a durably checkpointed project. "
+            "No new workers are dispatched; active work is allowed to settle."
+        ),
+    )
+    pause_project.add_argument("--orchestration-id", required=True)
+    pause_project.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
+    supervise_projects = commands.add_parser(
+        "supervise-projects",
+        help=(
+            "Reconcile non-terminal checkpointed projects and resume only those "
+            "whose controller heartbeat is missing/stale. Use --watch for an "
+            "active persistence loop."
+        ),
+    )
+    supervise_projects.add_argument("--watch", action="store_true")
+    supervise_projects.add_argument("--interval-seconds", type=float, default=15.0)
+    supervise_projects.add_argument("--stale-after-seconds", type=float, default=45.0)
+    supervise_projects.add_argument(
+        "--session-id",
+        default=os.environ.get("ADAPTIVE_SESSION_ID"),
+    )
+    supervise_projects.add_argument("--skill-registry")
+    _add_gateway_arguments(supervise_projects)
+
     doctor = commands.add_parser(
         "doctor",
         help="Report inbound bridge prerequisites without revealing secrets.",
@@ -160,6 +195,7 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
     parser.add_argument("--scope", default="")
+    parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
     parser.add_argument("--constraint", action="append", default=[])
     parser.add_argument("--skill-registry")
@@ -179,6 +215,31 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--max-replans", type=int, default=2)
+    parser.add_argument(
+        "--persistent-recovery",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Keep strategy-exhausted technical work in strategist-guided recovery "
+            "epochs until success, a governed human/external stop, or developer pause."
+        ),
+    )
+    parser.add_argument(
+        "--max-recovery-epochs",
+        type=int,
+        default=0,
+        help="Optional recovery epoch cap; 0 means no fixed cap.",
+    )
+    parser.add_argument("--recovery-strategist-agent")
+    parser.add_argument(
+        "--learning-after-successful-retest",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Automatically trigger incident learning/dissemination after a recovery "
+            "retest reaches ACCEPTED."
+        ),
+    )
     parser.add_argument("--dependency-context-chars", type=int, default=6000)
     _add_policy_arguments(parser)
     _add_gateway_arguments(parser)
@@ -231,6 +292,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _orchestrate(args)
     if args.command == "resume-project":
         return _resume_project(args)
+    if args.command == "pause-project":
+        return _pause_project(args)
+    if args.command == "supervise-projects":
+        return _supervise_projects(args)
 
     parser.error(f"Unsupported command: {args.command}")
     return 2
@@ -510,6 +575,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
             runner=planner_runner,
             skill_profiles=profiles,
         )
+        persistent_recovery = PersistentRecoveryCoordinator(
+            strategist=RuntimeRecoveryStrategist(runner=planner_runner),
+            learning_analyst=RuntimeSuccessfulRetestLearningAnalyst(
+                runner=planner_runner
+            ),
+        )
 
         if args.plan_only:
             planning_request = ProjectPlanningRequest(
@@ -563,6 +634,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             planner=planner,
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
+            persistent_recovery=persistent_recovery,
         ).execute(
             ProjectOrchestrationRequest(
                 objective=args.objective,
@@ -570,6 +642,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 agent=args.agent,
                 planner_agent=args.planner_agent,
                 scope=args.scope,
+                project_id=(
+                    args.project_id
+                    or Path(args.project_root).expanduser().resolve().name
+                ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
                 max_concurrency=args.max_concurrency,
@@ -578,6 +654,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 max_attempts_per_work_unit=args.max_attempts,
                 max_strategies_per_work_unit=args.max_strategies,
                 max_replans=args.max_replans,
+                persistent_recovery=args.persistent_recovery,
+                max_recovery_epochs=args.max_recovery_epochs,
+                recovery_strategist_agent=args.recovery_strategist_agent,
+                learning_after_successful_retest=args.learning_after_successful_retest,
                 dependency_context_chars=args.dependency_context_chars,
                 execution_policy=_execution_policy(args),
                 human_approved=args.human_approved,
@@ -607,6 +687,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    incident_reports = [
+        persistent_recovery.stop_report(incident.id)
+        for incident in persistent_recovery.registry.list_all()
+        if incident.orchestration_id == result.orchestration_id
+    ]
     stop_reasons = sorted(
         {
             record.reason
@@ -638,6 +723,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "replan_count": result.replan_count,
                 "stop_reasons": stop_reasons,
                 "requires_human_decision": requires_human_decision,
+                "incident_reports": incident_reports,
                 "dispatch_generations": [
                     {
                         "generation": wave.wave,
@@ -701,12 +787,19 @@ def _resume_project(args: argparse.Namespace) -> int:
         profiles = load_skill_profiles(registry_path)
         runtime = _runtime(args)
         claims = InMemoryClaimRegistry()
+        recovery_runner = RunOrchestration(
+            runtime=runtime,
+            claim_registry=claims,
+        )
         planner = RuntimeProjectPlanner(
-            runner=RunOrchestration(
-                runtime=runtime,
-                claim_registry=claims,
-            ),
+            runner=recovery_runner,
             skill_profiles=profiles,
+        )
+        persistent_recovery = PersistentRecoveryCoordinator(
+            strategist=RuntimeRecoveryStrategist(runner=recovery_runner),
+            learning_analyst=RuntimeSuccessfulRetestLearningAnalyst(
+                runner=recovery_runner
+            ),
         )
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
@@ -717,6 +810,7 @@ def _resume_project(args: argparse.Namespace) -> int:
             planner=planner,
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
+            persistent_recovery=persistent_recovery,
         ).resume(
             args.orchestration_id,
             observability=observability,
@@ -743,6 +837,11 @@ def _resume_project(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    incident_reports = [
+        persistent_recovery.stop_report(incident.id)
+        for incident in persistent_recovery.registry.list_all()
+        if incident.orchestration_id == result.orchestration_id
+    ]
     print(
         json.dumps(
             {
@@ -752,6 +851,7 @@ def _resume_project(args: argparse.Namespace) -> int:
                 "status": result.status.value,
                 "plan_summary": result.plan_summary,
                 "work_unit_count": result.work_unit_count,
+                "incident_reports": incident_reports,
                 "completed_work_unit_ids": list(result.completed_work_unit_ids),
                 "blocked_work_unit_ids": list(result.blocked_work_unit_ids),
                 "recovery_required_work_unit_ids": list(
@@ -795,6 +895,124 @@ def _resume_project(args: argparse.Namespace) -> int:
         )
     )
     return 0 if completed else 3
+
+
+def _supervise_projects(args: argparse.Namespace) -> int:
+    if args.interval_seconds <= 0:
+        return _print_error(ValueError("interval-seconds must be positive"))
+    if args.stale_after_seconds <= 0:
+        return _print_error(ValueError("stale-after-seconds must be positive"))
+
+    project_root = Path(args.project_root).expanduser().resolve()
+    try:
+        supervisor = ProjectOrchestrationSupervisor(
+            project_root=project_root,
+            stale_after_seconds=args.stale_after_seconds,
+        )
+    except (OSError, ValueError, ProjectOrchestrationCheckpointError) as exc:
+        return _print_error(exc)
+
+    def resume_one(orchestration_id: str) -> None:
+        child = argparse.Namespace(**vars(args))
+        child.command = "resume-project"
+        child.orchestration_id = orchestration_id
+        code = _resume_project(child)
+        if code not in {0, 3}:
+            raise ProjectOrchestrationError(
+                f"Automatic resume failed for {orchestration_id} with exit code {code}."
+            )
+
+    while True:
+        try:
+            directives = supervisor.directives()
+            resumed = supervisor.run_once(resume_one)
+        except (
+            OSError,
+            ProjectOrchestrationError,
+            ProjectOrchestrationCheckpointError,
+            ValueError,
+        ) as exc:
+            return _print_error(exc)
+
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "supervise-projects",
+                    "watch": bool(args.watch),
+                    "resumed_orchestration_ids": list(resumed),
+                    "directives": [
+                        {
+                            "orchestration_id": item.orchestration_id,
+                            "action": item.action,
+                            "reason": item.reason,
+                            "desired_state": item.desired_state,
+                            "active_execution_count": item.active_execution_count,
+                            "last_controller_heartbeat_at": item.last_controller_heartbeat_at,
+                        }
+                        for item in directives
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        if not args.watch:
+            return 0
+        time.sleep(args.interval_seconds)
+
+
+def _pause_project(args: argparse.Namespace) -> int:
+    try:
+        store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        checkpoint = store.load(args.orchestration_id)
+        if checkpoint is None:
+            raise ProjectOrchestrationError(
+                f"No project checkpoint exists for orchestration '{args.orchestration_id}'."
+            )
+        checkpoint["desired_state"] = "PAUSED"
+        store.save(args.orchestration_id, checkpoint)
+        active = checkpoint.get("active_executions")
+        records = checkpoint.get("records")
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "pause-project",
+                    "orchestration_id": args.orchestration_id,
+                    "desired_state": "PAUSED",
+                    "active_executions": active if isinstance(active, list) else [],
+                    "work_unit_states": checkpoint.get("work_unit_states", {}),
+                    "attempts": checkpoint.get("attempts", {}),
+                    "strategy_generations": checkpoint.get(
+                        "strategy_generations", {}
+                    ),
+                    "recovery_epoch_counts": checkpoint.get(
+                        "recovery_epoch_counts", {}
+                    ),
+                    "recent_records": (
+                        records[-10:] if isinstance(records, list) else []
+                    ),
+                    "note": (
+                        "Pause is graceful: no new work is dispatched after the "
+                        "controller observes the request; already active work may "
+                        "settle before the invocation returns PAUSED."
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (
+        OSError,
+        ProjectOrchestrationError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
 
 
 def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:

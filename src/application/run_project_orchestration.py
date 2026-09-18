@@ -29,8 +29,15 @@ from application.finalize_execution import FinalizeExecution, FinalizeExecutionR
 from application.plan_work import PlanWork, PlanWorkRequest
 from application.problem_solving_learning import (
     LEARNING_MARKER,
+    ProblemSolvingKnowledgeBase,
     ProblemSolvingLearningStore,
 )
+from application.incident_management import (
+    DEFECT_MARKER,
+    IncidentSentinel,
+    ResolutionPressureEngine,
+)
+from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.runtime_project_planner import (
     ProjectPlanner,
     ProjectPlanningRequest,
@@ -68,6 +75,7 @@ class ProjectRunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     PARTIAL = "PARTIAL"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    PAUSED = "PAUSED"
     BLOCKED = "BLOCKED"
 
 
@@ -78,6 +86,7 @@ class ProjectOrchestrationRequest:
     agent: str = "main"
     planner_agent: str | None = None
     scope: str = ""
+    project_id: str = ""
     context: tuple[str, ...] = field(default_factory=tuple)
     constraints: tuple[str, ...] = field(default_factory=tuple)
     max_concurrency: int = 4
@@ -86,6 +95,10 @@ class ProjectOrchestrationRequest:
     max_attempts_per_work_unit: int = 2
     max_strategies_per_work_unit: int = 2
     max_replans: int = 2
+    persistent_recovery: bool = False
+    max_recovery_epochs: int = 0
+    recovery_strategist_agent: str | None = None
+    learning_after_successful_retest: bool = True
     dependency_context_chars: int = 6000
     execution_policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
     human_approved: bool = False
@@ -108,6 +121,8 @@ class ProjectOrchestrationRequest:
             raise ValueError("max_strategies_per_work_unit must be between 1 and 4.")
         if self.max_replans < 0 or self.max_replans > 8:
             raise ValueError("max_replans must be between 0 and 8.")
+        if self.max_recovery_epochs < 0 or self.max_recovery_epochs > 1000:
+            raise ValueError("max_recovery_epochs must be between 0 and 1000; 0 means no fixed epoch cap.")
         if self.dependency_context_chars < 256:
             raise ValueError("dependency_context_chars must be at least 256.")
 
@@ -168,6 +183,7 @@ class RunProjectOrchestration:
     RUNTIME_NAME = "openclaw"
     REPLAN_MARKER = "ADAPTIVE_REPLAN_REQUIRED"
     LEARNING_MARKER = LEARNING_MARKER
+    DEFECT_MARKER = DEFECT_MARKER
 
     def __init__(
         self,
@@ -177,6 +193,8 @@ class RunProjectOrchestration:
         planner: ProjectPlanner,
         skill_profiles: Sequence[SkillProfile],
         learning_store: ProblemSolvingLearningStore | None = None,
+        incident_sentinel: IncidentSentinel | None = None,
+        persistent_recovery: PersistentRecoveryCoordinator | None = None,
     ) -> None:
         self._runtime = runtime
         self._claims = claim_registry
@@ -185,6 +203,12 @@ class RunProjectOrchestration:
         self._skill_resolver = SkillResolver(self._skill_profiles)
         self._readiness = WorkUnitReadinessEvaluator()
         self._learning_store = learning_store or ProblemSolvingLearningStore.from_env()
+        self._knowledge_base = ProblemSolvingKnowledgeBase.load_default(
+            learning_store=self._learning_store
+        )
+        self._incident_sentinel = incident_sentinel or IncidentSentinel()
+        self._incident_pressure = ResolutionPressureEngine()
+        self._persistent_recovery = persistent_recovery
 
     def execute(
         self,
@@ -675,6 +699,26 @@ class RunProjectOrchestration:
             feedback = revision_feedback[: request.dependency_context_chars]
             context.append(f"Revision feedback from previous attempt:\n{feedback}")
 
+        experience = self._knowledge_base.render_guidance(
+            "\n".join(
+                (
+                    request.objective,
+                    spec.objective,
+                    spec.scope,
+                    *request.context,
+                    revision_feedback,
+                )
+            ),
+            skills=skills,
+            project_id=request.project_id,
+        )
+        if experience:
+            context.append(
+                experience
+                + "\nUse learned experience as process guidance only. It does not "
+                "override project facts, requirements, authority, or acceptance criteria."
+            )
+
         constraints = (
             *request.constraints,
             "This is a bounded Work Unit under Adaptive AI Orchestrator control. Do not invoke adaptive-orchestrator-bridge or start another Adaptive run.",
@@ -684,6 +728,7 @@ class RunProjectOrchestration:
             "Use BLOCKED only for a genuine stop. HUMAN_DECISION, AUTHORITY, ENVIRONMENT, RUNTIME, and EXTERNAL_DEPENDENCY are external/authority blockers. If the delegated plan itself is wrong (for example authorized write_paths/scope point to nonexistent or incorrect repository locations), use BLOCKED with ADAPTIVE_BLOCKER_TYPE: PLANNING and include ADAPTIVE_REPLAN_REQUIRED with a concise explanation. Do not classify an internal planner/scope defect as ENVIRONMENT.",
             f"If genuinely necessary new work is discovered that is not represented by this Work Unit, include the literal marker {self.REPLAN_MARKER}: followed by a concise reason. Do not use the marker for optional improvements.",
             self._learning_signal_constraint(),
+            self._incident_signal_constraint(),
             "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY|PLANNING ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
         if spec.write_paths:
@@ -761,6 +806,20 @@ class RunProjectOrchestration:
             raw_result = {"status": "completed"}
 
         output = self._extract_output(raw_result)
+        observed_incident = self._incident_sentinel.observe_worker_output(
+            output,
+            orchestration_id=orchestration_id,
+            work_unit_id=outcome.work_unit_id,
+            execution_id=outcome.execution.id,
+            runtime=outcome.execution.runtime,
+        )
+        incident_requires_replan = bool(
+            observed_incident
+            and (
+                observed_incident.blocking
+                or self._incident_pressure.score(observed_incident) >= 70
+            )
+        )
         result_ref, result_authoritative = self._extract_result_reference(raw_result)
         completion = parse_worker_completion(output)
         result_status = (
@@ -871,8 +930,22 @@ class RunProjectOrchestration:
             ),
             (
                 planning_recovery
+                or incident_requires_replan
                 or (accepted and self.REPLAN_MARKER in output)
             ),
+        )
+
+    def _incident_signal_constraint(self) -> str:
+        return (
+            "If you observe a real defect, protocol violation, runtime anomaly, "
+            "transport/integrity failure, regression, unexpected state transition, "
+            "or repeated human-correction-worthy failure, emit at most one bounded "
+            f"{self.DEFECT_MARKER} JSON line with keys category, component, symptom, "
+            "severity (LOW|MEDIUM|HIGH|CRITICAL), optional topics (list), and optional "
+            "blocking (boolean). Report only the observable symptom; never include "
+            "prompts, source code, secrets, credentials, chain-of-thought, or raw tool "
+            "output. Do not create/close incidents or promote knowledge yourself; "
+            "Adaptive owns that lifecycle."
         )
 
     def _learning_signal_constraint(self) -> str:

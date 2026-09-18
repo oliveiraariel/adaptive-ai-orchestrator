@@ -225,6 +225,220 @@ class ProblemSolvingLearningStore:
         return True
 
 
+class ValidatedKnowledgeStore:
+    """Sanitized validated lessons promoted from successful incident lifecycles.
+
+    This runtime store makes validated learning immediately reusable without
+    requiring a source-repository edit during the incident. Source-controlled
+    knowledge/Skill updates remain dissemination targets for durable curation.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    @classmethod
+    def from_env(cls) -> "ValidatedKnowledgeStore":
+        override = os.environ.get("ADAPTIVE_VALIDATED_KNOWLEDGE_LOG", "").strip()
+        if override:
+            return cls(Path(override).expanduser())
+        state_home = os.environ.get("XDG_STATE_HOME", "").strip()
+        root = Path(state_home).expanduser() if state_home else Path.home() / ".local" / "state"
+        return cls(root / "adaptive-ai-orchestrator" / "validated-problem-solving.jsonl")
+
+    def record(
+        self,
+        *,
+        lesson_id: str,
+        title: str,
+        trigger: str,
+        guidance: str,
+        result: str,
+        scope: str,
+        targets: Iterable[str],
+        evidence: Iterable[str],
+        project_id: str = "",
+    ) -> bool:
+        payload = {
+            "lesson_id": lesson_id.strip(),
+            "title": self._clean(title, 240),
+            "trigger": self._clean(trigger, 500),
+            "guidance": self._clean(guidance, 500),
+            "result": self._clean(result, 500),
+            "scope": self._clean(scope, 80),
+            "targets": [self._clean(item, 120) for item in targets if self._clean(item, 120)],
+            "evidence": [self._clean(item, 300) for item in evidence if self._clean(item, 300)],
+            "project_id": self._clean(project_id, 120),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        if (
+            not _STRATEGY_ID_RE.fullmatch(payload["lesson_id"])
+            or not payload["title"]
+            or not payload["trigger"]
+            or not payload["guidance"]
+            or not payload["result"]
+            or not payload["scope"]
+            or not payload["evidence"]
+        ):
+            return False
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        lowered = serialized.casefold()
+        if any(fragment in lowered for fragment in _SENSITIVE_FRAGMENTS):
+            return False
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            prior = self.get(payload["lesson_id"])
+            if prior is not None:
+                prior_targets = {
+                    str(value)
+                    for value in prior.get("targets", [])
+                    if isinstance(value, str)
+                }
+                prior_evidence = {
+                    str(value)
+                    for value in prior.get("evidence", [])
+                    if isinstance(value, str)
+                }
+                payload["targets"] = sorted(
+                    prior_targets | set(payload["targets"])
+                )
+                payload["evidence"] = sorted(
+                    prior_evidence | set(payload["evidence"])
+                )
+                serialized = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                if (
+                    set(payload["targets"]) == prior_targets
+                    and set(payload["evidence"]) == prior_evidence
+                    and str(prior.get("guidance") or "") == payload["guidance"]
+                    and str(prior.get("result") or "") == payload["result"]
+                ):
+                    return True
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(serialized + "\n")
+        except OSError:
+            return False
+        return True
+
+    def get(self, lesson_id: str) -> dict | None:
+        normalized = lesson_id.strip()
+        if not normalized:
+            return None
+        for item in reversed(self._read()):
+            if isinstance(item, dict) and item.get("lesson_id") == normalized:
+                return item
+        return None
+
+    def has_lesson(
+        self,
+        lesson_id: str,
+        *,
+        targets: Iterable[str] = (),
+        evidence: Iterable[str] = (),
+    ) -> bool:
+        item = self.get(lesson_id)
+        if item is None:
+            return False
+        stored_targets = {
+            str(value)
+            for value in item.get("targets", [])
+            if isinstance(value, str)
+        }
+        stored_evidence = {
+            str(value)
+            for value in item.get("evidence", [])
+            if isinstance(value, str)
+        }
+        required_targets = {
+            self._clean(value, 120)
+            for value in targets
+            if self._clean(value, 120)
+        }
+        required_evidence = {
+            self._clean(value, 300)
+            for value in evidence
+            if self._clean(value, 300)
+        }
+        return required_targets <= stored_targets and required_evidence <= stored_evidence
+
+    def relevant(
+        self,
+        text: str,
+        *,
+        skills: Iterable[str] = (),
+        project_id: str = "",
+        limit: int = 4,
+    ) -> tuple[str, ...]:
+        normalized = text.casefold()
+        skill_targets = {f"skills:{item}" for item in skills}
+        ranked: list[tuple[int, str]] = []
+        for item in self._read():
+            if not isinstance(item, dict):
+                continue
+            targets = {
+                str(value)
+                for value in item.get("targets", [])
+                if isinstance(value, str)
+            }
+            item_project = str(item.get("project_id") or "")
+            scope = str(item.get("scope") or "")
+            if scope == "PROJECT_SPECIFIC" and (
+                not project_id or item_project != project_id
+            ):
+                continue
+            if targets and not (
+                "adaptive:problem-solving" in targets
+                or targets & skill_targets
+                or (scope == "PROJECT_SPECIFIC" and "project:knowledge" in targets)
+            ):
+                continue
+            trigger = str(item.get("trigger") or "")
+            guidance = str(item.get("guidance") or "")
+            words = [
+                token
+                for token in re.split(r"\W+", f"{trigger} {guidance}".casefold())
+                if len(token) >= 6
+            ]
+            score = sum(1 for token in set(words) if token in normalized)
+            if score == 0:
+                continue
+            ranked.append(
+                (
+                    score,
+                    (
+                        f"[validated incident learning: {item.get('lesson_id')}] "
+                        f"{item.get('title')}. When {trigger}, prefer: {guidance}. "
+                        f"Validated result: {item.get('result')}."
+                    ),
+                )
+            )
+        ranked.sort(key=lambda row: -row[0])
+        return tuple(row[1] for row in ranked[:limit])
+
+    def _read(self) -> list[dict]:
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        rows: list[dict] = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+        return rows
+
+    @staticmethod
+    def _clean(value: object, limit: int) -> str:
+        if not isinstance(value, str):
+            return ""
+        return " ".join(value.replace("\r", " ").replace("\n", " ").split())[:limit]
+
+
 class ProblemSolvingKnowledgeBase:
     """Validated repository knowledge plus conservative repeated runtime experience."""
 
@@ -233,22 +447,29 @@ class ProblemSolvingKnowledgeBase:
         strategies: Iterable[ProblemSolvingStrategy] = (),
         *,
         learning_store: ProblemSolvingLearningStore | None = None,
+        validated_store: ValidatedKnowledgeStore | None = None,
     ) -> None:
         self._strategies = tuple(strategies)
         self.learning_store = learning_store or ProblemSolvingLearningStore.from_env()
+        self.validated_store = validated_store or ValidatedKnowledgeStore.from_env()
 
     @classmethod
     def load_default(
         cls,
         *,
         learning_store: ProblemSolvingLearningStore | None = None,
+        validated_store: ValidatedKnowledgeStore | None = None,
     ) -> "ProblemSolvingKnowledgeBase":
         override = os.environ.get("ADAPTIVE_PROBLEM_SOLVING_KNOWLEDGE", "").strip()
         if override:
             path = Path(override).expanduser()
         else:
             path = Path(__file__).resolve().parents[2] / "knowledge" / "problem-solving-strategies.json"
-        return cls.load(path, learning_store=learning_store)
+        return cls.load(
+            path,
+            learning_store=learning_store,
+            validated_store=validated_store,
+        )
 
     @classmethod
     def load(
@@ -256,11 +477,15 @@ class ProblemSolvingKnowledgeBase:
         path: Path,
         *,
         learning_store: ProblemSolvingLearningStore | None = None,
+        validated_store: ValidatedKnowledgeStore | None = None,
     ) -> "ProblemSolvingKnowledgeBase":
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return cls(learning_store=learning_store)
+            return cls(
+                learning_store=learning_store,
+                validated_store=validated_store,
+            )
 
         entries = payload.get("strategies", []) if isinstance(payload, dict) else []
         strategies: list[ProblemSolvingStrategy] = []
@@ -282,9 +507,20 @@ class ProblemSolvingKnowledgeBase:
             if not strategy.id or not strategy.guidance:
                 continue
             strategies.append(strategy)
-        return cls(strategies, learning_store=learning_store)
+        return cls(
+            strategies,
+            learning_store=learning_store,
+            validated_store=validated_store,
+        )
 
-    def render_guidance(self, text: str, *, limit: int = 4) -> str:
+    def render_guidance(
+        self,
+        text: str,
+        *,
+        limit: int = 4,
+        skills: Iterable[str] = (),
+        project_id: str = "",
+    ) -> str:
         ranked = [
             (strategy.relevance(text), strategy)
             for strategy in self._strategies
@@ -296,6 +532,16 @@ class ProblemSolvingKnowledgeBase:
             lines.append(f"- VALIDATED STRATEGY [{strategy.id}]: {strategy.title}")
             lines.extend(f"  * {item}" for item in strategy.guidance)
             lines.extend(f"  * Safety: {item}" for item in strategy.safety)
+
+        validated_runtime = self.validated_store.relevant(
+            text,
+            skills=skills,
+            project_id=project_id,
+            limit=limit,
+        )
+        if validated_runtime:
+            lines.append("- VALIDATED INCIDENT LEARNING (runtime promoted):")
+            lines.extend(f"  * {item}" for item in validated_runtime)
 
         provisional = self.learning_store.repeated_guidance(text)
         if provisional:

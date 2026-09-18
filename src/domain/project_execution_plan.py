@@ -46,6 +46,7 @@ class PlannedWorkUnit:
     priority: int = 0
     criticality: int = 0
     parallel_safe: bool = True
+    reconciles_work_unit_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id.strip():
@@ -66,6 +67,16 @@ class PlannedWorkUnit:
             raise ProjectExecutionPlanError(
                 f"Planned Work Unit '{self.id}' must declare acceptance criteria."
             )
+        if self.reconciles_work_unit_id is not None:
+            target = self.reconciles_work_unit_id.strip()
+            if not target:
+                raise ProjectExecutionPlanError(
+                    f"Planned Work Unit '{self.id}' reconciliation target must not be blank."
+                )
+            if target == self.id:
+                raise ProjectExecutionPlanError(
+                    f"Planned Work Unit '{self.id}' cannot reconcile itself."
+                )
         if self.priority < 0 or self.criticality < 0:
             raise ProjectExecutionPlanError(
                 f"Planned Work Unit '{self.id}' priority/criticality must be non-negative."
@@ -138,6 +149,15 @@ class ProjectExecutionPlan:
             raise ProjectExecutionPlanError("Planned Work Unit ids must be unique.")
 
         known = set(ids)
+        for work_unit in self.work_units:
+            if (
+                work_unit.reconciles_work_unit_id is not None
+                and work_unit.reconciles_work_unit_id not in known
+            ):
+                raise ProjectExecutionPlanError(
+                    f"Planned Work Unit '{work_unit.id}' reconciles unknown Work Unit "
+                    f"'{work_unit.reconciles_work_unit_id}'."
+                )
         for dependency in self.dependencies:
             if dependency.source_id not in known:
                 raise ProjectExecutionPlanError(
@@ -146,6 +166,22 @@ class ProjectExecutionPlan:
             if dependency.target_id not in known:
                 raise ProjectExecutionPlanError(
                     f"Unknown dependency target '{dependency.target_id}'."
+                )
+
+        required_edges = {
+            (item.source_id, item.target_id)
+            for item in self.dependencies
+            if item.required
+        }
+        for work_unit in self.work_units:
+            target = work_unit.reconciles_work_unit_id
+            if target is None:
+                continue
+            if (work_unit.id, target) not in required_edges:
+                raise ProjectExecutionPlanError(
+                    f"Planned Work Unit '{work_unit.id}' declares reconciliation of "
+                    f"'{target}' but lacks required prerequisite edge "
+                    f"'{work_unit.id}->{target}'."
                 )
 
         self._ensure_required_dependencies_are_acyclic(known)

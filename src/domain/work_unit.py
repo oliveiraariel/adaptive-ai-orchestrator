@@ -112,6 +112,22 @@ class WorkUnit:
             target=WorkUnitState.REVISION_REQUIRED,
         )
 
+    def complete_by_reconciliation(self) -> None:
+        """Complete returned/recovery work from an accepted corrective result.
+
+        This transition is intentionally separate from normal execution
+        finalization. The orchestrator may use it only when the plan explicitly
+        declares that another accepted Work Unit reconciles this exact acceptance
+        surface.
+        """
+        self._transition(
+            allowed={
+                WorkUnitState.REVISION_REQUIRED,
+                WorkUnitState.RECOVERY_REQUIRED,
+            },
+            target=WorkUnitState.COMPLETED,
+        )
+
     def reopen(self) -> None:
         self._transition(
             allowed={WorkUnitState.COMPLETED},

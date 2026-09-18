@@ -39,12 +39,18 @@ class JsonlObservabilitySink:
         "failure_category", "failure_code", "phase",
         "heartbeat_sequence", "last_heartbeat_at", "last_progress_at",
         "silence_seconds", "action", "reason", "terminal", "controller_state",
+        "incident_id", "recovery_epoch", "recommended_path_id", "disposition",
+        "reconciled_by_work_unit_id",
+        "confidence", "scope", "targets", "runtime_candidate_recorded",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
         "worker_dispatched", "model_selected", "worker_started",
         "work_unit_status_changed", "worker_escalated", "evaluation_finalized",
         "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
+        "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
+        "automatic_learning_triggered", "automatic_learning_failed",
+        "orchestration_paused",
         "orchestration_heartbeat", "orchestration_terminalized",
         "orchestration_completed",
     }
@@ -64,6 +70,8 @@ class JsonlObservabilitySink:
             "model_selected", "worker_started", "work_unit_status_changed",
             "worker_escalated", "evaluation_finalized",
             "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
+            "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
+            "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (
             not isinstance(fields.get("work_unit_id"), str)

@@ -15,6 +15,7 @@ authority_model:
     - specifications/orchestrator/ORCHESTRATOR-REQUIREMENTS.md
     - specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md
     - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+    - docs/architecture/RECOVERY-LOOP.md
     - docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md
     - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
     - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
@@ -44,6 +45,7 @@ retrieval:
     strategy: section-level-retrieval
     paths:
       - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
+      - docs/architecture/RECOVERY-LOOP.md
       - docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md
       - docs/architecture/ORCHESTRATOR-*.md
   exclude:
@@ -73,6 +75,7 @@ artifact_groups:
     default_retrieval: targeted
     paths:
       - docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md
+      - docs/architecture/RECOVERY-LOOP.md
       - docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md
       - docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md
       - docs/architecture/ORCHESTRATOR-CAPABILITIES.md

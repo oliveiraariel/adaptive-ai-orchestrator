@@ -2,25 +2,96 @@
 
 [English](README.md) | [Português (Brasil)](README.pt-BR.md)
 
-## Runtime observability
+**Multi-agent orchestration for planning, executing, evaluating, recovering, and learning across software application projects.**
 
-Normal CLI executions used by the OpenClaw bridge automatically publish the
-allowlisted lifecycle telemetry to the shared persistent JSONL source:
-
-`~/.local/state/adaptive-ai-orchestrator/observability.jsonl`
-
-The location follows `${XDG_STATE_HOME}/adaptive-ai-orchestrator/observability.jsonl`
-when `XDG_STATE_HOME` is set. `ADAPTIVE_OBSERVABILITY_LOG` remains an optional
-development, test, or diagnostic override. No shell activation or manual export
-is required for the normal bridge composition root. The sink excludes prompts,
-transcripts, reasoning, raw results, credentials, and arbitrary file content.
-
-An adaptive AI orchestration system for analyzing projects, decomposing work, coordinating agents, selecting appropriate AI models and resources, evaluating results, replanning execution, and preserving project continuity.
-
-The **Adaptive AI Orchestrator** is a software system — not a single agent, skill, or model router — designed to provide a structured orchestration layer between developers, AI agents, skills, models, tools, and external agent runtimes.
+The **Adaptive AI Orchestrator** is a software system — not a single agent, skill, or model router — that provides a structured orchestration layer between developers, AI agents, skills, models, tools, and external agent runtimes.
 
 > **Development status:** Active development  
 > **Production status:** Not production-ready
+
+## Overview
+
+The Adaptive AI Orchestrator is designed to reason about how complex work should be organized and executed with AI.
+
+Rather than acting as a single agent or concentrating all responsibilities into a single skill, the Orchestrator provides a coordination and decision layer capable of reasoning about:
+
+- project context;
+- requirements and constraints;
+- task decomposition;
+- dependencies;
+- agent responsibilities;
+- skill requirements;
+- model and resource selection;
+- execution strategies;
+- cost and latency;
+- result quality;
+- replanning;
+- continuity;
+- evidence;
+- historical outcomes;
+- operational learning.
+
+The developer remains the final authority over important project decisions.
+
+---
+
+## Key capabilities
+
+- project/context analysis and governed Work Graph planning;
+- dynamic multi-agent execution with dependency-aware parallelism and fan-in;
+- capability/Skill/model/resource selection;
+- independent result evaluation and bounded replanning;
+- **Recovery Loop** for persistent recovery, retest, and automatic learning;
+- durable inter-component communication through **AMEP v1**;
+- execution integrity, liveness reconciliation, continuity, and observability;
+- runtime/provider diagnostics and experience-guided problem solving.
+
+## Core Idea
+
+The project follows a workflow similar to:
+
+```text
+PROJECT
+   ↓
+Context Analysis
+   ↓
+Structural Analysis
+   ↓
+Planning / Work Graph
+   ↓
+Ready Frontier
+   ↓
+Agent & Skill Analysis
+   ↓
+Parallel-safe Delegation
+   ↓
+Independent Worker Sessions
+   ↓
+First Completion → Evaluate → Refill Frontier
+   ↓
+Fan-in / Dependency Advancement
+   ↓
+Bounded Replanning
+   ↓
+Continuity & Evidence
+   ↺
+```
+
+## Documentation map
+
+The repository keeps presentation, current operational context, architecture, process, and historical evidence separate so new capabilities do not displace the project identity.
+
+- `README.md` / `README.pt-BR.md` — stable project landing pages; summarize rather than accumulate implementation chronology;
+- `CONTEXT.md` — current resume entry point for humans and AI agents;
+- `PROJECT-KNOWLEDGE-MANIFEST.yaml` — authority/retrieval map for project knowledge;
+- `docs/architecture/` — canonical architecture and subsystem contracts, including [`RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md);
+- `docs/process/` — development, governance, continuity, gates, and execution process;
+- `docs/prompts/` — operational prompts;
+- `docs/runbooks/`, `docs/incidents/`, and `docs/reviews/` — diagnostics, field evidence, and reviews;
+- `knowledge/` — governed reusable operational/problem-solving knowledge;
+- `specifications/` — normative project/protocol specifications.
+
+New features should normally update the relevant canonical document and add only a concise summary/link here, rather than inserting a new detailed section above the project overview.
 
 ---
 
@@ -49,6 +120,8 @@ The bootstrap installs or synchronizes the repositories, prepares Python, OpenCl
 
 ---
 
+---
+
 ## Starting projects through OpenClaw
 
 Generic master prompts for future projects live under [`docs/prompts/`](docs/prompts/README.md).
@@ -64,29 +137,84 @@ When a project has its own governance and documentation, prefer that repository'
 
 ---
 
-## Overview
+---
 
-The Adaptive AI Orchestrator is designed to reason about how complex work should be organized and executed with AI.
+## Scalable multiagent project execution — v0.4
 
-Rather than acting as a single agent or concentrating all responsibilities into a single skill, the Orchestrator provides a coordination and decision layer capable of reasoning about:
+Version 0.4 adds the executable higher-level project loop above the earlier one-Work-Unit inbound slice.
 
-- project context;
-- requirements and constraints;
-- task decomposition;
-- dependencies;
-- agent responsibilities;
-- skill requirements;
-- model and resource selection;
-- execution strategies;
-- cost and latency;
-- result quality;
-- replanning;
-- continuity;
-- evidence;
-- historical outcomes;
-- operational learning.
+A broad objective can now be converted into a validated acyclic Work Graph. Adaptive recomputes the ready frontier and dynamically creates independent logical worker sessions for useful ready Work Units, up to a bounded concurrency limit.
 
-The developer remains the final authority over important project decisions.
+This supports lateral combinations such as:
+
+```text
+backend + backend
+frontend + frontend
+backend + frontend
+implementation + testing/review
+```
+
+when real prerequisites and workspace safety allow them.
+
+A stable API/interface contract can therefore unlock backend and frontend work at the same time rather than forcing the whole backend to finish first. Parallel results can converge into explicit integration/testing/review Work Units.
+
+The scheduler is **continuously replenished**: when one worker finishes and its accepted result unlocks new work, Adaptive can fill the free slot immediately while unrelated workers from earlier dispatches continue running. Project execution is not forced through barrier-style batches.
+
+The worker count is **not fixed**. A frontier can use 2, 3, 4, 6 or more logical workers up to the configured/policy limit, but the planner is instructed to avoid token-expensive micro-fragmentation and to use only useful independent workers.
+
+Workers are independent runtime sessions, not automatically persisted OpenClaw agent profiles. When several workers share one checkout, filesystem writers require literal repository-relative write scopes. Missing/unsafe/overlapping scopes are rejected or serialized, including conflicts against workers already active from earlier dispatch generations. This version does not claim automatic Git-worktree/container isolation.
+
+See [`docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`](docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md) and [`specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md`](specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md) for the current project-execution contract.
+
+---
+
+## Recovery Loop
+
+**Recovery Loop** is the canonical conversational short name for the **Adaptive Persistent Recovery & Learning Lifecycle**.
+
+It is a subsystem coordinated by the Orchestrator, not a separate authority layer. Normal project tasks do not need to explicitly invoke it: Adaptive activates recovery/learning behavior proactively when retrabalho, strategy exhaustion, retest, or learning conditions require it.
+
+The canonical architecture document is [`docs/architecture/RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md).
+
+---
+
+## Execution integrity
+
+Field operation exposed several important distinctions that are now part of the executable contract:
+
+- runtime completion is not semantic completion;
+- `ACCEPTED_WITH_CONDITIONS` and worker-reported `PARTIAL` remain non-terminal;
+- project workers emit a compact `ADAPTIVE_WORK_STATUS` / blocker / unmet-criteria footer so unfinished work cannot be silently promoted to complete;
+- missing implementation or wiring that is already authorized is work, not a blocker;
+- repeated unsuccessful attempts trip a bounded circuit-breaker reason instead of creating endless equivalent retries;
+- long independent checklists should be decomposed into finishable, evidence-gated Work Units;
+- stale persisted `RUNNING` state must be reconciled against current runtime/session evidence before redispatch.
+
+The incident-derived rationale and cross-layer lessons are recorded in [`docs/execution-integrity-field-learning-2026-09-13.md`](docs/execution-integrity-field-learning-2026-09-13.md).
+
+---
+
+## Durable inter-component communication — AMEP v1
+
+Adaptive uses the **Adaptive Message Exchange Protocol (AMEP) v1** for
+machine-significant inter-component communication. Large Planner, Worker and
+other agent payloads live under the governed project's project-local
+`.adaptive/messages/` store; the OpenClaw/runtime channel carries only a small
+verified message reference.
+
+This establishes one communication rule for Planner, Adaptive, Workers,
+Evaluator, Sentinel/watchers and future subagents:
+
+`complete payload -> atomic persistence -> manifest/hash -> compact MESSAGE_REF -> recipient verification`
+
+Chat/history remains useful for progress and human presentation, but it is not
+the authoritative home of large machine payloads. Worker Protocol v1 embeds the
+AMEP contract as a mandatory hashed invariant.
+
+See
+[`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`](docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md)
+and the transport schemas under
+[`specifications/protocols/`](specifications/protocols/).
 
 ---
 
@@ -115,6 +243,8 @@ governed troubleshooting knowledge lives in
 `knowledge/provider-operational-lessons.json`.
 
 See [`docs/runtime-intelligence.md`](docs/runtime-intelligence.md).
+
+---
 
 ## Experience-guided problem solving
 
@@ -171,99 +301,22 @@ manual-only premium models
 Adaptive-routed Luna work fails closed when the configured OpenAI OAuth profile
 is missing, preventing accidental fallback to a paid OpenAI Platform API key.
 
-## Execution integrity
+---
 
-Field operation exposed several important distinctions that are now part of the executable contract:
+## Runtime observability
 
-- runtime completion is not semantic completion;
-- `ACCEPTED_WITH_CONDITIONS` and worker-reported `PARTIAL` remain non-terminal;
-- project workers emit a compact `ADAPTIVE_WORK_STATUS` / blocker / unmet-criteria footer so unfinished work cannot be silently promoted to complete;
-- missing implementation or wiring that is already authorized is work, not a blocker;
-- repeated unsuccessful attempts trip a bounded circuit-breaker reason instead of creating endless equivalent retries;
-- long independent checklists should be decomposed into finishable, evidence-gated Work Units;
-- stale persisted `RUNNING` state must be reconciled against current runtime/session evidence before redispatch.
+Normal CLI executions used by the OpenClaw bridge automatically publish the
+allowlisted lifecycle telemetry to the shared persistent JSONL source:
 
-The incident-derived rationale and cross-layer lessons are recorded in [`docs/execution-integrity-field-learning-2026-09-13.md`](docs/execution-integrity-field-learning-2026-09-13.md).
+`~/.local/state/adaptive-ai-orchestrator/observability.jsonl`
 
-## Durable inter-component communication — AMEP v1
+The location follows `${XDG_STATE_HOME}/adaptive-ai-orchestrator/observability.jsonl`
+when `XDG_STATE_HOME` is set. `ADAPTIVE_OBSERVABILITY_LOG` remains an optional
+development, test, or diagnostic override. No shell activation or manual export
+is required for the normal bridge composition root. The sink excludes prompts,
+transcripts, reasoning, raw results, credentials, and arbitrary file content.
 
-Adaptive uses the **Adaptive Message Exchange Protocol (AMEP) v1** for
-machine-significant inter-component communication. Large Planner, Worker and
-other agent payloads live under the governed project's project-local
-`.adaptive/messages/` store; the OpenClaw/runtime channel carries only a small
-verified message reference.
-
-This establishes one communication rule for Planner, Adaptive, Workers,
-Evaluator, Sentinel/watchers and future subagents:
-
-`complete payload -> atomic persistence -> manifest/hash -> compact MESSAGE_REF -> recipient verification`
-
-Chat/history remains useful for progress and human presentation, but it is not
-the authoritative home of large machine payloads. Worker Protocol v1 embeds the
-AMEP contract as a mandatory hashed invariant.
-
-See
-[`docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`](docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md)
-and the transport schemas under
-[`specifications/protocols/`](specifications/protocols/).
-
-## Core Idea
-
-The project follows a workflow similar to:
-
-```text
-PROJECT
-   ↓
-Context Analysis
-   ↓
-Structural Analysis
-   ↓
-Planning / Work Graph
-   ↓
-Ready Frontier
-   ↓
-Agent & Skill Analysis
-   ↓
-Parallel-safe Delegation
-   ↓
-Independent Worker Sessions
-   ↓
-First Completion → Evaluate → Refill Frontier
-   ↓
-Fan-in / Dependency Advancement
-   ↓
-Bounded Replanning
-   ↓
-Continuity & Evidence
-   ↺
-```
-
-## Scalable multiagent project execution — v0.4
-
-Version 0.4 adds the executable higher-level project loop above the earlier one-Work-Unit inbound slice.
-
-A broad objective can now be converted into a validated acyclic Work Graph. Adaptive recomputes the ready frontier and dynamically creates independent logical worker sessions for useful ready Work Units, up to a bounded concurrency limit.
-
-This supports lateral combinations such as:
-
-```text
-backend + backend
-frontend + frontend
-backend + frontend
-implementation + testing/review
-```
-
-when real prerequisites and workspace safety allow them.
-
-A stable API/interface contract can therefore unlock backend and frontend work at the same time rather than forcing the whole backend to finish first. Parallel results can converge into explicit integration/testing/review Work Units.
-
-The scheduler is **continuously replenished**: when one worker finishes and its accepted result unlocks new work, Adaptive can fill the free slot immediately while unrelated workers from earlier dispatches continue running. Project execution is not forced through barrier-style batches.
-
-The worker count is **not fixed**. A frontier can use 2, 3, 4, 6 or more logical workers up to the configured/policy limit, but the planner is instructed to avoid token-expensive micro-fragmentation and to use only useful independent workers.
-
-Workers are independent runtime sessions, not automatically persisted OpenClaw agent profiles. When several workers share one checkout, filesystem writers require literal repository-relative write scopes. Missing/unsafe/overlapping scopes are rejected or serialized, including conflicts against workers already active from earlier dispatch generations. This version does not claim automatic Git-worktree/container isolation.
-
-See [`docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`](docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md) and [`specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md`](specifications/orchestrator/ORCHESTRATOR-MULTIAGENT-REQUIREMENTS-v0.4.md) for the current project-execution contract.
+---
 
 ## Local development
 
@@ -278,6 +331,8 @@ python -m pytest -q
 
 Editable-install metadata is intentionally ignored by Git through `*.egg-info/`.
 
+---
+
 ## Reproducible machine bootstrap
 
 A new Debian/Ubuntu/Linux Mint machine can reconstruct the Adaptive + Ariel Agent Skills + OpenClaw environment with one command:
@@ -291,6 +346,8 @@ The bootstrap installs/synchronizes the repositories and Python environment, ins
 A fresh computer still requires the user's own interactive model-provider authentication when OpenClaw onboarding requests it; credentials are never stored in Git.
 
 See [`bootstrap/README.md`](bootstrap/README.md) for the full recovery, update, verification, security, and dry-run contract.
+
+---
 
 ## CLI entrypoint
 
@@ -351,11 +408,15 @@ Project mode provides:
 
 A deterministic `--plan-file` can bypass AI planning for tests and E2E validation while exercising the same execution loop.
 
+---
+
 ## Gateway credentials
 
 OpenClaw Gateway credentials are read from the process environment/host secret injection and are never printed by the CLI. `OPENCLAW_GATEWAY_URL` defaults to `ws://127.0.0.1:18789` when unset.
 
 The CLI normally leaves model/provider selection to the configured OpenClaw agent policy rather than forcing overrides.
+
+---
 
 ## OpenClaw integration direction
 

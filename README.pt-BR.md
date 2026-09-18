@@ -2,29 +2,70 @@
 
 [English](README.md) | **Português (Brasil)**
 
-O **Adaptive AI Orchestrator** é um sistema de orquestração de IA para analisar projetos, decompor trabalho, coordenar agentes, selecionar modelos e recursos, avaliar resultados, replanejar execuções e preservar continuidade.
+**Orquestração multiagente para planejar, executar, avaliar, recuperar e aprender durante projetos de aplicações de software.**
+
+O **Adaptive AI Orchestrator** é um sistema de software — não um único agente, uma única Skill ou apenas um roteador de modelos — que fornece uma camada estruturada de coordenação entre desenvolvedores, agentes de IA, Skills, modelos, ferramentas e runtimes externos.
 
 > **Status de desenvolvimento:** desenvolvimento ativo  
 > **Status de produção:** ainda não pronto para produção
 
 ## Visão geral
 
-O Adaptive não é um único agente, uma única skill ou apenas um roteador de modelos. Ele funciona como uma camada estruturada de coordenação entre desenvolvedores, agentes de IA, skills, modelos, ferramentas e runtimes externos.
-
 Entre suas responsabilidades estão:
 
-- análise de contexto e restrições;
-- decomposição de trabalho em Work Units;
-- coordenação multiagente;
-- seleção de skills e recursos;
-- controle de dependências e paralelismo;
-- avaliação de resultados;
-- replanejamento;
-- continuidade e evidências;
-- observabilidade;
-- aprendizado operacional.
+- análise de contexto, objetivos, requisitos e restrições;
+- decomposição de trabalho em Work Units e Work Graph;
+- coordenação multiagente e paralelismo orientado por dependências;
+- seleção de Skills, modelos e recursos;
+- avaliação independente de resultados;
+- replanejamento e recuperação persistente;
+- **Recovery Loop** para retrabalho, busca de solução, reteste e aprendizagem automática;
+- continuidade, evidências e observabilidade;
+- diagnóstico de runtime/provider e aprendizagem operacional.
 
-O desenvolvedor continua sendo a autoridade final para decisões importantes do projeto.
+O desenvolvedor continua sendo a autoridade final para decisões importantes do projeto. O Orchestrator permanece a autoridade central de execução; subsistemas como o Recovery Loop são coordenados por ele e não o substituem.
+
+## Fluxo de alto nível
+
+```text
+Projeto
+→ Análise de contexto
+→ Planejamento / Work Graph
+→ Ready Frontier
+→ Delegação paralela segura
+→ Workers independentes
+→ Avaliação
+→ Fan-in / dependências
+→ Replanejamento / Recovery Loop quando necessário
+→ Reteste
+→ Aprendizagem validada
+→ Continuidade e evidências
+```
+
+## Mapa da documentação
+
+A organização documental separa apresentação, contexto operacional atual, arquitetura, processo e histórico. Assim, novas funcionalidades não devem empurrar a descrição principal do projeto para baixo no README.
+
+- `README.md` / `README.pt-BR.md` — páginas estáveis de apresentação do projeto;
+- `CONTEXT.md` — ponto atual de retomada para humanos e agentes de IA;
+- `PROJECT-KNOWLEDGE-MANIFEST.yaml` — mapa de autoridade e recuperação do conhecimento;
+- `docs/architecture/` — arquitetura canônica e contratos de subsistemas;
+- [`docs/architecture/RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md) — documento canônico do Recovery Loop;
+- `docs/process/` — governança, continuidade, gates e processo de execução;
+- `docs/prompts/` — prompts operacionais;
+- `docs/runbooks/`, `docs/incidents/` e `docs/reviews/` — diagnóstico, evidência de campo e revisões;
+- `knowledge/` — conhecimento operacional reutilizável e governado;
+- `specifications/` — especificações normativas do projeto e protocolos.
+
+A regra de apresentação é: **uma nova capacidade deve atualizar seu documento canônico e receber apenas um resumo/link no README**, em vez de criar uma nova seção detalhada antes da visão geral.
+
+## Recovery Loop
+
+**Recovery Loop** é o nome curto canônico de **Adaptive Persistent Recovery & Learning Lifecycle**.
+
+É o subsistema coordenado pelo Orchestrator para tratamento persistente de retrabalho, conflitos técnicos, `RETURNED`, esgotamento de estratégias, novas tentativas, retestes e aprendizagem automática. Uma tarefa normal não precisa ser solicitada “pelo Recovery Loop”: o Orchestrator deve ativá-lo proativamente quando a evidência de execução indicar necessidade.
+
+Documento principal: [`docs/architecture/RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md).
 
 ## Nova máquina
 
@@ -54,20 +95,9 @@ O histórico de chat continua útil para progresso e apresentação humana, mas 
 
 ## Execução multiagente
 
-O fluxo de alto nível é:
+O Adaptive utiliza Work Graph, Ready Frontier, workers independentes, avaliação contínua e fan-in para explorar paralelismo útil sem transformar o número de workers em objetivo.
 
-```text
-Projeto
-→ Análise de contexto
-→ Planejamento / Work Graph
-→ Ready Frontier
-→ Delegação paralela segura
-→ Workers independentes
-→ Avaliação
-→ Fan-in / dependências
-→ Replanejamento limitado
-→ Continuidade e evidências
-```
+O `max_concurrency` é um teto, não uma meta. Dependências reais, segurança de escrita, qualidade de resultado e custo de coordenação prevalecem sobre maximizar paralelismo.
 
 ## Desenvolvimento local
 
@@ -86,10 +116,10 @@ O `README.md` em inglês é a referência principal de apresentação e contém 
 
 Pontos importantes:
 
-- `docs/architecture/` — arquitetura;
-- `docs/prompts/` — prompts operacionais;
-- `docs/runtime-intelligence.md` — diagnóstico de runtime;
+- `docs/architecture/RECOVERY-LOOP.md` — Recovery Loop;
+- `docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md` — AMEP v1;
+- `docs/runtime-intelligence.md` — diagnóstico de runtime/provider;
 - `docs/problem-solving-learning.md` — aprendizado orientado por experiência;
-- `docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md` — AMEP v1.
+- `docs/prompts/` — prompts operacionais.
 
 Esta página em português existe como ponto de entrada acessível e resumido. A documentação normativa permanece nos arquivos técnicos correspondentes.

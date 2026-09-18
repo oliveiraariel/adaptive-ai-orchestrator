@@ -85,6 +85,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 f"No project checkpoint exists for orchestration '{orchestration_id}'."
             )
         request = self._request_from_checkpoint(checkpoint)
+        if checkpoint.get("desired_state") == "PAUSED":
+            checkpoint["desired_state"] = "RUNNING"
+            self._checkpoint_store.save(orchestration_id, checkpoint)
         return self._execute(
             request,
             observability=observability,
@@ -162,6 +165,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             dispatch_generation = 0
             pending_replan = False
             replan_feedback = ""
+            recovery_epoch_counts = {work_unit_id: 0 for work_unit_id in work_units}
+            recovery_replans_in_epoch = {work_unit_id: 0 for work_unit_id in work_units}
+            recovery_guidance: dict[str, str] = {}
             recovered_active: list[dict] = []
         else:
             self._restore_work_unit_states(work_units, checkpoint)
@@ -196,6 +202,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
             pending_replan = bool(checkpoint.get("pending_replan", False))
             replan_feedback = str(checkpoint.get("replan_feedback") or "")
+            recovery_epoch_counts = self._restore_optional_int_map(
+                checkpoint, "recovery_epoch_counts", tuple(work_units), default=0
+            )
+            recovery_replans_in_epoch = self._restore_optional_int_map(
+                checkpoint, "recovery_replans_in_epoch", tuple(work_units), default=0
+            )
+            recovery_guidance = self._restore_str_map_optional(
+                checkpoint, "recovery_guidance"
+            )
             recovered_active = self._require_list(
                 checkpoint, "active_executions"
             )
@@ -239,6 +254,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 dispatch_generation=dispatch_generation,
                 pending_replan=pending_replan,
                 replan_feedback=replan_feedback,
+                recovery_epoch_counts=recovery_epoch_counts,
+                recovery_replans_in_epoch=recovery_replans_in_epoch,
+                recovery_guidance=recovery_guidance,
                 active=tuple(active.values()),
                 terminal=terminal,
             )
@@ -317,23 +335,174 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 persist()
             while True:
                 unfinished = self._unfinished(work_units)
+                pause_requested = self._pause_requested(orchestration_id)
+                if pause_requested and not active:
+                    persist(terminal=False)
+                    observability.emit(
+                        "orchestration_paused",
+                        orchestration_id=orchestration_id,
+                        status="PAUSED",
+                        terminal=False,
+                        reason="developer-requested-pause",
+                    )
+                    break
 
                 # A replan signal is itself pending orchestration work. Process it
                 # before declaring the current graph terminal, because the worker
                 # that requested replanning may have been the last current Work
                 # Unit and the replan may legitimately add the next required unit.
                 if pending_replan and not active:
-                    if replan_count >= request.max_replans:
-                        pending_replan = False
-                    elif hasattr(self._planner, "replan"):
-                        old_edges = {
-                            (dependency.source_id, dependency.target_id, dependency.required)
-                            for dependency in dependencies
-                        }
+                    recovery_before = {
+                        work_unit_id
+                        for work_unit_id, work_unit in work_units.items()
+                        if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                    }
+                    persistent_recovery_active = bool(
+                        recovery_before
+                        and request.persistent_recovery
+                        and self._persistent_recovery is not None
+                    )
+
+                    if persistent_recovery_active:
+                        per_epoch_replan_limit = max(1, request.max_replans)
+                        for work_unit_id in sorted(recovery_before):
+                            if (
+                                recovery_replans_in_epoch[work_unit_id]
+                                >= per_epoch_replan_limit
+                            ):
+                                recovery_replans_in_epoch[work_unit_id] = 0
+                                recovery_guidance.pop(work_unit_id, None)
+
+                            if recovery_replans_in_epoch[work_unit_id] != 0:
+                                continue
+                            if recovery_guidance.get(work_unit_id):
+                                continue
+                            if (
+                                request.max_recovery_epochs > 0
+                                and recovery_epoch_counts[work_unit_id]
+                                >= request.max_recovery_epochs
+                            ):
+                                work_units[work_unit_id].mark_blocked()
+                                records.append(
+                                    WorkUnitExecutionRecord(
+                                        work_unit_id=work_unit_id,
+                                        role=specs[work_unit_id].role,
+                                        wave=dispatch_generation + 1,
+                                        attempt=attempts[work_unit_id],
+                                        status=WorkUnitState.BLOCKED.value,
+                                        skills=skill_sets[work_unit_id],
+                                        verdict="BLOCKED",
+                                        reason="persistent-recovery:max-epochs-reached",
+                                        strategy=strategy_generations[work_unit_id],
+                                    )
+                                )
+                                observability.emit(
+                                    "work_unit_status_changed",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    role=specs[work_unit_id].role,
+                                    status="BLOCKED",
+                                    verdict="BLOCKED",
+                                    reason="persistent-recovery:max-epochs-reached",
+                                )
+                                continue
+
+                            history = tuple(
+                                (
+                                    f"attempt={record.attempt}; strategy={record.strategy}; "
+                                    f"status={record.status}; verdict={record.verdict or ''}; "
+                                    f"reason={record.reason}"
+                                )
+                                for record in records
+                                if record.work_unit_id == work_unit_id
+                            )
+                            cycle = self._persistent_recovery.analyze(
+                                project_objective=request.objective,
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id,
+                                work_unit_objective=specs[work_unit_id].objective,
+                                state_summary=self._state_summary(
+                                    work_units, outputs, output_refs
+                                ),
+                                project_id=request.project_id,
+                                attempt_history=history,
+                                constraints=request.constraints,
+                                agent=(
+                                    request.recovery_strategist_agent
+                                    or request.planner_agent
+                                    or request.agent
+                                ),
+                                failure_class="strategy-exhausted",
+                            )
+                            recovery_epoch_counts[work_unit_id] = cycle.recovery_epoch
+                            recovery_guidance[work_unit_id] = (
+                                cycle.analysis.planner_guidance()
+                            )
+                            observability.emit(
+                                "recovery_strategy_analyzed",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id,
+                                incident_id=cycle.incident_id,
+                                recovery_epoch=cycle.recovery_epoch,
+                                recommended_path_id=cycle.analysis.recommended_path_id,
+                                disposition=cycle.analysis.disposition.value,
+                                confidence=cycle.analysis.confidence,
+                            )
+                            if cycle.analysis.human_decision_required:
+                                work_units[work_unit_id].mark_blocked()
+                                records.append(
+                                    WorkUnitExecutionRecord(
+                                        work_unit_id=work_unit_id,
+                                        role=specs[work_unit_id].role,
+                                        wave=dispatch_generation + 1,
+                                        attempt=attempts[work_unit_id],
+                                        status=WorkUnitState.BLOCKED.value,
+                                        skills=skill_sets[work_unit_id],
+                                        verdict="BLOCKED",
+                                        reason="recovery-strategist:human-decision-required",
+                                        strategy=strategy_generations[work_unit_id],
+                                    )
+                                )
+
                         recovery_before = {
                             work_unit_id
-                            for work_unit_id, work_unit in work_units.items()
-                            if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                            for work_unit_id in recovery_before
+                            if work_units[work_unit_id].state
+                            is WorkUnitState.RECOVERY_REQUIRED
+                        }
+                        guidance = [
+                            recovery_guidance[work_unit_id]
+                            for work_unit_id in sorted(recovery_before)
+                            if recovery_guidance.get(work_unit_id)
+                        ]
+                        if guidance:
+                            replan_feedback = "\n\n".join(
+                                item
+                                for item in (
+                                    replan_feedback.strip(),
+                                    *guidance,
+                                )
+                                if item
+                            )
+
+                    can_replan = hasattr(self._planner, "replan") and (
+                        persistent_recovery_active
+                        or replan_count < request.max_replans
+                    )
+                    if not recovery_before and persistent_recovery_active:
+                        pending_replan = False
+                        persist()
+                        continue
+                    if not can_replan:
+                        pending_replan = False
+                    else:
+                        old_edges = {
+                            (
+                                dependency.source_id,
+                                dependency.target_id,
+                                dependency.required,
+                            )
+                            for dependency in dependencies
                         }
                         try:
                             plan, new_ids = self._expand_plan(
@@ -349,8 +518,14 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                         except RecoveryPlanTopologyError as exc:
                             replan_count += 1
+                            for work_unit_id in recovery_before:
+                                recovery_replans_in_epoch[work_unit_id] += 1
                             replan_feedback = str(exc)
-                            pending_replan = replan_count < request.max_replans
+                            pending_replan = (
+                                bool(recovery_before)
+                                if persistent_recovery_active
+                                else replan_count < request.max_replans
+                            )
                             observability.emit(
                                 "recovery_plan_rejected",
                                 orchestration_id=orchestration_id,
@@ -359,7 +534,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             persist()
                             continue
+
                         replan_count += 1
+                        for work_unit_id in recovery_before:
+                            recovery_replans_in_epoch[work_unit_id] += 1
                         replan_feedback = ""
                         self._validate_replanned_edges(
                             old_edges=old_edges,
@@ -386,27 +564,34 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             attempts[work_unit_id] = 0
                             strategy_generations[work_unit_id] = 1
                             revision_feedback[work_unit_id] = (
-                                "Recovery planner added prerequisite work. Preserve "
-                                "the current WIP and previous evidence; after the "
-                                "new prerequisite is satisfied, retry the original "
+                                "Recovery Strategist and planner added prerequisite "
+                                "work. Preserve current WIP and prior evidence; after "
+                                "the prerequisite is accepted, retry the original "
                                 "objective with a fresh strategy cycle.\n"
-                                + outputs.get(work_unit_id, "")
+                                + recovery_guidance.get(work_unit_id, "")
                             )
+                            recovery_replans_in_epoch[work_unit_id] = 0
+                            recovery_guidance.pop(work_unit_id, None)
                             recovery_resumed.add(work_unit_id)
                         for work_unit_id in new_ids:
                             attempts[work_unit_id] = 0
                             strategy_generations[work_unit_id] = 1
+                            recovery_epoch_counts[work_unit_id] = 0
+                            recovery_replans_in_epoch[work_unit_id] = 0
                         unresolved_recovery = recovery_before - recovery_resumed
-                        pending_replan = bool(unresolved_recovery) and (
-                            replan_count < request.max_replans
+                        pending_replan = (
+                            bool(unresolved_recovery)
+                            if persistent_recovery_active
+                            else bool(unresolved_recovery)
+                            and replan_count < request.max_replans
                         )
                         if new_ids:
-                            skill_sets = self._preflight_skill_sets(specs, request.agent)
+                            skill_sets = self._preflight_skill_sets(
+                                specs, request.agent
+                            )
                         self._validate_graph(request, work_units, dependencies)
                         persist()
                         continue
-                    else:
-                        pending_replan = False
 
                 if not unfinished and not active:
                     break
@@ -434,7 +619,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if human_ready:
                     persist()
 
-                available_slots = request.max_concurrency - len(active)
+                available_slots = 0 if pause_requested else request.max_concurrency - len(active)
                 if (
                     not pending_replan
                     and available_slots > 0
@@ -637,6 +822,255 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             revision_feedback[work_unit_id] = feedback
                         else:
                             revision_feedback.pop(work_unit_id, None)
+                            reconciliation_target = specs[
+                                work_unit_id
+                            ].reconciles_work_unit_id
+                            if reconciliation_target:
+                                target = work_units[reconciliation_target]
+                                if target.state in {
+                                    WorkUnitState.REVISION_REQUIRED,
+                                    WorkUnitState.RECOVERY_REQUIRED,
+                                }:
+                                    target.complete_by_reconciliation()
+                                    for dependency in dependencies:
+                                        if dependency.source_id == reconciliation_target:
+                                            dependency.satisfy()
+                                    revision_feedback.pop(
+                                        reconciliation_target, None
+                                    )
+                                    recovery_guidance.pop(
+                                        reconciliation_target, None
+                                    )
+                                    recovery_replans_in_epoch[
+                                        reconciliation_target
+                                    ] = 0
+                                    outputs[reconciliation_target] = (
+                                        "Formally reconciled by accepted corrective "
+                                        f"Work Unit {work_unit_id}."
+                                    )
+                                    if (
+                                        record.result_authoritative
+                                        and record.result_ref
+                                    ):
+                                        output_refs[
+                                            reconciliation_target
+                                        ] = record.result_ref
+                                    reconciled_record = WorkUnitExecutionRecord(
+                                        work_unit_id=reconciliation_target,
+                                        role=specs[reconciliation_target].role,
+                                        wave=generation,
+                                        attempt=attempts[reconciliation_target],
+                                        status=WorkUnitState.COMPLETED.value,
+                                        skills=skill_sets[reconciliation_target],
+                                        execution_id=None,
+                                        external_id=None,
+                                        runtime_status=None,
+                                        verdict=EvaluationVerdict.ACCEPTED.value,
+                                        output=outputs[reconciliation_target],
+                                        result_ref=record.result_ref,
+                                        result_authoritative=(
+                                            record.result_authoritative
+                                        ),
+                                        reason=f"reconciled-by:{work_unit_id}",
+                                        strategy=strategy_generations[
+                                            reconciliation_target
+                                        ],
+                                    )
+                                    records.append(reconciled_record)
+                                    observability.emit(
+                                        "work_unit_reconciled",
+                                        orchestration_id=orchestration_id,
+                                        work_unit_id=reconciliation_target,
+                                        reconciled_by_work_unit_id=work_unit_id,
+                                        status="COMPLETED",
+                                        verdict="ACCEPTED",
+                                        reason="accepted-corrective-reconciliation",
+                                    )
+                                    if (
+                                        request.learning_after_successful_retest
+                                        and self._persistent_recovery is not None
+                                    ):
+                                        reconciliation_refs = [
+                                            (
+                                                "work-unit:"
+                                                f"{reconciliation_target}:"
+                                                f"reconciled-by:{work_unit_id}"
+                                            ),
+                                            (
+                                                "corrective-execution:"
+                                                f"{record.execution_id or 'unknown'}"
+                                            ),
+                                        ]
+                                        if record.result_ref:
+                                            reconciliation_refs.append(
+                                                record.result_ref
+                                            )
+                                        try:
+                                            reconciled_learning = (
+                                                self._persistent_recovery.successful_retest(
+                                                    orchestration_id=orchestration_id,
+                                                    work_unit_id=reconciliation_target,
+                                                    validation_refs=reconciliation_refs,
+                                                    project_objective=request.objective,
+                                                    project_id=request.project_id,
+                                                    work_unit_objective=specs[
+                                                        reconciliation_target
+                                                    ].objective,
+                                                    previous_attempts=tuple(
+                                                        (
+                                                            f"attempt={item.attempt}; "
+                                                            f"strategy={item.strategy}; "
+                                                            f"status={item.status}; "
+                                                            f"verdict={item.verdict or ''}; "
+                                                            f"reason={item.reason}; "
+                                                            f"output={(item.output or '')[:1200]}"
+                                                        )
+                                                        for item in records
+                                                        if (
+                                                            item.work_unit_id
+                                                            == reconciliation_target
+                                                            and not item.reason.startswith(
+                                                                "reconciled-by:"
+                                                            )
+                                                            and item.verdict
+                                                            != EvaluationVerdict.ACCEPTED.value
+                                                        )
+                                                    ),
+                                                    accepted_result_summary=(
+                                                        record.output
+                                                        or (
+                                                            "Accepted corrective Work Unit "
+                                                            f"{work_unit_id} reconciled "
+                                                            f"{reconciliation_target}."
+                                                        )
+                                                    ),
+                                                    agent=(
+                                                        request.recovery_strategist_agent
+                                                        or request.planner_agent
+                                                        or request.agent
+                                                    ),
+                                                )
+                                            )
+                                        except Exception as exc:
+                                            observability.emit(
+                                                "automatic_learning_failed",
+                                                orchestration_id=orchestration_id,
+                                                work_unit_id=reconciliation_target,
+                                                failure_category=type(exc).__name__,
+                                            )
+                                        else:
+                                            if reconciled_learning is not None:
+                                                observability.emit(
+                                                    "automatic_learning_triggered",
+                                                    orchestration_id=orchestration_id,
+                                                    work_unit_id=reconciliation_target,
+                                                    incident_id=(
+                                                        reconciled_learning.incident_id
+                                                    ),
+                                                    scope=(
+                                                        reconciled_learning.scope.value
+                                                    ),
+                                                    targets=list(
+                                                        reconciled_learning.targets
+                                                    ),
+                                                    runtime_candidate_recorded=(
+                                                        reconciled_learning.runtime_candidate_recorded
+                                                    ),
+                                                )
+                                                if (
+                                                    reconciled_learning.targets
+                                                    and not reconciled_learning.closed
+                                                ):
+                                                    pending_replan = True
+                                                    replan_feedback = (
+                                                        "Corrective reconciliation "
+                                                        "succeeded but its learning "
+                                                        "lifecycle remains open for "
+                                                        f"incident {reconciled_learning.incident_id}."
+                                                    )
+                            if (
+                                request.learning_after_successful_retest
+                                and self._persistent_recovery is not None
+                            ):
+                                validation_refs = [
+                                    f"work-unit:{work_unit_id}:accepted",
+                                    f"execution:{record.execution_id or 'unknown'}",
+                                ]
+                                if record.result_ref:
+                                    validation_refs.append(record.result_ref)
+                                try:
+                                    learning_report = (
+                                        self._persistent_recovery.successful_retest(
+                                            orchestration_id=orchestration_id,
+                                            work_unit_id=work_unit_id,
+                                            validation_refs=validation_refs,
+                                            project_objective=request.objective,
+                                            project_id=request.project_id,
+                                            work_unit_objective=specs[
+                                                work_unit_id
+                                            ].objective,
+                                            previous_attempts=tuple(
+                                                (
+                                                    f"attempt={item.attempt}; "
+                                                    f"strategy={item.strategy}; "
+                                                    f"status={item.status}; "
+                                                    f"verdict={item.verdict or ''}; "
+                                                    f"reason={item.reason}; "
+                                                    f"output={(item.output or '')[:1200]}"
+                                                )
+                                                for item in records[:-1]
+                                                if (
+                                                    item.work_unit_id
+                                                    == work_unit_id
+                                                    and item.verdict
+                                                    != EvaluationVerdict.ACCEPTED.value
+                                                )
+                                            ),
+                                            accepted_result_summary=(
+                                                record.output or "Accepted retest."
+                                            ),
+                                            agent=(
+                                                request.recovery_strategist_agent
+                                                or request.planner_agent
+                                                or request.agent
+                                            ),
+                                        )
+                                    )
+                                except Exception as exc:
+                                    observability.emit(
+                                        "automatic_learning_failed",
+                                        orchestration_id=orchestration_id,
+                                        work_unit_id=work_unit_id,
+                                        failure_category=type(exc).__name__,
+                                    )
+                                else:
+                                    if learning_report is not None:
+                                        observability.emit(
+                                            "automatic_learning_triggered",
+                                            orchestration_id=orchestration_id,
+                                            work_unit_id=work_unit_id,
+                                            incident_id=learning_report.incident_id,
+                                            scope=learning_report.scope.value,
+                                            targets=list(learning_report.targets),
+                                            runtime_candidate_recorded=(
+                                                learning_report.runtime_candidate_recorded
+                                            ),
+                                        )
+                                        if (
+                                            learning_report.targets
+                                            and not learning_report.closed
+                                        ):
+                                            pending_replan = True
+                                            replan_feedback = (
+                                                "Successful retest triggered the "
+                                                "automatic learning lifecycle, but "
+                                                "runtime incorporation/consistency did "
+                                                "not close the incident. Complete the "
+                                                "remaining governed learning obligations "
+                                                f"for incident {learning_report.incident_id}. "
+                                                "Targets: "
+                                                + ", ".join(learning_report.targets)
+                                            )
                         pending_replan = (
                             pending_replan
                             or replan_signal
@@ -694,6 +1128,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
         if len(completed_ids) == len(work_units):
             status = ProjectRunStatus.COMPLETED
+        elif self._pause_requested(orchestration_id):
+            status = ProjectRunStatus.PAUSED
         elif recovery_required_ids and not blocked_ids:
             status = ProjectRunStatus.RECOVERY_REQUIRED
         elif completed_ids:
@@ -715,12 +1151,21 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             replan_count=replan_count,
             recovery_required_work_unit_ids=recovery_required_ids,
         )
-        persist(terminal=True)
+        persist(terminal=result.status is not ProjectRunStatus.PAUSED)
         observability.emit(
             "orchestration_completed", orchestration_id=orchestration_id,
             status=result.status.value, summary=plan.summary[:500],
         )
         return result
+
+    def _pause_requested(self, orchestration_id: str) -> bool:
+        if self._checkpoint_store is None:
+            return False
+        checkpoint = self._checkpoint_store.load(orchestration_id)
+        return bool(
+            isinstance(checkpoint, dict)
+            and checkpoint.get("desired_state") == "PAUSED"
+        )
 
     def _save_admission_checkpoint(
         self,
@@ -743,6 +1188,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "orchestration_id": orchestration_id,
                 "phase": "ADMITTED",
                 "request": self._request_to_payload(request),
+                "desired_state": "RUNNING",
                 "terminal": False,
             },
         )
@@ -767,6 +1213,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         dispatch_generation: int,
         pending_replan: bool,
         replan_feedback: str,
+        recovery_epoch_counts: dict[str, int],
+        recovery_replans_in_epoch: dict[str, int],
+        recovery_guidance: dict[str, str],
         active: Sequence[tuple[DispatchOutcome, int]],
         terminal: bool,
     ) -> None:
@@ -785,9 +1234,20 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "runtime": outcome.execution.runtime,
                 }
             )
+        existing_checkpoint = (
+            self._checkpoint_store.load(orchestration_id)
+            if self._checkpoint_store is not None
+            else None
+        )
+        desired_state = (
+            str(existing_checkpoint.get("desired_state") or "RUNNING")
+            if isinstance(existing_checkpoint, dict)
+            else "RUNNING"
+        )
         payload = {
             "orchestration_id": orchestration_id,
             "phase": "EXECUTION",
+            "desired_state": desired_state,
             "request": self._request_to_payload(request),
             "plan": self._plan_to_payload(plan),
             "work_unit_states": {
@@ -816,6 +1276,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "dispatch_generation": dispatch_generation,
             "pending_replan": pending_replan,
             "replan_feedback": replan_feedback,
+            "recovery_epoch_counts": dict(recovery_epoch_counts),
+            "recovery_replans_in_epoch": dict(recovery_replans_in_epoch),
+            "recovery_guidance": dict(recovery_guidance),
             "active_executions": active_rows,
             "terminal": terminal,
         }
@@ -829,6 +1292,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "agent": request.agent,
             "planner_agent": request.planner_agent,
             "scope": request.scope,
+            "project_id": request.project_id,
             "context": list(request.context),
             "constraints": list(request.constraints),
             "max_concurrency": request.max_concurrency,
@@ -837,6 +1301,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "max_attempts_per_work_unit": request.max_attempts_per_work_unit,
             "max_strategies_per_work_unit": request.max_strategies_per_work_unit,
             "max_replans": request.max_replans,
+            "persistent_recovery": request.persistent_recovery,
+            "max_recovery_epochs": request.max_recovery_epochs,
+            "recovery_strategist_agent": request.recovery_strategist_agent,
+            "learning_after_successful_retest": request.learning_after_successful_retest,
             "dependency_context_chars": request.dependency_context_chars,
             "human_approved": request.human_approved,
             "execution_policy": {
@@ -901,6 +1369,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 agent=cls._require_str(raw, "agent"),
                 planner_agent=planner_agent,
                 scope=str(raw.get("scope") or ""),
+                project_id=str(raw.get("project_id") or ""),
                 context=tuple(cls._require_string_list(raw, "context")),
                 constraints=tuple(
                     cls._require_string_list(raw, "constraints")
@@ -923,6 +1392,20 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     else 2
                 ),
                 max_replans=cls._require_nonnegative_int(raw, "max_replans"),
+                persistent_recovery=bool(raw.get("persistent_recovery", False)),
+                max_recovery_epochs=(
+                    cls._require_nonnegative_int(raw, "max_recovery_epochs")
+                    if "max_recovery_epochs" in raw
+                    else 0
+                ),
+                recovery_strategist_agent=(
+                    str(raw.get("recovery_strategist_agent"))
+                    if raw.get("recovery_strategist_agent") is not None
+                    else None
+                ),
+                learning_after_successful_retest=bool(
+                    raw.get("learning_after_successful_retest", True)
+                ),
                 dependency_context_chars=cls._require_nonnegative_int(
                     raw, "dependency_context_chars"
                 ),
@@ -959,6 +1442,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "priority": item.priority,
                     "criticality": item.criticality,
                     "parallel_safe": item.parallel_safe,
+                    "reconciles_work_unit_id": item.reconciles_work_unit_id,
                 }
                 for item in plan.work_units
             ],
@@ -1018,6 +1502,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             raw, "criticality"
                         ),
                         parallel_safe=bool(raw.get("parallel_safe", False)),
+                        reconciles_work_unit_id=(
+                            str(raw.get("reconciles_work_unit_id")).strip()
+                            if raw.get("reconciles_work_unit_id") is not None
+                            else None
+                        ),
                     )
                 )
             dependencies = []
@@ -1226,6 +1715,34 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "Checkpoint strategy generations must be at least 1."
             )
         return restored
+
+    @classmethod
+    def _restore_optional_int_map(
+        cls,
+        checkpoint: dict,
+        name: str,
+        expected_keys: Sequence[str],
+        *,
+        default: int,
+    ) -> dict[str, int]:
+        raw = checkpoint.get(name)
+        if raw is None:
+            return {str(key): default for key in expected_keys}
+        return cls._restore_int_map({name: raw}, name, expected_keys)
+
+    @staticmethod
+    def _restore_str_map_optional(checkpoint: dict, name: str) -> dict[str, str]:
+        raw = checkpoint.get(name)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in raw.items()
+        ):
+            raise ProjectOrchestrationError(
+                f"Checkpoint field '{name}' contains invalid values."
+            )
+        return dict(raw)
 
     @staticmethod
     def _restore_str_map(checkpoint: dict, name: str) -> dict[str, str]:
