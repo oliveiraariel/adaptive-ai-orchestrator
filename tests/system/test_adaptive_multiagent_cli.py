@@ -2,6 +2,9 @@ import json
 
 from adaptive_orchestrator import cli
 from domain.project_execution_plan import PlannedDependency, PlannedWorkUnit, ProjectExecutionPlan
+from infrastructure.project_orchestration_checkpoint import (
+    FileProjectOrchestrationCheckpointStore,
+)
 
 
 class MultiFakeGatewayClient:
@@ -221,3 +224,167 @@ def test_cli_emits_terminal_failure_when_planner_runtime_aborts(monkeypatch, tmp
     assert terminal[0]["status"] == "FAILED"
     assert terminal[0]["failure_category"] == "runtime"
     assert terminal[0]["failure_code"] == "orchestration_runtime_failed"
+
+
+
+def test_cli_orchestrate_honors_caller_allocated_orchestration_id(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    MultiFakeGatewayClient.counter = 0
+    monkeypatch.setattr(cli, "OpenClawGatewayClient", MultiFakeGatewayClient)
+
+    registry = tmp_path / "skills.json"
+    registry.write_text(
+        json.dumps({"schema_version": 1, "skills": []}),
+        encoding="utf-8",
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "summary": "one worker",
+                "work_units": [
+                    {
+                        "id": "a",
+                        "objective": "Execute a",
+                        "role": "worker",
+                        "scope": "",
+                        "kind": "EXECUTION",
+                        "required_capabilities": [],
+                        "requested_skills": [],
+                        "tools": [],
+                        "inputs": [],
+                        "expected_output": ["result"],
+                        "acceptance_criteria": ["runtime-completed"],
+                        "requested_side_effects": [],
+                        "write_paths": [],
+                        "priority": 1,
+                        "criticality": 0,
+                        "parallel_safe": True,
+                    }
+                ],
+                "dependencies": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "orchestrate",
+            "--objective",
+            "Execute one worker.",
+            "--orchestration-id",
+            "bridge-owned-orch-001",
+            "--plan-file",
+            str(plan),
+            "--skill-registry",
+            str(registry),
+            "--project-root",
+            str(tmp_path),
+            "--no-auto-supervisor",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["orchestration_id"] == "bridge-owned-orch-001"
+
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    checkpoint = store.load("bridge-owned-orch-001")
+    assert checkpoint is not None
+    assert checkpoint["terminal"] is True
+
+
+def test_cli_project_status_reads_authoritative_checkpoint_without_runtime(
+    tmp_path, capsys
+) -> None:
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    store.save(
+        "orch-status-001",
+        {
+            "orchestration_id": "orch-status-001",
+            "phase": "EXECUTION",
+            "desired_state": "RUNNING",
+            "work_unit_states": {
+                "discover": "COMPLETED",
+                "fix": "COMPLETED",
+                "gates": "COMPLETED",
+                "package": "COMPLETED",
+            },
+            "active_executions": [],
+            "pending_replan": False,
+            "replan_count": 0,
+            "terminal": True,
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "project-status",
+            "--orchestration-id",
+            "orch-status-001",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload == {
+        "active_execution_count": 0,
+        "blocked_work_unit_ids": [],
+        "completed_work_unit_ids": ["discover", "fix", "gates", "package"],
+        "desired_state": "RUNNING",
+        "mode": "project-status",
+        "ok": True,
+        "orchestration_id": "orch-status-001",
+        "pending_replan": False,
+        "phase": "EXECUTION",
+        "recovery_required_work_unit_ids": [],
+        "replan_count": 0,
+        "status": "COMPLETED",
+        "terminal": True,
+        "unfinished_work_unit_ids": [],
+        "work_unit_count": 4,
+    }
+
+
+def test_cli_project_status_reports_nonterminal_project_as_running(
+    tmp_path, capsys
+) -> None:
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    store.save(
+        "orch-running-001",
+        {
+            "orchestration_id": "orch-running-001",
+            "phase": "EXECUTION",
+            "desired_state": "RUNNING",
+            "work_unit_states": {
+                "discover": "COMPLETED",
+                "fix": "RUNNING",
+                "gates": "PLANNED",
+            },
+            "active_executions": [{"work_unit_id": "fix"}],
+            "pending_replan": False,
+            "replan_count": 0,
+            "terminal": False,
+        },
+    )
+
+    exit_code = cli.main(
+        [
+            "project-status",
+            "--orchestration-id",
+            "orch-running-001",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["terminal"] is False
+    assert payload["status"] == "PARTIAL"
+    assert payload["active_execution_count"] == 1
+    assert payload["unfinished_work_unit_ids"] == ["fix", "gates"]
