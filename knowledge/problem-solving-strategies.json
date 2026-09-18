@@ -312,6 +312,122 @@
       "evidence": [
         "2026-09-16: during SGFP Stage 11, an ariel-agent-skills Bridge update was incorrectly blocked because __pycache__/ directories and a preexisting stash made the checkout look non-clean. The reusable correction is to classify tracked, staged, untracked, and stash state separately: only tracked/staged WIP or an actual untracked-path collision prevents a preservation-safe fast-forward; generated caches and historical stash entries may remain untouched."
       ]
+    },
+    {
+      "id": "prefer-authoritative-operational-state-over-conversation",
+      "status": "validated",
+      "title": "Use correlated persisted execution evidence when conversational memory disagrees",
+      "triggers": [
+        "worker active",
+        "running worker",
+        "stale worker",
+        "conversation memory",
+        "control room",
+        "active_executions",
+        "heartbeat",
+        "lease",
+        "result store",
+        "orchestration state"
+      ],
+      "guidance": [
+        "When chat/session memory says work is active but persisted operational evidence disagrees, reconcile the persisted execution state before waiting or redispatching.",
+        "Treat Result Store/checkpoint identity, active execution records, valid leases and fresh heartbeats as stronger evidence than conversational narrative.",
+        "If no correlated live execution exists, do not tell the user or scheduler to keep waiting merely because an earlier message said the worker was running.",
+        "Preserve the old attempt as history and let the orchestrator choose governed recovery from the current persisted state."
+      ],
+      "safety": [
+        "A checkpoint alone is history, not proof of current liveness.",
+        "Do not kill or redispatch a worker until correlated execution identity and liveness have been reconciled."
+      ],
+      "evidence": [
+        "2026-09-18: during SGFP Stage 11 recovery, OpenClaw conversational state described revision work as active while Control Room/Result Store showed the Work Units blocked and active_executions empty. Recovery became correct only after persisted state was treated as authoritative."
+      ]
+    },
+    {
+      "id": "require-correlated-worker-proof-of-life",
+      "status": "validated",
+      "title": "Require worker identity plus lease/heartbeat correlation before treating a process as useful active work",
+      "triggers": [
+        "pid",
+        "launcher",
+        "orphan worker",
+        "worker liveness",
+        "no descendants",
+        "lease",
+        "heartbeat",
+        "execution identity",
+        "worker recovered"
+      ],
+      "guidance": [
+        "Do not treat an operating-system PID, launcher process, dashboard RUNNING label, or controller heartbeat by itself as proof that a useful worker is active.",
+        "Correlate orchestration_id, work_unit_id, execution_id/external_id, worker identity, lease and fresh heartbeat before suppressing recovery.",
+        "Distinguish controller/launcher liveness, worker liveness and Work Unit progress as separate facts.",
+        "If the launcher survives but no correlated worker/lease/heartbeat exists, classify the state as stale/suspect and return it to governed recovery."
+      ],
+      "safety": [
+        "Do not infer absence of work from one missing telemetry source when other correlated liveness evidence is fresh.",
+        "Do not create a duplicate side-effecting worker while a valid correlated lease/heartbeat still exists."
+      ],
+      "evidence": [
+        "2026-09-18: recovery audit found a successor launcher PID alive without identifiable worker descendants or sufficient worker lease/checkpoint evidence. The process alone was not enough to prove useful execution."
+      ]
+    },
+    {
+      "id": "separate-artifact-readiness-from-orchestration-debt",
+      "status": "validated",
+      "title": "Do not let historical observability debt indefinitely block a technically validated artifact",
+      "triggers": [
+        "observability debt",
+        "artifact readiness",
+        "ready for retest",
+        "recovery recursion",
+        "result store integrity",
+        "historical lease",
+        "cannot prove orphan absence",
+        "release gate"
+      ],
+      "guidance": [
+        "Evaluate product/artifact readiness from its own technical evidence: accepted corrections, tests, lint/static gates, Result Store integrity and absence of conflicting/corrupting changes.",
+        "Track orchestration observability gaps as a separate infrastructure incident when they do not invalidate the artifact evidence.",
+        "Stop recursive recovery-of-recovery when the remaining uncertainty is only historical orchestration observability rather than a functional or integrity defect in the artifact.",
+        "Report both dimensions explicitly, for example READY_FOR_ENVIRONMENTAL_RETEST plus ADAPTIVE_OBSERVABILITY_DEBT."
+      ],
+      "safety": [
+        "Do not waive a real functional, security, integrity or concurrency conflict by relabeling it observability debt.",
+        "Require explicit evidence that the artifact itself is intact before decoupling the infrastructure incident."
+      ],
+      "evidence": [
+        "2026-09-18: SGFP corrections and Result Stores were technically sound, but repeated recovery/audit units were blocked by insufficient historical lease evidence. Separating Adaptive observability debt allowed the SGFP state to be correctly declared READY_FOR_ENVIRONMENTAL_RETEST."
+      ]
+    },
+    {
+      "id": "isolate-component-failure-with-ab-and-native-logs",
+      "status": "validated",
+      "title": "Use a controlled A/B component isolation and native logs before speculative repair",
+      "triggers": [
+        "fatal error",
+        "plugin active",
+        "plugin disabled",
+        "a/b test",
+        "native logs",
+        "php logs",
+        "component isolation",
+        "environment error",
+        "temporarily unavailable"
+      ],
+      "guidance": [
+        "Reproduce the failure on the smallest stable entry point before changing code.",
+        "When safe, compare behavior with the suspected component enabled versus disabled while holding the environment constant.",
+        "If the failure disappears only when that component is removed, inspect the platform-native logs immediately after reproduction for the exact causal stack.",
+        "Repair the smallest contract violation proven by the log and repeat the same A/B/environmental test."
+      ],
+      "safety": [
+        "Do not disable unrelated security controls permanently as a diagnostic shortcut.",
+        "Do not claim causality from correlation alone when the A/B result is ambiguous or other variables changed."
+      ],
+      "evidence": [
+        "2026-09-18: gestaopessoal.org /wp-login.php failed only while SGFP was active. Disabling SGFP restored login; WordPress PHP logs then identified WordPressLogin::safeRedirect receiving WP_Error where the callback accepted only WP_User. The minimal contract fix restored the login path."
+      ]
     }
   ]
 }
