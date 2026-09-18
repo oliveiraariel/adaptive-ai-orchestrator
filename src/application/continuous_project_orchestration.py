@@ -424,6 +424,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 state_summary=self._state_summary(
                                     work_units, outputs, output_refs
                                 ),
+                                project_id=request.project_id,
                                 attempt_history=history,
                                 constraints=request.constraints,
                                 agent=(
@@ -1091,6 +1092,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "agent": request.agent,
             "planner_agent": request.planner_agent,
             "scope": request.scope,
+            "project_id": request.project_id,
             "context": list(request.context),
             "constraints": list(request.constraints),
             "max_concurrency": request.max_concurrency,
@@ -1167,6 +1169,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 agent=cls._require_str(raw, "agent"),
                 planner_agent=planner_agent,
                 scope=str(raw.get("scope") or ""),
+                project_id=str(raw.get("project_id") or ""),
                 context=tuple(cls._require_string_list(raw, "context")),
                 constraints=tuple(
                     cls._require_string_list(raw, "constraints")
