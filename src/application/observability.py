@@ -42,6 +42,9 @@ class JsonlObservabilitySink:
         "incident_id", "recovery_epoch", "recommended_path_id", "disposition",
         "reconciled_by_work_unit_id",
         "confidence", "scope", "targets", "runtime_candidate_recorded", "mode",
+        "strategy", "summary", "work_unit_count", "recovered", "replan_count",
+        "auth_profile_configured", "auth_product", "from_model", "to_model",
+        "runtime_attempt", "circuit_state",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -51,6 +54,7 @@ class JsonlObservabilitySink:
         "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
         "automatic_learning_triggered", "automatic_learning_failed",
         "orchestration_paused", "orchestration_supervisor_started",
+        "recovery_plan_rejected", "model_failover",
         "orchestration_heartbeat", "orchestration_terminalized",
         "orchestration_completed",
     }
