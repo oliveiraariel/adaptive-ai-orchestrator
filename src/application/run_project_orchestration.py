@@ -92,6 +92,10 @@ class ProjectOrchestrationRequest:
     max_attempts_per_work_unit: int = 2
     max_strategies_per_work_unit: int = 2
     max_replans: int = 2
+    persistent_recovery: bool = False
+    max_recovery_epochs: int = 0
+    recovery_strategist_agent: str | None = None
+    learning_after_successful_retest: bool = True
     dependency_context_chars: int = 6000
     execution_policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
     human_approved: bool = False
@@ -114,6 +118,8 @@ class ProjectOrchestrationRequest:
             raise ValueError("max_strategies_per_work_unit must be between 1 and 4.")
         if self.max_replans < 0 or self.max_replans > 8:
             raise ValueError("max_replans must be between 0 and 8.")
+        if self.max_recovery_epochs < 0 or self.max_recovery_epochs > 1000:
+            raise ValueError("max_recovery_epochs must be between 0 and 1000; 0 means no fixed epoch cap.")
         if self.dependency_context_chars < 256:
             raise ValueError("dependency_context_chars must be at least 256.")
 
