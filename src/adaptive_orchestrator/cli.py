@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from uuid import uuid4
-from application.observability import JsonlObservabilitySink, canonical_observability_path
+from application.observability import JsonlObservabilitySink, NullObservabilitySink, ObservabilitySink, canonical_observability_path
 from pathlib import Path
 from typing import Sequence
 
@@ -696,7 +696,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
 
         runtime = _runtime(args)
         claims = InMemoryClaimRegistry()
-        planner_runner = RunOrchestration(runtime=runtime, claim_registry=claims)
+        planner_runtime = _runtime(args, observability=NullObservabilitySink())
+        planner_runner = RunOrchestration(
+            runtime=planner_runtime,
+            claim_registry=claims,
+        )
         planner = RuntimeProjectPlanner(
             runner=planner_runner,
             skill_profiles=profiles,
@@ -1019,8 +1023,9 @@ def _resume_project(args: argparse.Namespace) -> int:
         profiles = load_skill_profiles(registry_path)
         runtime = _runtime(args)
         claims = InMemoryClaimRegistry()
+        recovery_runtime = _runtime(args, observability=NullObservabilitySink())
         recovery_runner = RunOrchestration(
-            runtime=runtime,
+            runtime=recovery_runtime,
             claim_registry=claims,
         )
         planner = RuntimeProjectPlanner(
@@ -1299,8 +1304,14 @@ def _execution_policy(args: argparse.Namespace) -> ExecutionPolicy:
     )
 
 
-def _runtime(args: argparse.Namespace) -> OpenClawAdapter:
-    observability = JsonlObservabilitySink(canonical_observability_path())
+def _runtime(
+    args: argparse.Namespace,
+    *,
+    observability: ObservabilitySink | None = None,
+) -> OpenClawAdapter:
+    runtime_observability = observability or JsonlObservabilitySink(
+        canonical_observability_path()
+    )
     project_root = Path(args.project_root).expanduser().resolve()
     if not project_root.is_dir():
         raise ValueError(
@@ -1315,7 +1326,7 @@ def _runtime(args: argparse.Namespace) -> OpenClawAdapter:
     result_store = FileResultStore(project_root=project_root)
     return OpenClawAdapter(
         OpenClawGatewayClient(config, result_store=result_store),
-        observability=observability,
+        observability=runtime_observability,
     )
 
 
