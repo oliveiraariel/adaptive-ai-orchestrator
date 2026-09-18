@@ -56,16 +56,23 @@ class ProjectOrchestrationSupervisor:
         )
         self._lease_root = self.project_root / ".adaptive" / "supervisor-leases"
 
-    def directives(self) -> tuple[OrchestrationRecoveryDirective, ...]:
+    def directives(
+        self,
+        *,
+        orchestration_id: str | None = None,
+    ) -> tuple[OrchestrationRecoveryDirective, ...]:
         now = self.wall_clock()
         directives: list[OrchestrationRecoveryDirective] = []
-        for orchestration_id, state in self.checkpoints.list_all():
+        for candidate_id, state in self.checkpoints.list_all():
+            if orchestration_id is not None and candidate_id != orchestration_id:
+                continue
+            current_orchestration_id = candidate_id
             if state.get("terminal") is True:
                 continue
             desired_state = str(state.get("desired_state") or "RUNNING")
             active = state.get("active_executions")
             active_count = len(active) if isinstance(active, list) else 0
-            heartbeat = self._controller_heartbeat(orchestration_id)
+            heartbeat = self._controller_heartbeat(current_orchestration_id)
             last = self._heartbeat_timestamp(heartbeat)
             controller_active = bool(
                 isinstance(heartbeat, dict)
@@ -76,7 +83,7 @@ class ProjectOrchestrationSupervisor:
             if desired_state == "PAUSED":
                 directives.append(
                     OrchestrationRecoveryDirective(
-                        orchestration_id=orchestration_id,
+                        orchestration_id=current_orchestration_id,
                         action="PAUSED",
                         reason="developer-requested-pause",
                         desired_state=desired_state,
@@ -88,7 +95,7 @@ class ProjectOrchestrationSupervisor:
             if controller_active:
                 directives.append(
                     OrchestrationRecoveryDirective(
-                        orchestration_id=orchestration_id,
+                        orchestration_id=current_orchestration_id,
                         action="OBSERVE",
                         reason="controller-heartbeat-fresh",
                         desired_state=desired_state,
@@ -99,7 +106,7 @@ class ProjectOrchestrationSupervisor:
                 continue
             directives.append(
                 OrchestrationRecoveryDirective(
-                    orchestration_id=orchestration_id,
+                    orchestration_id=current_orchestration_id,
                     action="RESUME",
                     reason=(
                         "controller-heartbeat-missing"
@@ -116,9 +123,11 @@ class ProjectOrchestrationSupervisor:
     def run_once(
         self,
         resume: Callable[[str], object],
+        *,
+        orchestration_id: str | None = None,
     ) -> tuple[str, ...]:
         resumed: list[str] = []
-        for directive in self.directives():
+        for directive in self.directives(orchestration_id=orchestration_id):
             if directive.action != "RESUME":
                 continue
             if not self._acquire_lease(directive.orchestration_id):
