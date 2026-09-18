@@ -54,7 +54,7 @@ def test_cli_plan_only_calls_planner_and_never_dispatches(monkeypatch, tmp_path,
 
     monkeypatch.setattr(cli, "RuntimeProjectPlanner", FakePlanner)
     monkeypatch.setattr(cli, "RunContinuousProjectOrchestration", ForbiddenExecutor)
-    monkeypatch.setattr(cli, "_runtime", lambda args: object())
+    monkeypatch.setattr(cli, "_runtime", lambda args, **kwargs: object())
 
     exit_code = cli.main([
         "orchestrate", "--plan-only", "--objective", "Inspect documents.",
