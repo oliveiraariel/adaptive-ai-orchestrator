@@ -944,18 +944,16 @@ def _project_checkpoint_status_payload(
     terminal = checkpoint.get("terminal") is True
     desired_state = str(checkpoint.get("desired_state") or "RUNNING")
 
-    if states and len(completed) == len(states):
+    if not terminal:
+        status = "PAUSED" if desired_state == "PAUSED" else "RUNNING"
+    elif states and len(completed) == len(states):
         status = ProjectRunStatus.COMPLETED.value
     elif recovery_required and not blocked:
         status = ProjectRunStatus.RECOVERY_REQUIRED.value
     elif completed:
         status = ProjectRunStatus.PARTIAL.value
-    elif terminal:
-        status = ProjectRunStatus.BLOCKED.value
-    elif desired_state == "PAUSED":
-        status = "PAUSED"
     else:
-        status = "RUNNING"
+        status = ProjectRunStatus.BLOCKED.value
 
     active = checkpoint.get("active_executions")
     return {
