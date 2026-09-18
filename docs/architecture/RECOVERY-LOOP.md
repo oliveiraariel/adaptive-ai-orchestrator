@@ -540,3 +540,42 @@ Automated proof includes:
   - incident closes.
 
 Repository CI must remain green across Adaptive core, Ariel Agent Skills and Control Room. A live OpenClaw/provider execution is still the recommended final environmental proof before Issue #38 is closed or the Draft PR is promoted for merge.
+
+
+## Authoritative project finalization and observer isolation
+
+Project execution, shell observation and preflight execution are separate
+lifecycles. A parent tool or conversation must never infer the project result
+from the death of an observer process or from an earlier bounded Work Unit.
+
+Adaptive exposes the read-only command:
+
+```text
+adaptive-orchestrator project-status \
+  --orchestration-id <exact-id> \
+  --project-root <project-root>
+```
+
+It reads the durable checkpoint without dispatching or resuming work and returns
+an explicit lifecycle status:
+
+- a non-terminal checkpoint is `RUNNING` or `PAUSED`;
+- a terminal checkpoint is classified as `COMPLETED`, `PARTIAL`,
+  `BLOCKED`, or `RECOVERY_REQUIRED` from its Work Unit states.
+
+Fresh `orchestrate` also accepts a caller-allocated `--orchestration-id`.
+The Adaptive/OpenClaw Bridge allocates this id before launch so every layer can
+refer to the same project identity before, during and after durable admission.
+Fresh orchestration refuses to reuse an id that already owns a checkpoint;
+existing projects must use `project-status` / `resume-project`.
+
+This closes the observer-identity gap exposed by the 2026-09-18 SGFP incident,
+where Adaptive reached terminal `COMPLETED` but the parent conversation
+reported an infrastructure blocker using stale precheck/process evidence.
+
+Reusable invariant:
+
+```text
+precheck state != shell observer state != Adaptive project state
+terminal user conclusion requires an authoritative project-state read
+```
