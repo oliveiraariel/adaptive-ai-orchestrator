@@ -254,10 +254,30 @@ class PersistentRecoveryCoordinator:
             ),
             {},
         )
+        incorporated_in = tuple(
+            dict.fromkeys(
+                (
+                    *incident.dissemination_completed,
+                    *incident.consistency_refs,
+                )
+            )
+        )
+        learned = (
+            (
+                f"When {incident.category} affects {incident.component}, "
+                f"the validated remediation is: {incident.fix_summary}"
+            )
+            if incident.fix_summary
+            else ""
+        )
         return {
             "incident_id": incident.id,
             "status": incident.status.value,
-            "problem": incident.root_cause or incident.symptom,
+            "closed": incident.status is IncidentStatus.CLOSED,
+            "problem": incident.symptom,
+            "root_cause": incident.root_cause,
+            "solution": incident.fix_summary,
+            "what_was_learned": learned,
             "resolution_epoch": incident.resolution_epoch,
             "attempted_path_ids": list(incident.attempted_path_ids),
             "last_recommended_path_id": last_strategy.get("recommended_path_id", ""),
@@ -267,6 +287,9 @@ class PersistentRecoveryCoordinator:
             "learning_scope": incident.learning_scope.value,
             "dissemination_targets": list(incident.dissemination_targets),
             "dissemination_completed": list(incident.dissemination_completed),
+            "consistency_passed": incident.consistency_check_passed,
+            "incorporated_in": list(incorporated_in),
+            "source_of_truth_refs": list(incident.source_of_truth_refs),
         }
 
     def _require(self, incident_id: str) -> Incident:
