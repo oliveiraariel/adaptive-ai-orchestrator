@@ -74,6 +74,7 @@ class ProjectRunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     PARTIAL = "PARTIAL"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    PAUSED = "PAUSED"
     BLOCKED = "BLOCKED"
 
 
