@@ -388,3 +388,53 @@ def test_cli_project_status_reports_nonterminal_project_as_running(
     assert payload["status"] == "RUNNING"
     assert payload["active_execution_count"] == 1
     assert payload["unfinished_work_unit_ids"] == ["fix", "gates"]
+
+
+
+def test_runtime_accepts_explicit_null_observability_for_auxiliary_calls(
+    monkeypatch, tmp_path
+) -> None:
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, config, **kwargs):
+            captured["client_config"] = config
+
+    class FakeAdapter:
+        def __init__(self, client, *, observability):
+            captured["observability"] = observability
+
+    monkeypatch.setattr(cli, "OpenClawGatewayClient", FakeClient)
+    monkeypatch.setattr(cli, "OpenClawAdapter", FakeAdapter)
+
+    args = cli.build_parser().parse_args(
+        [
+            "orchestrate",
+            "--objective",
+            "test",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+    sink = cli.NullObservabilitySink()
+
+    cli._runtime(args, observability=sink)
+
+    assert captured["observability"] is sink
+
+
+def test_all_literal_observability_events_are_allowlisted() -> None:
+    import re
+    from pathlib import Path
+    from application.observability import JsonlObservabilitySink
+
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    pattern = re.compile(
+        r"(?:\bobservability|self\._observability)\.emit\(\s*[\"']([^\"']+)[\"']",
+        re.MULTILINE,
+    )
+    emitted = set()
+    for source in source_root.rglob("*.py"):
+        emitted.update(pattern.findall(source.read_text(encoding="utf-8")))
+
+    assert emitted <= JsonlObservabilitySink._event_types
