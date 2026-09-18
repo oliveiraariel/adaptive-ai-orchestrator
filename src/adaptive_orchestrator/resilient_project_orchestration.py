@@ -559,6 +559,8 @@ class RunResilientProjectOrchestration(CoreContinuousProjectOrchestration):
         result: ProjectOrchestrationResult,
         observability: ObservabilitySink,
     ) -> ProjectOrchestrationResult:
+        if result.status is ProjectRunStatus.PAUSED:
+            return result
         if not result.unfinished_work_unit_ids:
             return result
 
