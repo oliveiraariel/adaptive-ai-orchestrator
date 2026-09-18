@@ -687,6 +687,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    incident_reports = [
+        persistent_recovery.stop_report(incident.id)
+        for incident in persistent_recovery.registry.list_all()
+        if incident.orchestration_id == result.orchestration_id
+    ]
     stop_reasons = sorted(
         {
             record.reason
@@ -718,6 +723,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "replan_count": result.replan_count,
                 "stop_reasons": stop_reasons,
                 "requires_human_decision": requires_human_decision,
+                "incident_reports": incident_reports,
                 "dispatch_generations": [
                     {
                         "generation": wave.wave,
@@ -828,6 +834,11 @@ def _resume_project(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
     completed = result.status is ProjectRunStatus.COMPLETED
+    incident_reports = [
+        persistent_recovery.stop_report(incident.id)
+        for incident in persistent_recovery.registry.list_all()
+        if incident.orchestration_id == result.orchestration_id
+    ]
     print(
         json.dumps(
             {
@@ -837,6 +848,7 @@ def _resume_project(args: argparse.Namespace) -> int:
                 "status": result.status.value,
                 "plan_summary": result.plan_summary,
                 "work_unit_count": result.work_unit_count,
+                "incident_reports": incident_reports,
                 "completed_work_unit_ids": list(result.completed_work_unit_ids),
                 "blocked_work_unit_ids": list(result.blocked_work_unit_ids),
                 "recovery_required_work_unit_ids": list(
