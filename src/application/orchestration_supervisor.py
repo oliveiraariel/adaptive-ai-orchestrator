@@ -160,43 +160,52 @@ class ProjectOrchestrationSupervisor:
         path = self._lease_path(orchestration_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         now = self.wall_clock()
+
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            existing = None
         except (OSError, json.JSONDecodeError, TypeError):
             existing = None
+
         if isinstance(existing, dict):
             expires_at = existing.get("expires_at")
             if isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool):
                 if float(expires_at) > now:
                     return False
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                return False
+
         payload = {
             "orchestration_id": orchestration_id,
             "pid": os.getpid(),
             "acquired_at": now,
             "expires_at": now + self.lease_seconds,
         }
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         try:
-            temporary.write_text(
-                json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-                encoding="utf-8",
-            )
-            # Last writer wins only after stale lease detection. A second watcher
-            # that races here re-reads and verifies ownership below.
-            os.replace(temporary, path)
-            current = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                    + "\n"
+                )
+        except OSError:
             try:
-                temporary.unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             except OSError:
                 pass
             return False
-        return (
-            isinstance(current, dict)
-            and current.get("orchestration_id") == orchestration_id
-            and current.get("pid") == os.getpid()
-            and current.get("acquired_at") == now
-        )
+        return True
 
     def _release_lease(self, orchestration_id: str) -> None:
         path = self._lease_path(orchestration_id)
