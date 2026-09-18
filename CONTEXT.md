@@ -143,18 +143,19 @@ For shared-checkout writes, `filesystem.write` requires explicit repository-rela
 When resuming development, read:
 
 1. `CONTEXT.md`
-2. `docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`
-3. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`
-4. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md`
-5. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md`
-6. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
-7. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
-8. `docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md`
-9. `docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md`
-10. `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`
-11. `docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md`
-12. `docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
-13. Phase 3 plan/gate and WU-specific artifacts when the task reaches WU-055 or later.
+2. `docs/architecture/RECOVERY-LOOP.md`
+3. `docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md`
+4. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-DEPLOYMENT-E2E.md`
+5. `docs/process/ORCHESTRATOR-NEW-CHAT-CONTEXT-v0.9.md`
+6. `docs/process/ORCHESTRATOR-DEVELOPMENT-CONTINUITY-v0.9.md`
+7. `docs/process/MULTIAGENT-PROJECT-EXECUTION-v0.4-GATE.md`
+8. `PROJECT-KNOWLEDGE-MANIFEST.yaml`
+9. `docs/architecture/ORCHESTRATOR-SYSTEM-ARCHITECTURE.md`
+10. `docs/architecture/ORCHESTRATOR-SYSTEM-DESIGN.md`
+11. `docs/architecture/ORCHESTRATOR-AUTOMATIC-PROJECT-EXECUTION.md`
+12. `docs/architecture/ORCHESTRATOR-MULTIAGENT-EXECUTION.md`
+13. `docs/process/ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`
+14. Phase 3 plan/gate and WU-specific artifacts when the task reaches WU-055 or later.
 
 For installation/recovery problems, also read:
 
