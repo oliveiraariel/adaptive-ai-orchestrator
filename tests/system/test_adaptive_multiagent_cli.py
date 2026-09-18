@@ -385,6 +385,6 @@ def test_cli_project_status_reports_nonterminal_project_as_running(
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["terminal"] is False
-    assert payload["status"] == "PARTIAL"
+    assert payload["status"] == "RUNNING"
     assert payload["active_execution_count"] == 1
     assert payload["unfinished_work_unit_ids"] == ["fix", "gates"]
