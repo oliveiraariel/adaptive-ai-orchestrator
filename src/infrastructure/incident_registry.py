@@ -61,6 +61,16 @@ class FileIncidentRegistry:
         work_unit_id: str = "",
         execution_id: str = "",
         runtime: str = "",
+        repository: str = "",
+        workspace: str = "",
+        project_version: str = "",
+        branch: str = "",
+        baseline: str = "",
+        session_id: str = "",
+        adapter: str = "",
+        remediation_target: str = "",
+        validation_target: str = "",
+        source_of_truth_refs: Iterable[str] = (),
         blocking: bool = False,
         topics: Iterable[str] = (),
     ) -> Incident | None:
@@ -74,6 +84,15 @@ class FileIncidentRegistry:
             "work_unit_id": self._safe(work_unit_id, 160),
             "execution_id": self._safe(execution_id, 200),
             "runtime": self._safe(runtime, 80),
+            "repository": self._safe(repository, 240),
+            "workspace": self._safe(workspace, 240),
+            "project_version": self._safe(project_version, 120),
+            "branch": self._safe(branch, 160),
+            "baseline": self._safe(baseline, 160),
+            "session_id": self._safe(session_id, 160),
+            "adapter": self._safe(adapter, 120),
+            "remediation_target": self._safe(remediation_target, 240),
+            "validation_target": self._safe(validation_target, 240),
         }
         if not safe["category"] or not safe["component"] or not safe["symptom"] or not safe["source"]:
             return None
@@ -94,6 +113,16 @@ class FileIncidentRegistry:
                     work_unit_id=safe["work_unit_id"] or existing.work_unit_id,
                     execution_id=safe["execution_id"] or existing.execution_id,
                     runtime=safe["runtime"] or existing.runtime,
+                    repository=safe["repository"] or existing.repository,
+                    workspace=safe["workspace"] or existing.workspace,
+                    project_version=safe["project_version"] or existing.project_version,
+                    branch=safe["branch"] or existing.branch,
+                    baseline=safe["baseline"] or existing.baseline,
+                    session_id=safe["session_id"] or existing.session_id,
+                    adapter=safe["adapter"] or existing.adapter,
+                    remediation_target=safe["remediation_target"] or existing.remediation_target,
+                    validation_target=safe["validation_target"] or existing.validation_target,
+                    source_of_truth_refs=tuple(dict.fromkeys((*existing.source_of_truth_refs, *self._safe_refs(source_of_truth_refs)))),
                     topics=tuple(dict.fromkeys((*existing.topics, *self._safe_topics(topics)))),
                 )
                 self.save(updated)
@@ -117,6 +146,16 @@ class FileIncidentRegistry:
                 work_unit_id=safe["work_unit_id"],
                 execution_id=safe["execution_id"],
                 runtime=safe["runtime"],
+                repository=safe["repository"],
+                workspace=safe["workspace"],
+                project_version=safe["project_version"],
+                branch=safe["branch"],
+                baseline=safe["baseline"],
+                session_id=safe["session_id"],
+                adapter=safe["adapter"],
+                remediation_target=safe["remediation_target"],
+                validation_target=safe["validation_target"],
+                source_of_truth_refs=self._safe_refs(source_of_truth_refs),
                 blocking=blocking,
                 topics=self._safe_topics(topics),
             )
@@ -171,6 +210,37 @@ class FileIncidentRegistry:
         incidents.sort(key=lambda item: (-self._severity_rank(item.severity), item.detected_at, item.id))
         return tuple(incidents)
 
+
+    def find_active_by_work_unit(
+        self,
+        *,
+        orchestration_id: str,
+        work_unit_id: str,
+    ) -> Incident | None:
+        for incident in self.list_active():
+            if (
+                incident.orchestration_id == orchestration_id
+                and incident.work_unit_id == work_unit_id
+            ):
+                return incident
+        return None
+
+    def read_events(self, incident_id: str) -> tuple[dict[str, object], ...]:
+        path = self.root / incident_id / "timeline.jsonl"
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return ()
+        events: list[dict[str, object]] = []
+        for raw in lines:
+            try:
+                item = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                events.append(item)
+        return tuple(events)
+
     def find_active_by_fingerprint(self, fingerprint: str) -> Incident | None:
         for incident in self.list_active():
             if incident.fingerprint == fingerprint:
@@ -223,6 +293,15 @@ class FileIncidentRegistry:
         if any(fragment in lowered for fragment in _SENSITIVE):
             return ""
         return clean
+
+    @classmethod
+    def _safe_refs(cls, values: Iterable[str]) -> tuple[str, ...]:
+        refs = []
+        for value in values:
+            clean = cls._safe(str(value), 300)
+            if clean and clean not in refs:
+                refs.append(clean)
+        return tuple(refs[:32])
 
     @classmethod
     def _safe_topics(cls, values: Iterable[str]) -> tuple[str, ...]:
