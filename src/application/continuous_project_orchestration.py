@@ -126,12 +126,14 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "orchestration_admitted",
                 orchestration_id=orchestration_id,
                 phase="ADMITTED",
+                mode="project",
             )
         observability.emit(
             "orchestration_started",
             orchestration_id=orchestration_id,
             recovered=checkpoint is not None,
             phase="ADMITTED" if admission_only else "EXECUTION",
+            mode="project",
         )
         plan = request.plan or self._planner.plan(planning_request)
         if len(plan.work_units) > request.max_work_units:
@@ -1154,7 +1156,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         persist(terminal=result.status is not ProjectRunStatus.PAUSED)
         observability.emit(
             "orchestration_completed", orchestration_id=orchestration_id,
-            status=result.status.value, summary=plan.summary[:500],
+            status=result.status.value, summary=plan.summary[:500], mode="project",
         )
         return result
 
