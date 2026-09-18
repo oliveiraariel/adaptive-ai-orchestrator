@@ -26,6 +26,7 @@ from application.run_orchestration import (
 )
 from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
+from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
 from application.run_project_orchestration import (
     ProjectOrchestrationError,
@@ -575,7 +576,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
             skill_profiles=profiles,
         )
         persistent_recovery = PersistentRecoveryCoordinator(
-            strategist=RuntimeRecoveryStrategist(runner=planner_runner)
+            strategist=RuntimeRecoveryStrategist(runner=planner_runner),
+            learning_analyst=RuntimeSuccessfulRetestLearningAnalyst(
+                runner=planner_runner
+            ),
         )
 
         if args.plan_only:
@@ -792,7 +796,10 @@ def _resume_project(args: argparse.Namespace) -> int:
             skill_profiles=profiles,
         )
         persistent_recovery = PersistentRecoveryCoordinator(
-            strategist=RuntimeRecoveryStrategist(runner=recovery_runner)
+            strategist=RuntimeRecoveryStrategist(runner=recovery_runner),
+            learning_analyst=RuntimeSuccessfulRetestLearningAnalyst(
+                runner=recovery_runner
+            ),
         )
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
