@@ -286,13 +286,36 @@ class ValidatedKnowledgeStore:
             return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            existing = {
-                item.get("lesson_id")
-                for item in self._read()
-                if isinstance(item, dict)
-            }
-            if payload["lesson_id"] in existing:
-                return True
+            prior = self.get(payload["lesson_id"])
+            if prior is not None:
+                prior_targets = {
+                    str(value)
+                    for value in prior.get("targets", [])
+                    if isinstance(value, str)
+                }
+                prior_evidence = {
+                    str(value)
+                    for value in prior.get("evidence", [])
+                    if isinstance(value, str)
+                }
+                payload["targets"] = sorted(
+                    prior_targets | set(payload["targets"])
+                )
+                payload["evidence"] = sorted(
+                    prior_evidence | set(payload["evidence"])
+                )
+                serialized = json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                if (
+                    set(payload["targets"]) == prior_targets
+                    and set(payload["evidence"]) == prior_evidence
+                    and str(prior.get("guidance") or "") == payload["guidance"]
+                    and str(prior.get("result") or "") == payload["result"]
+                ):
+                    return True
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(serialized + "\n")
         except OSError:
