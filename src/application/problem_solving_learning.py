@@ -299,6 +299,47 @@ class ValidatedKnowledgeStore:
             return False
         return True
 
+    def get(self, lesson_id: str) -> dict | None:
+        normalized = lesson_id.strip()
+        if not normalized:
+            return None
+        for item in reversed(self._read()):
+            if isinstance(item, dict) and item.get("lesson_id") == normalized:
+                return item
+        return None
+
+    def has_lesson(
+        self,
+        lesson_id: str,
+        *,
+        targets: Iterable[str] = (),
+        evidence: Iterable[str] = (),
+    ) -> bool:
+        item = self.get(lesson_id)
+        if item is None:
+            return False
+        stored_targets = {
+            str(value)
+            for value in item.get("targets", [])
+            if isinstance(value, str)
+        }
+        stored_evidence = {
+            str(value)
+            for value in item.get("evidence", [])
+            if isinstance(value, str)
+        }
+        required_targets = {
+            self._clean(value, 120)
+            for value in targets
+            if self._clean(value, 120)
+        }
+        required_evidence = {
+            self._clean(value, 300)
+            for value in evidence
+            if self._clean(value, 300)
+        }
+        return required_targets <= stored_targets and required_evidence <= stored_evidence
+
     def relevant(
         self,
         text: str,
