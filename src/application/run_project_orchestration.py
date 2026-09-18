@@ -86,6 +86,7 @@ class ProjectOrchestrationRequest:
     agent: str = "main"
     planner_agent: str | None = None
     scope: str = ""
+    project_id: str = ""
     context: tuple[str, ...] = field(default_factory=tuple)
     constraints: tuple[str, ...] = field(default_factory=tuple)
     max_concurrency: int = 4
@@ -709,6 +710,7 @@ class RunProjectOrchestration:
                 )
             ),
             skills=skills,
+            project_id=request.project_id,
         )
         if experience:
             context.append(
