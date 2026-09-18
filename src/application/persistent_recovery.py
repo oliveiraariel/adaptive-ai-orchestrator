@@ -58,6 +58,7 @@ class PersistentRecoveryCoordinator:
         work_unit_id: str,
         work_unit_objective: str,
         state_summary: str,
+        project_id: str = "",
         attempt_history: Iterable[str],
         constraints: Iterable[str] = (),
         agent: str = "main",
@@ -84,7 +85,7 @@ class PersistentRecoveryCoordinator:
                 orchestration_id=orchestration_id,
                 work_unit_id=work_unit_id,
                 runtime="adaptive",
-                project_id="",
+                project_id=project_id,
             )
         if incident is None:
             raise RuntimeError("Unable to create persistent recovery incident")
