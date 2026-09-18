@@ -26,18 +26,25 @@ class LearningIncorporationReport:
     candidate: LearningCandidate
     runtime_candidate_recorded: bool
     validated_knowledge_recorded: bool
+    dissemination_completed: tuple[str, ...]
+    consistency_passed: bool
+    closed: bool
+    incorporation_refs: tuple[str, ...]
     problem: str
     solution: str
     validation_refs: tuple[str, ...]
 
 
 class AutomaticLearningCycle:
-    """Turn a successful incident retest into a governed learning obligation.
+    """Turn a successful incident retest into incorporated governed learning.
 
     Every successful retest can produce learning, but not every lesson belongs
-    globally. The cycle classifies scope, records a sanitized runtime candidate,
-    plans dissemination targets, and leaves repository/Skill mutations as
-    explicit governed obligations whose completion is tracked by the incident.
+    globally. The cycle classifies scope, records sanitized runtime evidence,
+    promotes validated knowledge with explicit consumer targets, verifies that
+    the promoted lesson contains the required targets/evidence, marks those
+    runtime dissemination targets complete, and closes the incident only after
+    consistency evidence exists. Source-controlled curation may still follow,
+    but it is not required for workers to consume the validated lesson.
     """
 
     def __init__(
@@ -95,8 +102,9 @@ class AutomaticLearningCycle:
             work_unit_id=dispositioned.work_unit_id or "incident-learning",
             source="successful-incident-retest",
         )
+        lesson_id = f"incident-{dispositioned.fingerprint[:12]}"
         validated_recorded = self.validated_store.record(
-            lesson_id=f"incident-{dispositioned.fingerprint[:12]}",
+            lesson_id=lesson_id,
             title=self._safe_learning_text(
                 f"{dispositioned.component}: validated incident learning"
             ),
@@ -112,6 +120,45 @@ class AutomaticLearningCycle:
             evidence=refs,
             project_id=dispositioned.project_id,
         )
+        dissemination_completed: tuple[str, ...] = ()
+        consistency_passed = False
+        closed = False
+        incorporation_refs: tuple[str, ...] = ()
+
+        if validated_recorded:
+            current = self._require(incident_id)
+            for target in current.dissemination_targets:
+                lifecycle.mark_disseminated(incident_id, target)
+            current = self._require(incident_id)
+            dissemination_completed = current.dissemination_completed
+
+            if self.validated_store.has_lesson(
+                lesson_id,
+                targets=current.dissemination_targets,
+                evidence=refs,
+            ):
+                incorporation_refs = (
+                    f"validated-runtime-knowledge:{lesson_id}",
+                    *(
+                        f"learning-target:{target}"
+                        for target in current.dissemination_targets
+                    ),
+                )
+                lifecycle.mark_consistency(
+                    incident_id,
+                    passed=True,
+                    evidence_refs=incorporation_refs,
+                )
+                consistency_passed = True
+                lifecycle.close(incident_id)
+                closed = True
+            else:
+                lifecycle.mark_consistency(
+                    incident_id,
+                    passed=False,
+                    evidence_refs=(),
+                )
+
         self.registry.append_event(
             incident_id,
             "automatic_learning_triggered",
@@ -121,8 +168,21 @@ class AutomaticLearningCycle:
                 "target_count": len(targets),
                 "runtime_candidate_recorded": recorded,
                 "validated_knowledge_recorded": validated_recorded,
+                "dissemination_completed": len(dissemination_completed),
+                "consistency_passed": consistency_passed,
+                "closed": closed,
             },
         )
+        if closed:
+            self.registry.append_event(
+                incident_id,
+                "automatic_learning_completed",
+                {
+                    "scope": scope.value,
+                    "target_count": len(targets),
+                    "incorporation_ref_count": len(incorporation_refs),
+                },
+            )
         return LearningIncorporationReport(
             incident_id=incident_id,
             trigger=trigger,
@@ -131,6 +191,10 @@ class AutomaticLearningCycle:
             candidate=candidate,
             runtime_candidate_recorded=recorded,
             validated_knowledge_recorded=validated_recorded,
+            dissemination_completed=dissemination_completed,
+            consistency_passed=consistency_passed,
+            closed=closed,
+            incorporation_refs=incorporation_refs,
             problem=dispositioned.root_cause,
             solution=dispositioned.fix_summary,
             validation_refs=refs,
