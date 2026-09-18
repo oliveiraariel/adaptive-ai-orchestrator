@@ -340,10 +340,6 @@ def _run(args: argparse.Namespace) -> int:
                 provider=args.provider,
                 tools=tuple(args.tool),
                 scope=args.scope,
-                project_id=(
-                    args.project_id
-                    or Path(args.project_root).expanduser().resolve().name
-                ),
                 context=tuple(args.context),
                 inputs=tuple(args.input),
                 constraints=tuple(args.constraint),
