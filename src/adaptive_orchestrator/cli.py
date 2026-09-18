@@ -178,7 +178,6 @@ def _add_single_work_unit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider")
     parser.add_argument("--tool", action="append", default=[])
     parser.add_argument("--scope", default="")
-    parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
     parser.add_argument("--input", action="append", default=[])
     parser.add_argument("--constraint", action="append", default=[])
@@ -195,6 +194,7 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
     parser.add_argument("--scope", default="")
+    parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
     parser.add_argument("--constraint", action="append", default=[])
     parser.add_argument("--skill-registry")
@@ -642,6 +642,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 agent=args.agent,
                 planner_agent=args.planner_agent,
                 scope=args.scope,
+                project_id=(
+                    args.project_id
+                    or Path(args.project_root).expanduser().resolve().name
+                ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
                 max_concurrency=args.max_concurrency,
