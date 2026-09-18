@@ -54,6 +54,7 @@ class JsonlObservabilitySink:
         "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
         "automatic_learning_triggered", "automatic_learning_failed",
         "orchestration_paused", "orchestration_supervisor_started",
+        "recovery_plan_rejected", "model_failover",
         "orchestration_heartbeat", "orchestration_terminalized",
         "orchestration_completed",
     }
