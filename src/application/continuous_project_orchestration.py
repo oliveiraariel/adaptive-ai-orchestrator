@@ -1246,6 +1246,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "priority": item.priority,
                     "criticality": item.criticality,
                     "parallel_safe": item.parallel_safe,
+                    "reconciles_work_unit_id": item.reconciles_work_unit_id,
                 }
                 for item in plan.work_units
             ],
@@ -1305,6 +1306,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             raw, "criticality"
                         ),
                         parallel_safe=bool(raw.get("parallel_safe", False)),
+                        reconciles_work_unit_id=(
+                            str(raw.get("reconciles_work_unit_id")).strip()
+                            if raw.get("reconciles_work_unit_id") is not None
+                            else None
+                        ),
                     )
                 )
             dependencies = []
