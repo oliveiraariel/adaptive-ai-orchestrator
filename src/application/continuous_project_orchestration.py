@@ -782,6 +782,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         dispatch_generation: int,
         pending_replan: bool,
         replan_feedback: str,
+        recovery_epoch_counts: dict[str, int],
+        recovery_replans_in_epoch: dict[str, int],
+        recovery_guidance: dict[str, str],
         active: Sequence[tuple[DispatchOutcome, int]],
         terminal: bool,
     ) -> None:
@@ -831,6 +834,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "dispatch_generation": dispatch_generation,
             "pending_replan": pending_replan,
             "replan_feedback": replan_feedback,
+            "recovery_epoch_counts": dict(recovery_epoch_counts),
+            "recovery_replans_in_epoch": dict(recovery_replans_in_epoch),
+            "recovery_guidance": dict(recovery_guidance),
             "active_executions": active_rows,
             "terminal": terminal,
         }
@@ -852,6 +858,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "max_attempts_per_work_unit": request.max_attempts_per_work_unit,
             "max_strategies_per_work_unit": request.max_strategies_per_work_unit,
             "max_replans": request.max_replans,
+            "persistent_recovery": request.persistent_recovery,
+            "max_recovery_epochs": request.max_recovery_epochs,
+            "recovery_strategist_agent": request.recovery_strategist_agent,
+            "learning_after_successful_retest": request.learning_after_successful_retest,
             "dependency_context_chars": request.dependency_context_chars,
             "human_approved": request.human_approved,
             "execution_policy": {
@@ -938,6 +948,20 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     else 2
                 ),
                 max_replans=cls._require_nonnegative_int(raw, "max_replans"),
+                persistent_recovery=bool(raw.get("persistent_recovery", False)),
+                max_recovery_epochs=(
+                    cls._require_nonnegative_int(raw, "max_recovery_epochs")
+                    if "max_recovery_epochs" in raw
+                    else 0
+                ),
+                recovery_strategist_agent=(
+                    str(raw.get("recovery_strategist_agent"))
+                    if raw.get("recovery_strategist_agent") is not None
+                    else None
+                ),
+                learning_after_successful_retest=bool(
+                    raw.get("learning_after_successful_retest", True)
+                ),
                 dependency_context_chars=cls._require_nonnegative_int(
                     raw, "dependency_context_chars"
                 ),
@@ -1241,6 +1265,34 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "Checkpoint strategy generations must be at least 1."
             )
         return restored
+
+    @classmethod
+    def _restore_optional_int_map(
+        cls,
+        checkpoint: dict,
+        name: str,
+        expected_keys: Sequence[str],
+        *,
+        default: int,
+    ) -> dict[str, int]:
+        raw = checkpoint.get(name)
+        if raw is None:
+            return {str(key): default for key in expected_keys}
+        return cls._restore_int_map({name: raw}, name, expected_keys)
+
+    @staticmethod
+    def _restore_str_map_optional(checkpoint: dict, name: str) -> dict[str, str]:
+        raw = checkpoint.get(name)
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in raw.items()
+        ):
+            raise ProjectOrchestrationError(
+                f"Checkpoint field '{name}' contains invalid values."
+            )
+        return dict(raw)
 
     @staticmethod
     def _restore_str_map(checkpoint: dict, name: str) -> dict[str, str]:
