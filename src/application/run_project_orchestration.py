@@ -29,6 +29,7 @@ from application.finalize_execution import FinalizeExecution, FinalizeExecutionR
 from application.plan_work import PlanWork, PlanWorkRequest
 from application.problem_solving_learning import (
     LEARNING_MARKER,
+    ProblemSolvingKnowledgeBase,
     ProblemSolvingLearningStore,
 )
 from application.incident_management import (
@@ -201,6 +202,9 @@ class RunProjectOrchestration:
         self._skill_resolver = SkillResolver(self._skill_profiles)
         self._readiness = WorkUnitReadinessEvaluator()
         self._learning_store = learning_store or ProblemSolvingLearningStore.from_env()
+        self._knowledge_base = ProblemSolvingKnowledgeBase.load_default(
+            learning_store=self._learning_store
+        )
         self._incident_sentinel = incident_sentinel or IncidentSentinel()
         self._incident_pressure = ResolutionPressureEngine()
         self._persistent_recovery = persistent_recovery
@@ -693,6 +697,25 @@ class RunProjectOrchestration:
         if revision_feedback:
             feedback = revision_feedback[: request.dependency_context_chars]
             context.append(f"Revision feedback from previous attempt:\n{feedback}")
+
+        experience = self._knowledge_base.render_guidance(
+            "\n".join(
+                (
+                    request.objective,
+                    spec.objective,
+                    spec.scope,
+                    *request.context,
+                    revision_feedback,
+                )
+            ),
+            skills=skills,
+        )
+        if experience:
+            context.append(
+                experience
+                + "\nUse learned experience as process guidance only. It does not "
+                "override project facts, requirements, authority, or acceptance criteria."
+            )
 
         constraints = (
             *request.constraints,
