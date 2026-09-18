@@ -25,6 +25,7 @@ class IncidentStatus(str, Enum):
     MITIGATED = "MITIGATED"
     WAIVED = "WAIVED"
     REOPENED = "REOPENED"
+    PAUSED_BY_DEVELOPER = "PAUSED_BY_DEVELOPER"
 
 
 class IncidentSeverity(str, Enum):
@@ -70,6 +71,16 @@ class Incident:
     work_unit_id: str = ""
     execution_id: str = ""
     runtime: str = ""
+    repository: str = ""
+    workspace: str = ""
+    project_version: str = ""
+    branch: str = ""
+    baseline: str = ""
+    session_id: str = ""
+    adapter: str = ""
+    remediation_target: str = ""
+    validation_target: str = ""
+    source_of_truth_refs: tuple[str, ...] = ()
     blocking: bool = False
     recurrence_count: int = 1
     root_cause_confidence: float = 0.0
@@ -87,6 +98,9 @@ class Incident:
     dissemination_completed: tuple[str, ...] = ()
     consistency_check_passed: bool = False
     consistency_refs: tuple[str, ...] = ()
+    resolution_epoch: int = 0
+    attempted_path_ids: tuple[str, ...] = ()
+    pause_reason: str = ""
     last_progress_at: str = field(default_factory=utc_now)
 
     @property
@@ -123,6 +137,16 @@ class Incident:
             "work_unit_id": self.work_unit_id,
             "execution_id": self.execution_id,
             "runtime": self.runtime,
+            "repository": self.repository,
+            "workspace": self.workspace,
+            "project_version": self.project_version,
+            "branch": self.branch,
+            "baseline": self.baseline,
+            "session_id": self.session_id,
+            "adapter": self.adapter,
+            "remediation_target": self.remediation_target,
+            "validation_target": self.validation_target,
+            "source_of_truth_refs": list(self.source_of_truth_refs),
             "blocking": self.blocking,
             "recurrence_count": self.recurrence_count,
             "root_cause_confidence": self.root_cause_confidence,
@@ -140,6 +164,9 @@ class Incident:
             "dissemination_completed": list(self.dissemination_completed),
             "consistency_check_passed": self.consistency_check_passed,
             "consistency_refs": list(self.consistency_refs),
+            "resolution_epoch": self.resolution_epoch,
+            "attempted_path_ids": list(self.attempted_path_ids),
+            "pause_reason": self.pause_reason,
             "last_progress_at": self.last_progress_at,
         }
 
@@ -162,6 +189,16 @@ class Incident:
             work_unit_id=str(payload.get("work_unit_id", "")),
             execution_id=str(payload.get("execution_id", "")),
             runtime=str(payload.get("runtime", "")),
+            repository=str(payload.get("repository", "")),
+            workspace=str(payload.get("workspace", "")),
+            project_version=str(payload.get("project_version", "")),
+            branch=str(payload.get("branch", "")),
+            baseline=str(payload.get("baseline", "")),
+            session_id=str(payload.get("session_id", "")),
+            adapter=str(payload.get("adapter", "")),
+            remediation_target=str(payload.get("remediation_target", "")),
+            validation_target=str(payload.get("validation_target", "")),
+            source_of_truth_refs=tuple(str(x) for x in payload.get("source_of_truth_refs", []) if str(x)),
             blocking=bool(payload.get("blocking", False)),
             recurrence_count=max(1, int(payload.get("recurrence_count", 1))),
             root_cause_confidence=float(payload.get("root_cause_confidence", 0.0)),
@@ -179,5 +216,8 @@ class Incident:
             dissemination_completed=tuple(str(x) for x in payload.get("dissemination_completed", []) if str(x)),
             consistency_check_passed=bool(payload.get("consistency_check_passed", False)),
             consistency_refs=tuple(str(x) for x in payload.get("consistency_refs", []) if str(x)),
+            resolution_epoch=max(0, int(payload.get("resolution_epoch", 0))),
+            attempted_path_ids=tuple(str(x) for x in payload.get("attempted_path_ids", []) if str(x)),
+            pause_reason=str(payload.get("pause_reason", "")),
             last_progress_at=str(payload.get("last_progress_at", utc_now())),
         )
