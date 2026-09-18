@@ -37,7 +37,11 @@ class IncidentSupervisor:
         directives: list[ResolutionDirective] = []
         for incident in self.registry.list_active():
             score = self.pressure.score(incident)
-            if incident.status in {
+            if incident.status is IncidentStatus.PAUSED_BY_DEVELOPER:
+                action = "paused-by-developer"
+                reason = "Developer explicitly paused this active resolution obligation."
+                research = False
+            elif incident.status in {
                 IncidentStatus.LEARNING_PENDING,
                 IncidentStatus.KNOWLEDGE_PROMOTED,
                 IncidentStatus.DISSEMINATING,
@@ -90,6 +94,8 @@ class IncidentSupervisor:
         directives = self.directives(limit=limit)
         incidents = {item.id: item for item in self.registry.list_active()}
         for directive in directives:
+            if directive.action == "paused-by-developer":
+                continue
             if directive.pressure < 40 and directive.action == "monitor-and-reconcile":
                 continue
             incident = incidents.get(directive.incident_id)
@@ -119,6 +125,8 @@ class IncidentSupervisor:
         incidents = {item.id: item for item in self.registry.list_active()}
         requests: list[ExternalResearchRequest] = []
         for directive in self.directives(limit=limit):
+            if directive.action == "paused-by-developer":
+                continue
             if not directive.external_research_allowed:
                 continue
             incident = incidents.get(directive.incident_id)
