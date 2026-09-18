@@ -72,6 +72,14 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         status="RECOVERED",
     )
     sink.emit(
+        "work_unit_reconciled",
+        orchestration_id="orch-1",
+        work_unit_id="wu-original",
+        reconciled_by_work_unit_id="wu-fix",
+        status="COMPLETED",
+        verdict="ACCEPTED",
+    )
+    sink.emit(
         "recovery_strategy_analyzed",
         orchestration_id="orch-1",
         work_unit_id="wu-1",
@@ -103,13 +111,15 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
     ]
     assert [event["event_type"] for event in events] == [
         "worker_recovered",
+        "work_unit_reconciled",
         "recovery_strategy_analyzed",
         "automatic_learning_triggered",
         "orchestration_paused",
     ]
-    assert events[1]["incident_id"] == "INC-1"
-    assert events[1]["recovery_epoch"] == 2
-    assert events[2]["targets"] == [
+    assert events[1]["reconciled_by_work_unit_id"] == "wu-fix"
+    assert events[2]["incident_id"] == "INC-1"
+    assert events[2]["recovery_epoch"] == 2
+    assert events[3]["targets"] == [
         "adaptive:problem-solving",
         "skills:debugging",
     ]
