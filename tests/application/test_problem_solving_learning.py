@@ -7,6 +7,7 @@ from application.problem_solving_learning import (
     ProblemSolvingKnowledgeBase,
     ProblemSolvingLearningStore,
     ProblemSolvingStrategy,
+    ValidatedKnowledgeStore,
 )
 from application.runtime_project_planner import (
     ProjectPlanningRequest,
@@ -233,3 +234,67 @@ def test_default_knowledge_guides_staged_transport_validation(tmp_path: Path) ->
     assert "validate-transport-with-staged-payloads" in guidance
     assert "Stop escalation when MEDIUM fails" in guidance
     assert "real production transport path" in guidance
+
+
+def test_validated_incident_learning_is_targeted_to_selected_skill(tmp_path: Path) -> None:
+    validated = ValidatedKnowledgeStore(tmp_path / "validated.jsonl")
+    assert validated.record(
+        lesson_id="incident-correlated-liveness",
+        title="Correlated worker liveness",
+        trigger="worker appears active but lease heartbeat is stale",
+        guidance="reconcile execution identity lease and heartbeat before redispatch",
+        result="duplicate recovery was avoided",
+        scope="ARCHITECTURAL",
+        targets=("skills:debugging",),
+        evidence=("test:correlated-liveness",),
+    )
+    base = ProblemSolvingKnowledgeBase(
+        (),
+        learning_store=ProblemSolvingLearningStore(tmp_path / "provisional.jsonl"),
+        validated_store=validated,
+    )
+
+    debugging = base.render_guidance(
+        "worker lease heartbeat is stale and active state is uncertain",
+        skills=("debugging",),
+    )
+    testing = base.render_guidance(
+        "worker lease heartbeat is stale and active state is uncertain",
+        skills=("testing",),
+    )
+
+    assert "VALIDATED INCIDENT LEARNING" in debugging
+    assert "incident-correlated-liveness" in debugging
+    assert "incident-correlated-liveness" not in testing
+
+
+def test_project_specific_validated_learning_does_not_leak_between_projects(tmp_path: Path) -> None:
+    validated = ValidatedKnowledgeStore(tmp_path / "validated-project.jsonl")
+    assert validated.record(
+        lesson_id="incident-project-account-provisioning",
+        title="Project provisioning order",
+        trigger="account provisioning retest",
+        guidance="create the project account before dependent defaults",
+        result="project retest passed",
+        scope="PROJECT_SPECIFIC",
+        targets=("project:knowledge",),
+        evidence=("test:project-provisioning",),
+        project_id="project-a",
+    )
+    base = ProblemSolvingKnowledgeBase(
+        (),
+        learning_store=ProblemSolvingLearningStore(tmp_path / "project-provisional.jsonl"),
+        validated_store=validated,
+    )
+
+    same_project = base.render_guidance(
+        "account provisioning retest",
+        project_id="project-a",
+    )
+    other_project = base.render_guidance(
+        "account provisioning retest",
+        project_id="project-b",
+    )
+
+    assert "incident-project-account-provisioning" in same_project
+    assert "incident-project-account-provisioning" not in other_project
