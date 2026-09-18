@@ -1,6 +1,7 @@
-from application.incident_management import IncidentSentinel
+from application.incident_management import IncidentSentinel, IncidentLifecycleManager
 from application.incident_ports import JsonlNotificationOutbox
 from application.incident_supervisor import IncidentSupervisor
+from domain.incident import IncidentStatus
 from infrastructure.incident_registry import FileIncidentRegistry
 
 
@@ -91,3 +92,25 @@ def test_supervisor_executes_research_and_stops_at_attempt_budget(tmp_path):
     assert "source:vendor-doc" in current.evidence_refs
     directive = supervisor.directives()[0]
     assert directive.action == "research-budget-exhausted"
+
+
+def test_paused_incident_remains_persistent_but_is_not_scheduled(tmp_path):
+    registry = FileIncidentRegistry(tmp_path / "incidents")
+    incident = IncidentSentinel(registry).observe_runtime_failure(
+        "strategy investigation needs developer pause",
+        orchestration_id="orch-pause",
+        work_unit_id="wu-pause",
+        runtime="adaptive",
+        blocking=True,
+    )
+    assert incident is not None
+    IncidentLifecycleManager(registry).transition(
+        incident.id,
+        IncidentStatus.PAUSED_BY_DEVELOPER,
+        note="developer requested pause",
+    )
+
+    supervisor = IncidentSupervisor(registry)
+    directive = supervisor.directives()[0]
+    assert directive.action == "paused-by-developer"
+    assert supervisor.external_research_requests() == ()
