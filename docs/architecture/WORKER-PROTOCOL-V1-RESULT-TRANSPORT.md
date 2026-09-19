@@ -71,6 +71,23 @@ may mark an execution `SUSPECT` without cancelling it, and a separate hard
 observer deadline. Observer unavailability is not proof of worker failure.
 Reconciliation must happen before recovery or redispatch.
 
+The terminal observation order is normative:
+
+```text
+observe Gateway
+  -> preserve run/execution identity
+  -> reconcile the exact assigned Result Store target
+  -> verify/finalize manifest when recoverable
+  -> only then classify wait/transport state
+  -> evaluate, recover, fail over, retry or fan-in
+```
+
+This order applies to `agent.wait=error`, `agent.wait=timeout`, transport/RPC
+exceptions, recovered runs, provider failover and project fan-in. A verified
+Result Store publication is semantic completion even when the transport reports
+a later error. If no verifiable result exists, normal transport/liveness policy
+continues unchanged. Reconciliation itself never redispatches.
+
 `dispatch` and `wait` are distinct operations. Dispatch persists execution
 identity before returning; a later process may wait on the same `external_id`,
 `runId`, `execution_id` and Result Store target. Observation failure or process
