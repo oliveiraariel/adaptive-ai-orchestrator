@@ -1265,3 +1265,148 @@ def test_live_run_reconciles_final_result_after_gateway_wait_timeout(tmp_path) -
         server.shutdown()
         thread.join(timeout=1)
 
+
+
+def test_live_run_reconciles_published_result_before_wait_error_failover(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = FileResultStore(root=tmp_path / "runs", project_root=tmp_path)
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+            device_identity_path=str(tmp_path / "identity.json"),
+            run_identity_path=str(tmp_path / "identities.jsonl"),
+        ),
+        result_store=store,
+    )
+    agent_calls: list[dict] = []
+
+    def fake_rpc(method, params):
+        if method == "sessions.patch":
+            return {"ok": True}
+        if method == "agent":
+            agent_calls.append(params)
+            if len(agent_calls) > 1:
+                raise AssertionError("verified original result must prevent failover dispatch")
+            return {"runId": "run-terminal-error", "acceptedAt": 123}
+        if method == "agent.wait":
+            run = next(
+                item for item in client._runs.values()
+                if item.run_id == params["runId"]
+            )
+            assert run.result_target is not None
+            run.result_target.result_path.write_text(
+                "terminal publication survived gateway error\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE\n",
+                encoding="utf-8",
+            )
+            return {
+                "status": "error",
+                "error": "provider rate limit reached (429)",
+            }
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+    external = client.submit(
+        {
+            "task_id": "task-terminal-error",
+            "orchestration_id": "orch-terminal-error",
+            "work_unit_id": "wu-terminal-error",
+            "objective": "publish before gateway error",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {
+                "agent": "sgfp",
+                "model": "moonshot/kimi-k2.7-code",
+                "provider": "moonshot",
+                "auth_profile": "moonshot:api-key",
+                "thinking": None,
+                "policy_constraints": [],
+            },
+        }
+    )
+    target = client._runs[external].result_target
+    assert target is not None
+
+    result = client.retrieve_result(external)
+
+    assert result["reconciled"] is True
+    assert result["reconciliation_phase"] == "gateway_error"
+    assert result["result_transport"]["reconciliation_phase"] == "gateway_error"
+    assert result["result_transport"]["authoritative"] is True
+    assert result["worker_protocol"]["completion_state"] == "RESULT_VERIFIED"
+    assert target.manifest_path.exists()
+    assert len(agent_calls) == 1
+
+
+def test_live_run_reconciles_after_transport_exception(monkeypatch, tmp_path) -> None:
+    store = FileResultStore(root=tmp_path / "runs", project_root=tmp_path)
+    client = OpenClawGatewayClient(
+        GatewayConfig(
+            archive_completed_sessions=False,
+            archive_cancelled_sessions=False,
+            device_identity_path=str(tmp_path / "identity.json"),
+            run_identity_path=str(tmp_path / "identities.jsonl"),
+        ),
+        result_store=store,
+    )
+
+    def fake_rpc(method, params):
+        if method == "sessions.patch":
+            return {"ok": True}
+        if method == "agent":
+            return {"runId": "run-transport-exception", "acceptedAt": 123}
+        raise AssertionError(f"Unexpected RPC method: {method}")
+
+    monkeypatch.setattr(client, "_rpc", fake_rpc)
+    external = client.submit(
+        {
+            "task_id": "task-transport-exception",
+            "orchestration_id": "orch-transport-exception",
+            "work_unit_id": "wu-transport-exception",
+            "objective": "publish before transport exception",
+            "scope": "",
+            "context": [],
+            "inputs": [],
+            "artifacts": [],
+            "decisions": [],
+            "dependencies": [],
+            "constraints": [],
+            "expected_output": ["done"],
+            "acceptance_criteria": ["runtime-completed"],
+            "configuration": {"agent": "sgfp"},
+        }
+    )
+    target = client._runs[external].result_target
+    assert target is not None
+
+    def fail_after_publish(_run_id):
+        target.result_path.write_text(
+            "transport exception publication\n"
+            "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+            "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+            "ADAPTIVE_UNMET_CRITERIA: NONE\n",
+            encoding="utf-8",
+        )
+        raise OpenClawGatewayError("websocket closed after worker publication")
+
+    monkeypatch.setattr(client, "_wait_for_result", fail_after_publish)
+
+    result = client.retrieve_result(external)
+
+    assert result["reconciled"] is True
+    assert result["reconciliation_phase"] == "gateway_error"
+    assert result["result_transport"]["authoritative"] is True
+    assert result["worker_protocol"]["completion_state"] == "RESULT_VERIFIED"
+    assert target.manifest_path.exists()
