@@ -22,11 +22,29 @@ GERAR NOVO ZIP / PACOTE / ARTEFATO PARA RETESTE
 CONTINUAR UMA LINHA DE TRABALHO
 → CONTINUAR-PROJETO.md
 
+RETOMAR CONTEXTO EM NOVA JANELA GPT/CHATGPT
+→ RETOMAR-CONTEXTO-GPT.md
+
+RETOMAR CONTEXTO EM NOVA JANELA/SESSÃO OPENCLAW
+→ RETOMAR-CONTEXTO-OPENCLAW.md
+
 PARAR E PRESERVAR CONTEXTO
 → PARAR-E-FAZER-HANDOFF.md
 ```
 
 Não é necessário colar todos os prompts juntos.
+
+## Modelos básicos de retomada de contexto
+
+Os arquivos `RETOMAR-CONTEXTO-GPT.md` e `RETOMAR-CONTEXTO-OPENCLAW.md` são **baselines genéricos** para reconstrução de contexto em uma nova janela/sessão.
+
+Eles não tentam substituir a governança do projeto. O tamanho ideal depende do caso:
+
+- uma retomada simples pode usar menos instruções;
+- uma fase crítica, release, incidente, migração, múltiplos repositórios ou governança forte pode exigir um prompt maior;
+- quando existir um prompt de retomada específico do projeto, ele deve complementar ou prevalecer sobre o baseline genérico.
+
+A retomada básica deve ser predominantemente de leitura. Em especial no OpenClaw, uma simples reconstrução de contexto não deve criar nova Work Unit, worker, precheck ou orquestração apenas para descobrir o estado do projeto.
 
 ## Padrão obrigatório de handoff
 
@@ -178,6 +196,14 @@ Ou, quando quiser tornar a intenção explícita:
 ### Continuar
 
 > Leia `docs/prompts/CONTINUAR-PROJETO.md` e continue a partir do estado atual.
+
+### Retomar contexto em GPT/ChatGPT
+
+> Leia `docs/prompts/RETOMAR-CONTEXTO-GPT.md` e use esse modelo básico para reconstruir o contexto deste projeto. Depois aguarde meu próximo comando.
+
+### Retomar contexto no OpenClaw
+
+> Leia `docs/prompts/RETOMAR-CONTEXTO-OPENCLAW.md` e use esse modelo básico para reconstruir o contexto deste projeto em modo somente leitura. Depois aguarde meu próximo comando.
 
 ### Parar
 

@@ -131,6 +131,8 @@ Use:
 - [`INICIAR-PROJETO-FRONTEND.md`](docs/prompts/INICIAR-PROJETO-FRONTEND.md) for frontend/web UI work;
 - [`INICIAR-PROJETO-BACKEND.md`](docs/prompts/INICIAR-PROJETO-BACKEND.md) for backend/engineering work;
 - [`CONTINUAR-PROJETO.md`](docs/prompts/CONTINUAR-PROJETO.md) to continue an existing line of work;
+- [`RETOMAR-CONTEXTO-GPT.md`](docs/prompts/RETOMAR-CONTEXTO-GPT.md) for a minimal generic context-resume baseline in GPT/ChatGPT;
+- [`RETOMAR-CONTEXTO-OPENCLAW.md`](docs/prompts/RETOMAR-CONTEXTO-OPENCLAW.md) for a minimal read-only context-resume baseline in OpenClaw;
 - [`PARAR-E-FAZER-HANDOFF.md`](docs/prompts/PARAR-E-FAZER-HANDOFF.md) to stop while preserving continuity.
 
 When a project has its own governance and documentation, prefer that repository's project-specific operational prompt.
