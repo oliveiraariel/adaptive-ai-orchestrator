@@ -495,20 +495,50 @@ class OpenClawGatewayClient(OpenClawClient):
             result = {
                 "status": "ok",
                 "reconciled": True,
+                "reconciliation_phase": "resume",
                 "stopReason": "adaptive-result-store",
             }
         else:
-            result = self._wait_for_result(run.run_id)
-            status = self._normalize_wait_status(result.get("status"))
+            try:
+                result = self._wait_for_result(run.run_id)
+            except OpenClawGatewayError:
+                # A transport/RPC failure can arrive after the worker has already
+                # atomically published its authoritative result. Reconcile the
+                # exact assigned target before classifying the observation as a
+                # runtime failure or allowing provider failover.
+                stored = self._reconcile_persisted_worker_result(run)
+                if stored is None:
+                    raise
+                result = {
+                    "status": "ok",
+                    "reconciled": True,
+                    "reconciliation_phase": "gateway_error",
+                    "stopReason": "adaptive-result-store",
+                }
+            else:
+                status = self._normalize_wait_status(result.get("status"))
 
-            if status == "TIMEOUT":
-                raise OpenClawGatewayError(
-                    f"OpenClaw agent run '{run.run_id}' is still running."
-                )
-
-            if status == "FAILED":
-                error = result.get("error") or "OpenClaw agent run failed."
-                raise OpenClawGatewayError(str(error))
+                if status in {"TIMEOUT", "FAILED"}:
+                    # agent.wait is an observation boundary, not authoritative
+                    # semantic completion. A final result published just before
+                    # timeout/error must win after identity/integrity validation.
+                    stored = self._reconcile_persisted_worker_result(run)
+                    if stored is not None:
+                        result = {
+                            "status": "ok",
+                            "reconciled": True,
+                            "reconciliation_phase": (
+                                "timeout" if status == "TIMEOUT" else "gateway_error"
+                            ),
+                            "stopReason": "adaptive-result-store",
+                        }
+                    elif status == "TIMEOUT":
+                        raise OpenClawGatewayError(
+                            f"OpenClaw agent run '{run.run_id}' is still running."
+                        )
+                    else:
+                        error = result.get("error") or "OpenClaw agent run failed."
+                        raise OpenClawGatewayError(str(error))
 
         output: str
         metadata: dict[str, Any] = {}
@@ -526,10 +556,10 @@ class OpenClawGatewayClient(OpenClawClient):
 
         if stored is None and run.result_target is not None:
             try:
-                # Normal runtime completion still follows the same Adaptive-owned
-                # finalizer. Recovery above only changes when that finalization is
-                # allowed to begin, never who owns the manifest.
-                stored = self._result_store.finalize_worker_result(run.result_target)
+                # Every terminal path uses the same idempotent reconciliation
+                # seam. Existing manifests are verified rather than overwritten;
+                # a final result.txt without a manifest is finalized by Adaptive.
+                stored = self._result_store.reconcile_worker_result(run.result_target)
             except ResultStoreError as exc:
                 protocol_error = str(exc)
 
@@ -591,6 +621,11 @@ class OpenClawGatewayClient(OpenClawClient):
                 "message_bytes": exchanged.byte_length,
                 "complete": True,
                 "completion_state": PROTOCOL_COMPLETION_STATE,
+                **(
+                    {"reconciliation_phase": result["reconciliation_phase"]}
+                    if isinstance(result.get("reconciliation_phase"), str)
+                    else {}
+                ),
             }
         else:
             history = self._rpc(
