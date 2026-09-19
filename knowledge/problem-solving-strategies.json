@@ -428,6 +428,38 @@
       "evidence": [
         "2026-09-18: gestaopessoal.org /wp-login.php failed only while SGFP was active. Disabling SGFP restored login; WordPress PHP logs then identified WordPressLogin::safeRedirect receiving WP_Error where the callback accepted only WP_User. The minimal contract fix restored the login path."
       ]
+    },
+    {
+      "id": "reconcile-result-store-before-terminal-transport-classification",
+      "status": "validated",
+      "title": "Reconcile the exact Result Store target before treating Gateway observation failure as semantic failure",
+      "triggers": [
+        "agent.wait error",
+        "agent.wait timeout",
+        "gateway transport error",
+        "OpenClawGatewayError",
+        "result.txt exists without manifest",
+        "provider failover after worker publication",
+        "terminal reconciliation",
+        "RESULT_VERIFIED"
+      ],
+      "guidance": [
+        "Preserve the original orchestration_id, work_unit_id, execution_id and run identity before interpreting Gateway terminal observations.",
+        "After agent.wait returns error or timeout, or after a transport/RPC exception, reconcile only the exact assigned project-local Result Store target before failure classification, retry, failover, recovery or redispatch.",
+        "If a valid manifest already exists, verify it idempotently. If final result.txt exists without a manifest, let Adaptive calculate byte length, SHA-256, protocol identity and complete=true, write manifest.json last, then reread and verify.",
+        "A verified authoritative result takes precedence over a later transport error because transport observation and semantic completion are separate facts.",
+        "If no verifiable result exists, continue the existing transport, liveness and recovery policy without claiming success.",
+        "Use the same reconciliation seam for resumed executions and fan-in so late observation cannot duplicate already-completed side-effecting work."
+      ],
+      "safety": [
+        "Never search broadly for another result or infer identity from agent names.",
+        "Never relink, copy or accept a result from another orchestration, Work Unit or execution.",
+        "Fail closed on identity, path, byte-length, SHA-256, protocol-contract or manifest-integrity mismatch.",
+        "Reconciliation itself must not redispatch."
+      ],
+      "evidence": [
+        "2026-09-19: a worker published canonical result.txt before OpenClaw later returned a Gateway error. The live path classified the wait error before finalizing the published result, making recoverable work appear failed and risking unnecessary failover/recovery. The corrective invariant is Gateway observation -> exact Result Store reconciliation -> semantic classification."
+      ]
     }
   ]
 }

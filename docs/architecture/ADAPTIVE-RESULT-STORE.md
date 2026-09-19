@@ -223,10 +223,26 @@ This distinction prevents:
 
 ## Lifecycle and reconciliation invariant
 
-Run identity is preserved before waiting. A wait timeout is treated as an
-observation timeout unless execution failure is independently proven. The same
-run is reconciled before redispatch so side-effecting work is not duplicated
-merely because result observation was delayed.
+Run identity is preserved before waiting. Gateway observation is never allowed
+to terminalize an execution by itself. After `agent.wait` returns `ok`,
+`error`, or `timeout` — and after a transport/RPC exception — Adaptive
+reconciles the **exact assigned** Result Store target before classifying the
+execution, retrying, failing over, or redispatching.
+
+A verified manifest wins over a late transport error. A final atomic
+`result.txt` with no manifest is finalized by Adaptive and then reread through
+the normal integrity path. A timeout with no verifiable result remains an
+observation timeout; an error with no verifiable result remains eligible for the
+normal failure/recovery policy.
+
+Reconciliation never searches broadly for a convenient result and never relinks
+an artifact from another orchestration, Work Unit, or execution. Identity,
+project-local path, byte length, SHA-256, protocol contract, and
+`complete=true` must all bind to the originally assigned tuple before the
+semantic state can become `RESULT_VERIFIED`.
+
+The same run is reconciled before redispatch so side-effecting work is not
+duplicated merely because result observation was delayed.
 
 ## Design invariants
 
