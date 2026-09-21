@@ -98,7 +98,6 @@ class ProjectOrchestrationRequest:
     persistent_recovery: bool = False
     max_recovery_epochs: int = 0
     max_stalled_recovery_cycles: int = 3
-    continue_independent_work_during_recovery: bool = True
     pragmatic_low_criticality_acceptance: bool = True
     recovery_strategist_agent: str | None = None
     learning_after_successful_retest: bool = True
