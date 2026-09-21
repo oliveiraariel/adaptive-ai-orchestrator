@@ -247,6 +247,8 @@ Critical work and independent-review policy stay on the strict evidence path.
 
 This is Adaptive's **bulkhead rule**: a failure in one Work Unit must not sink unrelated Work Units.
 
+`pending_replan` is therefore **not** a project-wide dispatch lock. It records control-plane work still owed for one or more recovery targets. While it is true, any independently READY Work Unit may still be dispatched. The scheduler prefers ready functional execution over synchronous Strategist/Planner work and returns to the recovery lane when no independent executable work is available.
+
 ### Dependency block
 
 A Work Unit merely waiting for a required upstream dependency does not need Investigation. It becomes ready when the prerequisite is accepted.
