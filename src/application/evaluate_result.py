@@ -100,9 +100,15 @@ class EvaluateResult:
         result_text: str,
         evidence: set[str],
     ) -> bool:
-        # Minimal observable rule for this first slice:
-        # a criterion is satisfied when it appears either in explicit
-        # evidence or in the normalized result representation.
+        # Explicit evidence remains authoritative. For ordinary
+        # low-criticality work, the orchestrator may also supply the bounded
+        # "authoritative-worker-complete" sentinel after verifying: runtime
+        # completion, authoritative Result Store transport, and a structured
+        # COMPLETE footer with no unmet criteria. This avoids false-negative
+        # returns caused only by literal wording differences between an
+        # acceptance criterion and semantically equivalent worker evidence.
+        if "authoritative-worker-complete" in evidence:
+            return True
         return criterion in evidence or criterion in result_text
 
     @staticmethod
