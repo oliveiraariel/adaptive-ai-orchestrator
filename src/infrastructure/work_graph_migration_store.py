@@ -76,6 +76,57 @@ class FileWorkGraphMigrationStore:
         )
         return str(path.relative_to(self.project_root)).replace("\\", "/")
 
+    def controller_liveness(
+        self,
+        orchestration_id: str,
+    ) -> dict[str, Any] | None:
+        digest = self._orchestration_digest(orchestration_id)
+        path = (
+            self.project_root
+            / ".adaptive"
+            / "orchestration-liveness"
+            / f"{digest}.json"
+        )
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise WorkGraphMigrationError(
+                "Controller liveness record cannot be read safely."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise WorkGraphMigrationError(
+                "Controller liveness record is malformed."
+            )
+        if payload.get("orchestration_id") != orchestration_id:
+            raise WorkGraphMigrationError(
+                "Controller liveness record identity mismatch."
+            )
+        return payload
+
+    def controller_quiescence(
+        self,
+        orchestration_id: str,
+        *,
+        stale_after_seconds: float = 45.0,
+    ) -> tuple[bool, str]:
+        if stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be positive.")
+        payload = self.controller_liveness(orchestration_id)
+        if payload is None:
+            return True, "controller-liveness-missing"
+        state = str(payload.get("controller_state") or "")
+        last = payload.get("last_heartbeat_at")
+        if state != "ACTIVE":
+            return True, f"controller-state:{state or 'unknown'}"
+        if isinstance(last, bool) or not isinstance(last, (int, float)):
+            return False, "controller-active-with-invalid-heartbeat"
+        age = time.time() - float(last)
+        if age <= stale_after_seconds:
+            return False, f"controller-active-heartbeat-fresh:{age:.1f}s"
+        return True, f"controller-active-heartbeat-stale:{age:.1f}s"
+
     def write_receipt(
         self,
         *,
