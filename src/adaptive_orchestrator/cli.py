@@ -30,6 +30,7 @@ from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
 from application.run_project_orchestration import (
+    ConcurrencyMode,
     ProjectOrchestrationError,
     ProjectOrchestrationRequest,
     ProjectRunStatus,
@@ -287,7 +288,45 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
             "continues if the launching controller/session disappears."
         ),
     )
+    parser.add_argument(
+        "--concurrency-mode",
+        choices=[item.value for item in ConcurrencyMode],
+        default=ConcurrencyMode.AUTO.value,
+        help=(
+            "AUTO lets Adaptive choose useful worker parallelism up to the "
+            "configured ceiling; FIXED treats --max-concurrency as a hard "
+            "operator constraint."
+        ),
+    )
     parser.add_argument("--max-concurrency", type=int, default=4)
+    parser.add_argument(
+        "--worker-observation-interval-seconds",
+        type=int,
+        default=5,
+        help=(
+            "How often the controller returns from result waiting to reevaluate "
+            "ready work and worker progress."
+        ),
+    )
+    parser.add_argument(
+        "--worker-soft-stall-seconds",
+        type=int,
+        default=90,
+        help=(
+            "After this much time without completion, AUTO mode may use a "
+            "bounded overflow slot for independent work without cancelling the "
+            "original worker."
+        ),
+    )
+    parser.add_argument(
+        "--worker-stall-overflow-slots",
+        type=int,
+        default=1,
+        help=(
+            "Maximum temporary AUTO-mode worker slots above max concurrency "
+            "while soft-stalled executions are still being observed."
+        ),
+    )
     parser.add_argument("--max-work-units", type=int, default=24)
     parser.add_argument("--max-waves", type=int, default=24)
     parser.add_argument("--max-attempts", type=int, default=2)
@@ -825,7 +864,13 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
+                concurrency_mode=ConcurrencyMode(args.concurrency_mode),
                 max_concurrency=args.max_concurrency,
+                worker_observation_interval_seconds=(
+                    args.worker_observation_interval_seconds
+                ),
+                worker_soft_stall_seconds=args.worker_soft_stall_seconds,
+                worker_stall_overflow_slots=args.worker_stall_overflow_slots,
                 max_work_units=args.max_work_units,
                 max_waves=args.max_waves,
                 max_attempts_per_work_unit=args.max_attempts,
