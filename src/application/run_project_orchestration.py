@@ -1005,9 +1005,15 @@ class RunProjectOrchestration:
         output_refs: dict[str, str],
         request: ProjectOrchestrationRequest,
         planner_feedback: str = "",
+        superseded_work_unit_ids: set[str] | None = None,
     ) -> tuple[ProjectExecutionPlan, tuple[str, ...]]:
         replan = getattr(self._planner, "replan")
-        state_summary = self._state_summary(work_units, outputs, output_refs)
+        state_summary = self._state_summary(
+            work_units,
+            outputs,
+            output_refs,
+            superseded_work_unit_ids=superseded_work_unit_ids,
+        )
         if planner_feedback.strip():
             state_summary += (
                 "\nRECOVERY_PLAN_VALIDATION_FEEDBACK:\n"
@@ -1134,8 +1140,11 @@ class RunProjectOrchestration:
         work_units: dict[str, WorkUnit],
         outputs: dict[str, str],
         output_refs: dict[str, str] | None = None,
+        *,
+        superseded_work_unit_ids: set[str] | None = None,
     ) -> str:
         refs = output_refs or {}
+        superseded = superseded_work_unit_ids or set()
         lines = []
         for work_unit_id in sorted(work_units):
             work_unit = work_units[work_unit_id]
@@ -1147,8 +1156,14 @@ class RunProjectOrchestration:
                 if len(output) > 2000:
                     output = output[:2000] + " [truncated]"
                 output_description = f"output={output!r}"
+            scheduling = (
+                "; superseded_for_scheduling=true"
+                if work_unit_id in superseded
+                else ""
+            )
             lines.append(
-                f"{work_unit_id}: state={work_unit.state.value}; {output_description}"
+                f"{work_unit_id}: state={work_unit.state.value}{scheduling}; "
+                f"{output_description}"
             )
         return "\n".join(lines)
 
