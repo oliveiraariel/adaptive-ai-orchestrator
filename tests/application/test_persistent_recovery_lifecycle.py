@@ -750,3 +750,104 @@ def test_stalled_recovery_suspends_only_failed_work_and_finishes_independent_wor
         if record.work_unit_id == "stuck"
     )
 
+
+
+
+class AssertIndependentProgressStrategist:
+    def __init__(self, runtime: SequencedRuntime) -> None:
+        self.runtime = runtime
+        self.calls = 0
+
+    def analyze(self, request):
+        self.calls += 1
+        assert self.runtime.calls.get("healthy", 0) == 1, (
+            "Independent ready work must run before synchronous recovery analysis."
+        )
+        return RecoveryStrategyAnalysis(
+            failure_class="strategy-exhausted",
+            problem_summary="Retry the stuck Work Unit after useful independent progress.",
+            previous_path_failures=("first bounded attempt was incomplete",),
+            candidate_paths=(
+                CandidateRecoveryPath(
+                    id="retry-after-progress",
+                    title="Retry after independent progress",
+                    rationale="The defect remains local to the stuck Work Unit.",
+                    novelty="Use a new bounded retry after other ready work progresses.",
+                    suggested_skills=("debugging",),
+                    expected_evidence=("accepted retest",),
+                ),
+            ),
+            recommended_path_id="retry-after-progress",
+            disposition=RecoveryDisposition.RETRY_DIFFERENT_STRATEGY,
+            work_graph_guidance="Retry only the stuck Work Unit; do not block unrelated work.",
+            human_decision_required=False,
+            external_research_required=False,
+            confidence=0.9,
+        )
+
+
+def test_pending_recovery_does_not_starve_independent_ready_work_serially(tmp_path):
+    partial = (
+        "Stuck Work Unit needs recovery.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: retry locally"
+    )
+    stuck_complete = (
+        "Recovered successfully.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    healthy_complete = (
+        "Independent work completed first.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    stuck = replace(_wu("stuck"), priority=100)
+    healthy = replace(_wu("healthy"), priority=10)
+    initial = ProjectExecutionPlan(
+        summary="execution lane must outrun stalled recovery",
+        work_units=(stuck, healthy),
+    )
+    planner = RecoveryPlanner(initial, initial)
+    runtime = SequencedRuntime(
+        {
+            "stuck": [partial, stuck_complete],
+            "healthy": [healthy_complete],
+        }
+    )
+    strategist = AssertIndependentProgressStrategist(runtime)
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=strategist,
+        registry=FileIncidentRegistry(tmp_path / "incidents-nonblocking"),
+    )
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Keep useful independent work moving while one Work Unit recovers.",
+            orchestration_id="orch-nonblocking-recovery",
+            project_id="project-a",
+            max_concurrency=1,
+            max_attempts_per_work_unit=1,
+            max_strategies_per_work_unit=1,
+            max_replans=1,
+            persistent_recovery=True,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert strategist.calls == 1
+    assert [task.work_unit_id for task in runtime.tasks] == [
+        "stuck",
+        "healthy",
+        "stuck",
+    ]
