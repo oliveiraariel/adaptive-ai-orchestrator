@@ -1095,11 +1095,18 @@ def _migrate_work_graph(args: argparse.Namespace) -> int:
             max_new_work_units=max_work_units,
         )
         service = WorkGraphMigrationService()
+        migration_store = FileWorkGraphMigrationStore(project_root=project_root)
         preview = service.preview(
             orchestration_id=orchestration_id,
             checkpoint=checkpoint,
             spec=spec,
         )
+        controller_quiescent, controller_reason = (
+            migration_store.controller_quiescence(orchestration_id)
+        )
+        effective_blockers = list(preview.apply_blockers)
+        if not controller_quiescent:
+            effective_blockers.append(controller_reason)
 
         if not args.apply:
             print(
@@ -1110,6 +1117,12 @@ def _migrate_work_graph(args: argparse.Namespace) -> int:
                         "operation": "dry-run",
                         "orchestration_id": orchestration_id,
                         **preview.as_dict(),
+                        "controller_quiescent": controller_quiescent,
+                        "controller_quiescence_reason": controller_reason,
+                        "apply_ready": (
+                            preview.apply_ready and controller_quiescent
+                        ),
+                        "apply_blockers": effective_blockers,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -1123,7 +1136,6 @@ def _migrate_work_graph(args: argparse.Namespace) -> int:
                 "Run the command once without --apply and use its checkpoint_digest."
             )
 
-        migration_store = FileWorkGraphMigrationStore(project_root=project_root)
         artifact_ref = migration_store.artifact_ref(
             orchestration_id=orchestration_id,
             migration_id=spec.migration_id,
@@ -1131,6 +1143,14 @@ def _migrate_work_graph(args: argparse.Namespace) -> int:
         )
 
         with migration_store.apply_lock(orchestration_id):
+            controller_quiescent, controller_reason = (
+                migration_store.controller_quiescence(orchestration_id)
+            )
+            if not controller_quiescent:
+                raise WorkGraphMigrationError(
+                    "Migration apply requires the orchestration controller to be "
+                    f"quiescent: {controller_reason}"
+                )
             current = checkpoint_store.load(orchestration_id)
             if current is None:
                 raise WorkGraphMigrationError(
