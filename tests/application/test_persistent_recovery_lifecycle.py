@@ -9,6 +9,7 @@ from application.agent_runtime import (
 )
 from application.automatic_learning import AutomaticLearningCycle
 from application.continuous_project_orchestration import RunContinuousProjectOrchestration
+from application.investigation_strategy import RecoveryStrategyError
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.problem_solving_learning import (
     ProblemSolvingLearningStore,
