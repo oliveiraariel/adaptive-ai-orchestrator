@@ -548,28 +548,24 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 recovery_replans_in_epoch[work_unit_id]
                                 >= per_epoch_replan_limit
                             ):
-                                recovery_replans_in_epoch[work_unit_id] = 0
-                                recovery_guidance.pop(work_unit_id, None)
-                                recovery_yield_requested = True
-                                recovery_yield_reason = (
-                                    "persistent-recovery:replan-epoch-no-progress:"
-                                    f"{work_unit_id}"
-                                )
                                 epoch_feedback = (
                                     "The previous recovery epoch exhausted its "
                                     "bounded replans without material Work Graph "
-                                    "progress. Reanalyze from a materially different "
-                                    "path on the next supervised controller cycle."
+                                    "progress."
                                 )
-                                replan_feedback = "\n\n".join(
-                                    item
-                                    for item in (
-                                        replan_feedback.strip(),
-                                        epoch_feedback,
-                                    )
-                                    if item
+                                _retry_or_suspend_recovery(
+                                    work_unit_id,
+                                    reason="replan-epoch-no-progress",
+                                    guidance="\n\n".join(
+                                        item
+                                        for item in (
+                                            replan_feedback.strip(),
+                                            epoch_feedback,
+                                        )
+                                        if item
+                                    ),
                                 )
-                                break
+                                continue
 
                             if recovery_replans_in_epoch[work_unit_id] != 0:
                                 continue
@@ -605,11 +601,18 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 )
                                 continue
 
+                            if _reconcile_existing_authoritative_completion(
+                                work_unit_id
+                            ):
+                                continue
+
                             history = tuple(
                                 (
                                     f"attempt={record.attempt}; strategy={record.strategy}; "
                                     f"status={record.status}; verdict={record.verdict or ''}; "
-                                    f"reason={record.reason}"
+                                    f"reason={record.reason}; "
+                                    f"result_ref={record.result_ref or ''}; "
+                                    f"output={(record.output or '')[:1200]}"
                                 )
                                 for record in records
                                 if record.work_unit_id == work_unit_id
@@ -640,18 +643,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     failure_class="strategy-exhausted",
                                 )
                             except (RecoveryStrategyError, RunOrchestrationError) as exc:
-                                recovery_guidance.pop(work_unit_id, None)
-                                recovery_yield_requested = True
-                                recovery_yield_reason = (
-                                    "persistent-recovery:strategist-transient-failure:"
-                                    f"{type(exc).__name__}"
-                                )
-                                replan_feedback = (
-                                    "Recovery Strategist could not complete this "
-                                    "control-plane analysis. Preserve the same "
-                                    "non-terminal recovery state and retry on the "
-                                    "next supervised controller cycle. "
-                                    f"Failure: {type(exc).__name__}: "
+                                failure_reason = (
+                                    f"{type(exc).__name__}: "
                                     + " ".join(str(exc).split())[:500]
                                 )
                                 observability.emit(
@@ -660,9 +653,14 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     work_unit_id=work_unit_id,
                                     status="RECOVERY_REQUIRED",
                                     failure_category=type(exc).__name__,
-                                    reason=replan_feedback,
+                                    reason=failure_reason,
                                 )
-                                break
+                                _retry_or_suspend_recovery(
+                                    work_unit_id,
+                                    reason="strategist-transient-failure",
+                                    guidance=failure_reason,
+                                )
+                                continue
                             recovery_epoch_counts[work_unit_id] = cycle.recovery_epoch
                             recovery_guidance[work_unit_id] = (
                                 cycle.analysis.planner_guidance()
@@ -677,33 +675,58 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 disposition=cycle.analysis.disposition.value,
                                 confidence=cycle.analysis.confidence,
                             )
-                            if cycle.analysis.human_decision_required:
-                                work_units[work_unit_id].mark_blocked()
-                                records.append(
-                                    WorkUnitExecutionRecord(
-                                        work_unit_id=work_unit_id,
-                                        role=specs[work_unit_id].role,
-                                        wave=dispatch_generation + 1,
-                                        attempt=attempts[work_unit_id],
-                                        status=WorkUnitState.BLOCKED.value,
-                                        skills=skill_sets[work_unit_id],
-                                        verdict="BLOCKED",
-                                        reason="recovery-strategist:human-decision-required",
-                                        strategy=strategy_generations[work_unit_id],
-                                    )
+                            disposition = cycle.analysis.disposition
+                            if (
+                                cycle.analysis.human_decision_required
+                                or disposition
+                                in {
+                                    RecoveryDisposition.WAIT_HUMAN,
+                                    RecoveryDisposition.PAUSE,
+                                    RecoveryDisposition.NO_NOVEL_PATH,
+                                }
+                            ):
+                                _retry_or_suspend_recovery(
+                                    work_unit_id,
+                                    reason=(
+                                        "human-decision-required"
+                                        if cycle.analysis.human_decision_required
+                                        else f"strategist:{disposition.value}"
+                                    ),
+                                    guidance=cycle.analysis.planner_guidance(),
+                                    suspend_now=True,
+                                )
+                                continue
+
+                            if disposition is RecoveryDisposition.RETRY_DIFFERENT_STRATEGY:
+                                _retry_or_suspend_recovery(
+                                    work_unit_id,
+                                    reason="strategist:RETRY_DIFFERENT_STRATEGY",
+                                    guidance=cycle.analysis.planner_guidance(),
+                                )
+                                continue
+
+                            if disposition is RecoveryDisposition.EXTERNAL_RESEARCH:
+                                recovery_guidance[work_unit_id] = (
+                                    cycle.analysis.planner_guidance()
+                                    + "\nMaterialize a bounded RESEARCH prerequisite "
+                                    "only if external evidence is truly necessary."
                                 )
 
                         if recovery_yield_requested:
-                            pending_replan = True
-                            persist()
-                            observability.emit(
-                                "orchestration_recovery_yielded",
-                                orchestration_id=orchestration_id,
-                                status="RECOVERY_REQUIRED",
-                                terminal=False,
-                                reason=recovery_yield_reason,
-                            )
-                            break
+                            for work_unit_id in sorted(recovery_before):
+                                if (
+                                    work_units[work_unit_id].state
+                                    is WorkUnitState.RECOVERY_REQUIRED
+                                ):
+                                    _retry_or_suspend_recovery(
+                                        work_unit_id,
+                                        reason=(
+                                            recovery_yield_reason
+                                            or "defensive-recovery-yield"
+                                        ),
+                                    )
+                            recovery_yield_requested = False
+                            recovery_yield_reason = ""
 
                         recovery_before = {
                             work_unit_id
