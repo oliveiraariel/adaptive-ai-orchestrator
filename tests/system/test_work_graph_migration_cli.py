@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 
 from adaptive_orchestrator.cli import main
 from infrastructure.project_orchestration_checkpoint import (
@@ -69,6 +71,29 @@ def _checkpoint() -> dict:
     }
 
 
+def _write_terminal_liveness(tmp_path, orchestration_id: str) -> None:
+    digest = hashlib.sha256(orchestration_id.encode("utf-8")).hexdigest()
+    path = (
+        tmp_path
+        / ".adaptive"
+        / "orchestration-liveness"
+        / f"{digest}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "orchestration_id": orchestration_id,
+                "controller_state": "TERMINAL",
+                "status": "PAUSED",
+                "terminal": True,
+                "last_heartbeat_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _migration() -> dict:
     item = _work_unit("WU-01")
     item.update(
@@ -101,6 +126,7 @@ def test_cli_dry_run_then_apply_is_digest_guarded_and_idempotent(
 ) -> None:
     store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
     store.save("orch-cli", _checkpoint())
+    _write_terminal_liveness(tmp_path, "orch-cli")
     plan_path = tmp_path / "migration.json"
     plan_path.write_text(json.dumps(_migration()), encoding="utf-8")
 
@@ -174,6 +200,7 @@ def test_cli_dry_run_then_apply_is_digest_guarded_and_idempotent(
 def test_cli_apply_requires_dry_run_digest(tmp_path, capsys) -> None:
     store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
     store.save("orch-cli", _checkpoint())
+    _write_terminal_liveness(tmp_path, "orch-cli")
     plan_path = tmp_path / "migration.json"
     plan_path.write_text(json.dumps(_migration()), encoding="utf-8")
 
