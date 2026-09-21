@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
@@ -28,6 +27,10 @@ from domain.project_execution_plan import (
 )
 from domain.skill_profile import SkillProfile
 from domain.work_unit import WorkUnitKind
+from domain.work_unit_identity import (
+    extract_explicit_work_unit_ids,
+    merge_required_work_unit_ids,
+)
 
 
 class ProjectPlanningError(ValueError):
@@ -43,6 +46,7 @@ class ProjectPlanningRequest:
     agent: str = "main"
     max_work_units: int = 24
     max_concurrency: int = 4
+    required_work_unit_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.objective.strip():
@@ -51,6 +55,17 @@ class ProjectPlanningRequest:
             raise ProjectPlanningError("max_work_units must be at least 1.")
         if self.max_concurrency < 1:
             raise ProjectPlanningError("max_concurrency must be at least 1.")
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in self.required_work_unit_ids
+        ):
+            raise ProjectPlanningError(
+                "required_work_unit_ids must contain only non-empty strings."
+            )
+        if len({item.upper() for item in self.required_work_unit_ids}) != len(
+            self.required_work_unit_ids
+        ):
+            raise ProjectPlanningError("required_work_unit_ids must be unique.")
 
 
 class ProjectPlanner(Protocol):
@@ -132,18 +147,14 @@ class RuntimeProjectPlanner:
     def _explicit_requested_work_unit_ids(
         request: ProjectPlanningRequest,
     ) -> tuple[str, ...]:
-        text = "\n".join(
-            (
-                request.objective,
-                request.scope,
-                *request.context,
-                *request.constraints,
-            )
+        # Structured declarations are authoritative. Literal WU-* ids in the
+        # objective/scope are a conservative compatibility fallback for callers
+        # that predate required_work_unit_ids. Retrieved context is intentionally
+        # excluded so historical notes cannot silently enlarge the active graph.
+        return merge_required_work_unit_ids(
+            request.required_work_unit_ids,
+            extract_explicit_work_unit_ids(request.objective, request.scope),
         )
-        # Explicit user-authored WU identifiers are governance identities, not
-        # prose hints. Preserve literal ids exactly and deterministically.
-        found = re.findall(r"\bWU-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", text.upper())
-        return tuple(dict.fromkeys(found))
 
     @staticmethod
     def _validate_explicit_work_unit_coverage(
