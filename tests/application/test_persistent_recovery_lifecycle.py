@@ -482,21 +482,54 @@ class FailingRecoveryStrategist:
         raise RecoveryStrategyError("temporary strategist result was not publishable")
 
 
-def test_noop_recovery_replan_yields_nonterminal_instead_of_livelocking(tmp_path):
+class RetryDifferentStrategyStrategist:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def analyze(self, request):
+        self.requests.append(request)
+        return RecoveryStrategyAnalysis(
+            failure_class="strategy-exhausted",
+            problem_summary="Retry the same bounded objective with a different approach.",
+            previous_path_failures=("previous implementation path was incomplete",),
+            candidate_paths=(
+                CandidateRecoveryPath(
+                    id="retry-different",
+                    title="Retry with a different strategy",
+                    rationale="The acceptance surface is still local to this Work Unit.",
+                    novelty="Use a different bounded implementation approach.",
+                    suggested_skills=("debugging",),
+                    expected_evidence=("accepted retest",),
+                ),
+            ),
+            recommended_path_id="retry-different",
+            disposition=RecoveryDisposition.RETRY_DIFFERENT_STRATEGY,
+            work_graph_guidance="Retry the same Work Unit; do not add graph prerequisites.",
+            human_decision_required=False,
+            external_research_required=False,
+            confidence=0.88,
+        )
+
+
+def test_noop_recovery_replan_falls_back_to_worker_retry_and_completes(tmp_path):
     partial = (
         "Still incomplete.\n"
         "ADAPTIVE_WORK_STATUS: PARTIAL\n"
         "ADAPTIVE_BLOCKER_TYPE: NONE\n"
         "ADAPTIVE_UNMET_CRITERIA: missing causal prerequisite"
     )
+    complete = (
+        "Recovered by retrying the bounded objective directly.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
     initial = ProjectExecutionPlan(
         summary="original recovery target",
         work_units=(_wu("original"),),
     )
-    # Returning the same graph used to count as a successful replan and could
-    # spin indefinitely under max_recovery_epochs=0.
     planner = RecoveryPlanner(initial, initial)
-    runtime = SequencedRuntime({"original": [partial]})
+    runtime = SequencedRuntime({"original": [partial, complete]})
     registry = FileIncidentRegistry(tmp_path / "incidents-noop")
     coordinator = PersistentRecoveryCoordinator(
         strategist=FakeRecoveryStrategist(),
@@ -521,34 +554,42 @@ def test_noop_recovery_replan_yields_nonterminal_instead_of_livelocking(tmp_path
             max_replans=1,
             persistent_recovery=True,
             max_recovery_epochs=0,
+            max_stalled_recovery_cycles=3,
             plan=initial,
         )
     )
 
-    assert result.status is ProjectRunStatus.RECOVERY_REQUIRED
-    assert result.recovery_required_work_unit_ids == ("original",)
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert result.completed_work_unit_ids == ("original",)
     assert planner.replan_calls == 1
+    assert [task.work_unit_id for task in runtime.tasks] == ["original", "original"]
     checkpoint = store.load("orch-noop-replan")
     assert checkpoint is not None
-    assert checkpoint["terminal"] is False
-    assert checkpoint["pending_replan"] is True
-    assert checkpoint["work_unit_states"]["original"] == "RECOVERY_REQUIRED"
-    assert "no material structural progress" in checkpoint["replan_feedback"]
+    assert checkpoint["terminal"] is True
+    assert checkpoint["pending_replan"] is False
+    assert checkpoint["work_unit_states"]["original"] == "COMPLETED"
+    assert checkpoint["recovery_no_progress_counts"]["original"] == 1
 
 
-def test_strategist_transient_failure_yields_nonterminal_recovery(tmp_path):
+def test_strategist_transient_failure_falls_back_to_worker_retry(tmp_path):
     partial = (
         "Still incomplete.\n"
         "ADAPTIVE_WORK_STATUS: PARTIAL\n"
         "ADAPTIVE_BLOCKER_TYPE: NONE\n"
         "ADAPTIVE_UNMET_CRITERIA: investigate missing evidence"
     )
+    complete = (
+        "Direct fallback retry completed the bounded objective.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
     initial = ProjectExecutionPlan(
         summary="strategist transient failure",
         work_units=(_wu("original"),),
     )
     planner = RecoveryPlanner(initial, initial)
-    runtime = SequencedRuntime({"original": [partial]})
+    runtime = SequencedRuntime({"original": [partial, complete]})
     registry = FileIncidentRegistry(tmp_path / "incidents-strategist-failure")
     strategist = FailingRecoveryStrategist()
     coordinator = PersistentRecoveryCoordinator(
@@ -566,7 +607,7 @@ def test_strategist_transient_failure_yields_nonterminal_recovery(tmp_path):
         checkpoint_store=store,
     ).execute(
         ProjectOrchestrationRequest(
-            objective="Preserve recovery through strategist provider failure.",
+            objective="Keep useful work moving through strategist provider failure.",
             orchestration_id="orch-strategist-failure",
             project_id="project-a",
             max_attempts_per_work_unit=1,
@@ -574,16 +615,138 @@ def test_strategist_transient_failure_yields_nonterminal_recovery(tmp_path):
             max_replans=1,
             persistent_recovery=True,
             max_recovery_epochs=0,
+            max_stalled_recovery_cycles=3,
             plan=initial,
         )
     )
 
-    assert result.status is ProjectRunStatus.RECOVERY_REQUIRED
+    assert result.status is ProjectRunStatus.COMPLETED
     assert strategist.calls == 1
     assert planner.replan_calls == 0
+    assert [task.work_unit_id for task in runtime.tasks] == ["original", "original"]
     checkpoint = store.load("orch-strategist-failure")
     assert checkpoint is not None
-    assert checkpoint["terminal"] is False
-    assert checkpoint["pending_replan"] is True
-    assert checkpoint["work_unit_states"]["original"] == "RECOVERY_REQUIRED"
-    assert "Recovery Strategist could not complete" in checkpoint["replan_feedback"]
+    assert checkpoint["terminal"] is True
+    assert checkpoint["pending_replan"] is False
+    assert checkpoint["work_unit_states"]["original"] == "COMPLETED"
+
+
+def test_retry_different_strategy_bypasses_planner_and_retries_same_work_unit(tmp_path):
+    partial = (
+        "First strategy failed.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: choose another approach"
+    )
+    complete = (
+        "Different strategy succeeded.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    initial = ProjectExecutionPlan(
+        summary="direct retry disposition",
+        work_units=(_wu("original"),),
+    )
+    planner = RecoveryPlanner(initial, initial)
+    runtime = SequencedRuntime({"original": [partial, complete]})
+    strategist = RetryDifferentStrategyStrategist()
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=strategist,
+        registry=FileIncidentRegistry(tmp_path / "incidents-retry-different"),
+    )
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Retry locally before changing the Work Graph.",
+            orchestration_id="orch-retry-different",
+            project_id="project-a",
+            max_attempts_per_work_unit=1,
+            max_strategies_per_work_unit=1,
+            max_replans=1,
+            persistent_recovery=True,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert planner.replan_calls == 0
+    assert len(strategist.requests) == 1
+    assert [task.work_unit_id for task in runtime.tasks] == ["original", "original"]
+
+
+def test_stalled_recovery_suspends_only_failed_work_and_finishes_independent_work(tmp_path):
+    partial = (
+        "Still failing.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: unresolved local defect"
+    )
+    complete = (
+        "Independent work completed.\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE"
+    )
+    initial = ProjectExecutionPlan(
+        summary="bulkhead recovery",
+        work_units=(_wu("stuck"), _wu("healthy")),
+    )
+    planner = RecoveryPlanner(initial, initial)
+    runtime = SequencedRuntime(
+        {
+            "stuck": [partial],
+            "healthy": [complete],
+        }
+    )
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=FakeRecoveryStrategist(),
+        registry=FileIncidentRegistry(tmp_path / "incidents-bulkhead"),
+    )
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+        checkpoint_store=store,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Keep independent work moving even when one Work Unit stalls.",
+            orchestration_id="orch-bulkhead-recovery",
+            project_id="project-a",
+            max_concurrency=2,
+            max_attempts_per_work_unit=1,
+            max_strategies_per_work_unit=1,
+            max_replans=1,
+            persistent_recovery=True,
+            max_stalled_recovery_cycles=2,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.PARTIAL
+    assert result.completed_work_unit_ids == ("healthy",)
+    assert result.blocked_work_unit_ids == ("stuck",)
+    assert runtime.calls["healthy"] == 1
+    assert runtime.calls["stuck"] == 2
+    assert planner.replan_calls == 2
+    checkpoint = store.load("orch-bulkhead-recovery")
+    assert checkpoint is not None
+    assert checkpoint["work_unit_states"]["healthy"] == "COMPLETED"
+    assert checkpoint["work_unit_states"]["stuck"] == "BLOCKED"
+    assert checkpoint["recovery_no_progress_counts"]["stuck"] == 2
+    assert any(
+        record.reason.startswith("recovery-suspended:")
+        for record in result.records
+        if record.work_unit_id == "stuck"
+    )
+
