@@ -30,6 +30,7 @@ from application.run_project_orchestration import (
 from application.investigation_strategy import RecoveryStrategyError
 from application.run_orchestration import RunOrchestrationError
 from application.runtime_project_planner import ProjectPlanningError, ProjectPlanningRequest
+from application.skill_resolution import SkillResolutionError
 from domain.dependency import Dependency, DependencyStatus
 from domain.investigation import RecoveryDisposition
 from domain.evaluation import EvaluationVerdict
@@ -231,7 +232,39 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 checkpoint, "active_executions"
             )
 
-        skill_sets = self._preflight_skill_sets(specs, request.agent)
+        skill_sets, skill_resolution_failures = (
+            self._preflight_skill_sets_progressive(specs, request.agent)
+        )
+        for work_unit_id, reason in skill_resolution_failures.items():
+            if work_units[work_unit_id].state in {
+                WorkUnitState.COMPLETED,
+                WorkUnitState.CANCELLED,
+                WorkUnitState.BLOCKED,
+            }:
+                continue
+            work_units[work_unit_id].mark_blocked()
+            records.append(
+                WorkUnitExecutionRecord(
+                    work_unit_id=work_unit_id,
+                    role=specs[work_unit_id].role,
+                    wave=dispatch_generation + 1,
+                    attempt=attempts[work_unit_id],
+                    status=WorkUnitState.BLOCKED.value,
+                    skills=(),
+                    verdict=EvaluationVerdict.BLOCKED.value,
+                    reason=f"skill-resolution:{reason}",
+                    strategy=strategy_generations[work_unit_id],
+                )
+            )
+            observability.emit(
+                "work_unit_status_changed",
+                orchestration_id=orchestration_id,
+                work_unit_id=work_unit_id,
+                role=specs[work_unit_id].role,
+                status="BLOCKED",
+                verdict="BLOCKED",
+                reason=f"skill-resolution:{reason}",
+            )
         self._validate_graph(request, work_units, dependencies)
 
         if checkpoint is not None and checkpoint.get("terminal") is True:
@@ -903,9 +936,41 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             and replan_count < request.max_replans
                         )
                         if new_ids:
-                            skill_sets = self._preflight_skill_sets(
+                            (
+                                refreshed_skill_sets,
+                                refreshed_skill_failures,
+                            ) = self._preflight_skill_sets_progressive(
                                 specs, request.agent
                             )
+                            skill_sets = refreshed_skill_sets
+                            for failed_id, failure_reason in (
+                                refreshed_skill_failures.items()
+                            ):
+                                if failed_id not in new_ids:
+                                    continue
+                                if work_units[failed_id].state in {
+                                    WorkUnitState.COMPLETED,
+                                    WorkUnitState.CANCELLED,
+                                    WorkUnitState.BLOCKED,
+                                }:
+                                    continue
+                                work_units[failed_id].mark_blocked()
+                                records.append(
+                                    WorkUnitExecutionRecord(
+                                        work_unit_id=failed_id,
+                                        role=specs[failed_id].role,
+                                        wave=dispatch_generation + 1,
+                                        attempt=attempts[failed_id],
+                                        status=WorkUnitState.BLOCKED.value,
+                                        skills=(),
+                                        verdict=EvaluationVerdict.BLOCKED.value,
+                                        reason=(
+                                            "skill-resolution:"
+                                            + failure_reason
+                                        ),
+                                        strategy=strategy_generations[failed_id],
+                                    )
+                                )
                         self._validate_graph(request, work_units, dependencies)
                         persist()
                         continue
@@ -941,7 +1006,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     not pending_replan
                     and available_slots > 0
                     and ready_ids
-                    and dispatch_generation < request.max_waves
+                    and dispatch_generation
+                    < self._effective_wave_budget(request, len(work_units))
                 ):
                     selected_ids, conflict_deferred_ids = self._select_continuous_frontier(
                         ready_ids=ready_ids,
@@ -1402,7 +1468,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
                 # Nothing is active. If the scheduler cannot dispatch another
                 # eligible Work Unit, the graph has reached a governed stop.
-                if not ready_ids or dispatch_generation >= request.max_waves:
+                if (
+                    not ready_ids
+                    or dispatch_generation
+                    >= self._effective_wave_budget(request, len(work_units))
+                ):
                     break
 
                 selected_ids, _ = self._select_continuous_frontier(
@@ -2300,6 +2370,44 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 deferred.append(work_unit_id)
 
         return selected, deferred
+
+    def _preflight_skill_sets_progressive(
+        self,
+        specs: dict[str, PlannedWorkUnit],
+        agent_id: str,
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, str]]:
+        """Resolve skills per Work Unit so one bad declaration cannot stop the project."""
+        resolved: dict[str, tuple[str, ...]] = {}
+        failures: dict[str, str] = {}
+        for work_unit_id, spec in specs.items():
+            try:
+                resolved[work_unit_id] = self._preflight_skill_sets(
+                    {work_unit_id: spec},
+                    agent_id,
+                )[work_unit_id]
+            except SkillResolutionError as exc:
+                resolved[work_unit_id] = ()
+                failures[work_unit_id] = " ".join(str(exc).split())[:500]
+        return resolved, failures
+
+    @staticmethod
+    def _effective_wave_budget(
+        request: ProjectOrchestrationRequest,
+        work_unit_count: int,
+    ) -> int:
+        """Scale the dispatch budget with graph size and bounded retry policy.
+
+        max_waves remains a floor/operator hint. Large serial graphs should not
+        become impossible merely because their valid Work Unit count exceeds an
+        old small default.
+        """
+        retry_factor = max(
+            1,
+            request.max_attempts_per_work_unit
+            * request.max_strategies_per_work_unit,
+        )
+        projected = max(1, work_unit_count) * retry_factor
+        return min(256, max(request.max_waves, projected))
 
     def _handle_runtime_result_error(
         self,
