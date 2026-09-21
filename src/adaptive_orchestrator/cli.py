@@ -327,7 +327,7 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
             "while soft-stalled executions are still being observed."
         ),
     )
-    parser.add_argument("--max-work-units", type=int, default=24)
+    parser.add_argument("--max-work-units", type=int, default=64)
     parser.add_argument("--max-waves", type=int, default=24)
     parser.add_argument("--max-attempts", type=int, default=2)
     parser.add_argument(
