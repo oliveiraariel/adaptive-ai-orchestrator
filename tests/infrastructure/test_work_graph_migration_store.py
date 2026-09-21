@@ -103,3 +103,34 @@ def test_controller_quiescence_fails_closed_without_liveness(tmp_path) -> None:
 
     assert quiescent is False
     assert reason == "controller-liveness-missing"
+
+
+
+def test_controller_quiescence_rejects_stale_active_heartbeat(tmp_path) -> None:
+    store = FileWorkGraphMigrationStore(project_root=tmp_path)
+    digest = hashlib.sha256(b"orch").hexdigest()
+    path = (
+        tmp_path
+        / ".adaptive"
+        / "orchestration-liveness"
+        / f"{digest}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "orchestration_id": "orch",
+                "controller_state": "ACTIVE",
+                "last_heartbeat_at": time.time() - 600,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    quiescent, reason = store.controller_quiescence(
+        "orch",
+        stale_after_seconds=45,
+    )
+
+    assert quiescent is False
+    assert "heartbeat-stale" in reason
