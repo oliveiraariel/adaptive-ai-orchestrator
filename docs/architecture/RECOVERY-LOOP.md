@@ -218,24 +218,34 @@ RECOVERY_REQUIRED
  -> original Work Unit resumes after prerequisite acceptance
 ```
 
-### Recovery replan progress and cooperative yield
+### Progressive recovery and fault isolation
 
-Persistent recovery must make **material state progress**, not merely spend planner calls.
+Persistent recovery must make **material state progress**, not merely spend planner calls. The scheduler therefore treats recovery as a per-Work-Unit concern rather than a project-wide stop-the-world mode.
 
-A recovery replan counts as progress only when it produces a structural change that can unblock the RECOVERY_REQUIRED Work Unit, normally a new required prerequisite edge into that Work Unit. Returning the same graph unchanged is classified as a rejected/no-progress replan rather than a successful replan.
+Recovery Strategist dispositions are operational:
 
-Replan attempts inside one recovery epoch remain bounded by max_replans. If that epoch exhausts without material graph progress, the controller cooperatively yields with:
+- `RETRY_DIFFERENT_STRATEGY` returns the same Work Unit to bounded revision immediately, without invoking Planner;
+- `REPLAN_WITH_PREREQUISITE` invokes Planner only when a real upstream prerequisite is needed;
+- `EXTERNAL_RESEARCH` may materialize a bounded RESEARCH prerequisite;
+- `WAIT_HUMAN`, `PAUSE`, and `NO_NOVEL_PATH` suspend/block only the affected Work Unit, preserving unrelated execution.
 
-- checkpoint still non-terminal;
-- RECOVERY_REQUIRED preserved;
-- pending_replan=true;
-- prior validation/replan feedback persisted.
+A recovery replan counts as structural progress only when it can unblock the target, normally by adding a new required prerequisite edge into the RECOVERY_REQUIRED Work Unit. A malformed topology gets a bounded correction opportunity using `max_replans`; repeated no-progress replans then fall back to a direct retry of the original bounded objective instead of repeatedly churning the control plane.
 
-The detached supervisor then resumes the **same** orchestration on a later controller cycle, forcing fresh strategic analysis instead of hot-looping indefinitely inside one controller process.
+Each Work Unit also has a persisted stalled-recovery budget. `max_stalled_recovery_cycles` defaults to 3. When that budget is exhausted, Adaptive marks only that Work Unit BLOCKED with a `recovery-suspended` reason. Independent Work Units continue. Downstream dependents remain naturally ineligible until the suspended prerequisite is explicitly reopened or corrected.
 
-Transient Recovery Strategist or Planner provider failures follow the same non-terminal yield path. They must not terminalize the project or erase recovery state merely because an auxiliary control-plane session expired or failed to publish a final result.
+Transient Recovery Strategist/Planner failures use the same bounded fallback policy: retry useful work first; suspend only the affected Work Unit after repeated stalled cycles. A control-plane provider failure is therefore no longer allowed to stop a 10/20/40-Work-Unit project.
 
-The resilient composition layer must not synthesize terminal BLOCKED closure while a persistent-recovery checkpoint is explicitly non-terminal with pending_replan=true.
+Before spending a new recovery cycle, ordinary criticality=0 work may be reconciled from prior authoritative Result Store evidence when all of these are true:
+
+- runtime completed;
+- result transport is authoritative and complete;
+- the worker emitted structured `COMPLETE`;
+- it declared no unmet criteria;
+- independent review is not required.
+
+Critical work and independent-review policy stay on the strict evidence path.
+
+This is Adaptive's **bulkhead rule**: a failure in one Work Unit must not sink unrelated Work Units.
 
 ### Dependency block
 
@@ -278,12 +288,22 @@ Each epoch receives the history of prior paths so that the Strategist searches a
 Configuration:
 
 - `persistent_recovery=true` enables strategist-guided epochs;
-- `max_recovery_epochs=0` means no fixed epoch count; governed stops still apply;
-- a positive cap is available when policy requires a finite epoch budget.
+- `max_recovery_epochs=0` means no fixed strategist epoch count;
+- `max_stalled_recovery_cycles=3` bounds repeated recovery that produces no useful progress for one Work Unit;
+- `pragmatic_low_criticality_acceptance=true` allows authoritative COMPLETE/no-unmet evidence to overcome literal wording mismatches for criticality=0 work.
 
-A failed recovery-plan topology consumes only the per-epoch replanning budget. After that budget is exhausted, the next epoch reanalyzes rather than blindly repeating the same planner request.
+A failed recovery-plan topology consumes only the bounded per-epoch replanning budget. It does not consume the whole project's ability to replan later: cumulative `replan_count` is audit data, not a lifetime project fuse.
 
-Exhaustion is scoped to the attempted worker/strategy/path. It is not equivalent to exhaustion of the objective. When the current path is exhausted and no governed stop applies, Adaptive must reanalyse the remaining solution frontier and may dispatch a materially different worker/strategy through the Orchestrator.
+Exhaustion is scoped to the attempted worker/strategy/path. It is not equivalent to exhaustion of the project. After the per-Work-Unit stalled budget is exhausted, that Work Unit is suspended/blocked and unrelated ready work continues.
+
+## 5.1 Throughput safeguards
+
+Recovery is not the only place where a large project can become accidentally over-constrained. Continuous execution therefore applies these additional progress safeguards:
+
+- **soft dispatch budget:** the effective wave budget scales with Work Graph size and bounded worker retry policy (up to the global safety cap), so a valid 40+ Work Unit serial graph is not stopped by a small historic default;
+- **skill-resolution bulkhead:** an unknown/incompatible skill requirement blocks only the affected Work Unit instead of aborting preflight for the entire graph;
+- **background learning is non-blocking:** an open automatic-learning lifecycle is recorded and observed, but it does not set `pending_replan` or stop functional delivery;
+- **transactional recovery replans:** rejected replans roll back newly-added transient nodes/edges before fallback, so invalid remediation plans cannot leave orphan Work Units in the persisted graph.
 
 ## 6. Recovery topology
 
