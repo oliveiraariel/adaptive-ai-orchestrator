@@ -384,11 +384,19 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     "persistent-recovery:replan-epoch-no-progress:"
                                     f"{work_unit_id}"
                                 )
-                                replan_feedback = (
+                                epoch_feedback = (
                                     "The previous recovery epoch exhausted its "
                                     "bounded replans without material Work Graph "
                                     "progress. Reanalyze from a materially different "
                                     "path on the next supervised controller cycle."
+                                )
+                                replan_feedback = "\n\n".join(
+                                    item
+                                    for item in (
+                                        replan_feedback.strip(),
+                                        epoch_feedback,
+                                    )
+                                    if item
                                 )
                                 break
 
