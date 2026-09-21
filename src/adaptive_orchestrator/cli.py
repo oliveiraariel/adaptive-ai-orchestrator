@@ -272,6 +272,15 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
     parser.add_argument("--constraint", action="append", default=[])
+    parser.add_argument(
+        "--required-work-unit-id",
+        action="append",
+        default=[],
+        help=(
+            "Declare a Work Unit id as a durable governance identity that the "
+            "Planner may not aggregate away. Repeat for multiple ids."
+        ),
+    )
     parser.add_argument("--skill-registry")
     parser.add_argument("--plan-file")
     parser.add_argument("--plan-only", action="store_true")
@@ -755,6 +764,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 agent=args.planner_agent or args.agent,
                 max_work_units=args.max_work_units,
                 max_concurrency=args.max_concurrency,
+                required_work_unit_ids=tuple(args.required_work_unit_id),
             )
             plan = planner.plan(planning_request)
             observability.emit(
@@ -822,6 +832,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
+                required_work_unit_ids=tuple(args.required_work_unit_id),
                 max_concurrency=args.max_concurrency,
                 max_work_units=args.max_work_units,
                 max_waves=args.max_waves,
