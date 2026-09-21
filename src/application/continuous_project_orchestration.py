@@ -26,7 +26,9 @@ from application.run_project_orchestration import (
     RunProjectOrchestration,
     WorkUnitExecutionRecord,
 )
-from application.runtime_project_planner import ProjectPlanningRequest
+from application.investigation_strategy import RecoveryStrategyError
+from application.run_orchestration import RunOrchestrationError
+from application.runtime_project_planner import ProjectPlanningError, ProjectPlanningRequest
 from domain.dependency import Dependency, DependencyStatus
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
@@ -458,7 +460,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     ),
                                     failure_class="strategy-exhausted",
                                 )
-                            except Exception as exc:
+                            except (RecoveryStrategyError, RunOrchestrationError) as exc:
                                 recovery_guidance.pop(work_unit_id, None)
                                 recovery_yield_requested = True
                                 recovery_yield_reason = (
@@ -618,6 +620,29 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             persist()
                             continue
+                        except (ProjectPlanningError, RunOrchestrationError) as exc:
+                            pending_replan = bool(recovery_before)
+                            recovery_yield_requested = bool(recovery_before)
+                            recovery_yield_reason = (
+                                "persistent-recovery:planner-transient-failure:"
+                                f"{type(exc).__name__}"
+                            )
+                            replan_feedback = (
+                                "Recovery planner could not complete this "
+                                "control-plane step. Preserve the same non-terminal "
+                                "recovery state and retry on the next supervised "
+                                "controller cycle. "
+                                f"Failure: {type(exc).__name__}: "
+                                + " ".join(str(exc).split())[:500]
+                            )
+                            observability.emit(
+                                "recovery_plan_rejected",
+                                orchestration_id=orchestration_id,
+                                replan_count=replan_count,
+                                reason=replan_feedback,
+                            )
+                            persist()
+                            break
 
                         replan_count += 1
                         for work_unit_id in recovery_before:
