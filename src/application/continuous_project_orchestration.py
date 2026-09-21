@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from copy import deepcopy
 from dataclasses import replace
 from typing import Sequence
 from uuid import uuid4
@@ -1284,6 +1285,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "active_executions": active_rows,
             "terminal": terminal,
         }
+        # Work Graph migration metadata is an append-only audit overlay. Runtime
+        # checkpoint refreshes must preserve it exactly; otherwise the first
+        # post-migration resume would erase evidence lineage and migration history.
+        if isinstance(existing_checkpoint, dict):
+            for key in ("graph_migrations", "work_unit_evidence_lineage"):
+                if key in existing_checkpoint:
+                    payload[key] = deepcopy(existing_checkpoint[key])
         self._checkpoint_store.save(orchestration_id, payload)
 
     @staticmethod

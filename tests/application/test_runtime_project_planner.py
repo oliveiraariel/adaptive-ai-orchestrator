@@ -173,3 +173,89 @@ def test_planner_does_not_retry_unrelated_runtime_failure() -> None:
         planner.plan(ProjectPlanningRequest(objective="Do not mask runtime failures."))
 
     assert runner.calls == 1
+
+
+
+def test_planner_preserves_explicit_work_unit_ids_in_initial_plan() -> None:
+    runner = _SequenceRunner(
+        [
+            payload(
+                [
+                    work_unit("WU-MC-01"),
+                    work_unit("WU-MC-02"),
+                    work_unit("WU-DATA-01"),
+                ]
+            )
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective=(
+                "Execute WU-MC-01, WU-MC-02 and WU-DATA-01 as individual "
+                "Work Units."
+            ),
+            max_work_units=8,
+        )
+    )
+
+    assert [item.id for item in plan.work_units] == [
+        "WU-MC-01",
+        "WU-MC-02",
+        "WU-DATA-01",
+    ]
+    assert runner.calls == 1
+
+
+def test_planner_recovers_full_catalog_when_explicit_ids_were_collapsed() -> None:
+    runner = _SequenceRunner(
+        [
+            payload([work_unit("MC-ACCOUNT")]),
+            payload([work_unit("WU-MC-01"), work_unit("WU-MC-02")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective="Keep WU-MC-01 and WU-MC-02 as separate Work Units.",
+            max_work_units=4,
+        )
+    )
+
+    assert runner.calls == 2
+    assert {item.id for item in plan.work_units} == {"WU-MC-01", "WU-MC-02"}
+
+
+def test_planner_fails_closed_if_recovery_still_omits_explicit_id() -> None:
+    runner = _SequenceRunner(
+        [
+            payload([work_unit("MC-ACCOUNT")]),
+            payload([work_unit("WU-MC-01")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    with pytest.raises(ProjectPlanningError, match="WU-MC-02"):
+        planner.plan(
+            ProjectPlanningRequest(
+                objective="Keep WU-MC-01 and WU-MC-02 as separate Work Units.",
+                max_work_units=4,
+            )
+        )
+
+
+def test_planner_rejects_explicit_catalog_above_work_unit_budget_before_runtime() -> None:
+    runner = _SequenceRunner([])
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    with pytest.raises(ProjectPlanningError, match="exceed max_work_units"):
+        planner.plan(
+            ProjectPlanningRequest(
+                objective="Execute WU-A-01, WU-A-02 and WU-A-03 separately.",
+                max_work_units=2,
+            )
+        )
+
+    assert runner.calls == 0
