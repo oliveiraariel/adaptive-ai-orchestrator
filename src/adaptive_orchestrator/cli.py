@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Sequence
 
 from adaptive_orchestrator.resilient_project_orchestration import (
-    RunResilientProjectOrchestration,
+    RunResilientProjectOrchestration as RunContinuousProjectOrchestration,
 )
 from application.execution_liveness import (
     ExecutionLiveness,
@@ -805,7 +805,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             orchestration_id=orchestration_id,
             observability=observability,
         )
-        result = RunResilientProjectOrchestration(
+        result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
@@ -1249,7 +1249,7 @@ def _resume_project(args: argparse.Namespace) -> int:
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
         )
-        result = RunResilientProjectOrchestration(
+        result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
