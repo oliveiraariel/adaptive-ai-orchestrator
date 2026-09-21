@@ -305,13 +305,24 @@ class RuntimeProjectPlanner:
             request,
             extra=f"planning failure: {failure}",
         )
-        recovery_instruction = (
-            "The previous Adaptive planning response omitted one or more explicit "
-            "Work Unit identifiers supplied by the project request. Return a full "
-            "corrected plan containing every mandatory identifier as an independent "
-            "Work Unit. Aggregators may be added but may not replace them.\n\n"
-            if required_ids
-            else (
+        if required_ids:
+            recovery_instruction = (
+                "The previous Adaptive planning response omitted one or more explicit "
+                "Work Unit identifiers supplied by the project request. Return a full "
+                "corrected plan containing every mandatory identifier as an independent "
+                "Work Unit. Aggregators may be added but may not replace them.\n\n"
+            )
+            explicit_section = (
+                "MANDATORY EXPLICIT WORK UNIT IDS:\n"
+                + "\n".join(f"- {item}" for item in required_ids)
+                + "\n\n"
+            )
+            recovery_rules = (
+                "- Return the full bounded plan and preserve every mandatory explicit Work Unit id.\n"
+                "- Keep each explicit Work Unit independently verifiable; do not collapse them into aggregators.\n"
+            )
+        else:
+            recovery_instruction = (
                 "The previous Adaptive planning response failed strict structured "
                 "validation. Do not repeat the broad plan unchanged. Recover with "
                 "exactly ONE smallest safe Work Unit that makes meaningful progress. "
@@ -319,34 +330,25 @@ class RuntimeProjectPlanner:
                 "DECISION or RESEARCH Work Unit that reconciles canonical sources and "
                 "produces an explicit blocker/decision contract before code changes.\n\n"
             )
-        )
-        explicit_section = (
-            "MANDATORY EXPLICIT WORK UNIT IDS:\n"
-            + "\n".join(f"- {item}" for item in required_ids)
-            + "\n\n"
-            if required_ids
-            else ""
-        )
+            explicit_section = ""
+            recovery_rules = "- Return exactly one Work Unit and no dependencies.\n"
+
         return (
             recovery_instruction
             + explicit_section
-            f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
-            f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
-            f"VALIDATION FAILURE:\n{failure}\n\n"
-            f"{experience + chr(10) + chr(10) if experience else ''}"
-            "RECOVERY RULES:\n"
-            + (
-                "- Return the full bounded plan and preserve every mandatory explicit Work Unit id.\n"
-                if required_ids
-                else "- Return exactly one Work Unit and no dependencies.\n"
-            )
-            "- Keep the Work Unit bounded, independently verifiable and safe.\n"
-            "- Planning remains read-only; do not modify project files.\n"
-            "- Do not invent business rules or bypass project governance.\n"
-            "- Return only one strict JSON object; no Markdown fences.\n\n"
-            f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
-            f"{self._schema_json()}"
+            + f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
+            + f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
+            + f"VALIDATION FAILURE:\n{failure}\n\n"
+            + (experience + "\n\n" if experience else "")
+            + "RECOVERY RULES:\n"
+            + recovery_rules
+            + "- Keep the Work Unit(s) bounded, independently verifiable and safe.\n"
+            + "- Planning remains read-only; do not modify project files.\n"
+            + "- Do not invent business rules or bypass project governance.\n"
+            + "- Return only one strict JSON object; no Markdown fences.\n\n"
+            + f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
+            + "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
+            + self._schema_json()
         )
 
     def _build_replan_recovery_prompt(
