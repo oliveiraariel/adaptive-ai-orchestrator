@@ -288,6 +288,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         active_started_at: dict[str, float] = {}
         soft_stalled_ids: set[str] = set()
         stall_notified_ids: set[str] = set()
+        last_effective_concurrency_limit: int | None = None
         recovery_yield_requested = False
         recovery_yield_reason = ""
 
@@ -1089,7 +1090,67 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if human_ready:
                     persist()
 
-                available_slots = 0 if pause_requested else request.max_concurrency - len(active)
+                now = time.time()
+                soft_stalled_ids = {
+                    work_unit_id
+                    for work_unit_id in active_by_id
+                    if (
+                        now - active_started_at.get(work_unit_id, now)
+                        >= request.worker_soft_stall_seconds
+                    )
+                }
+                newly_stalled = soft_stalled_ids - stall_notified_ids
+                for work_unit_id in sorted(newly_stalled):
+                    outcome = active_by_id[work_unit_id]
+                    observability.emit(
+                        "worker_soft_stall_observed",
+                        orchestration_id=orchestration_id,
+                        work_unit_id=work_unit_id,
+                        execution_id=(
+                            outcome.execution.id
+                            if outcome.execution is not None
+                            else None
+                        ),
+                        external_id=(
+                            outcome.execution.external_id
+                            if outcome.execution is not None
+                            else None
+                        ),
+                        elapsed_seconds=round(
+                            max(
+                                0.0,
+                                now - active_started_at.get(work_unit_id, now),
+                            ),
+                            3,
+                        ),
+                        status="RUNNING",
+                    )
+                stall_notified_ids.update(newly_stalled)
+
+                effective_concurrency_limit = self._effective_concurrency_limit(
+                    request,
+                    ready_count=len(ready_ids),
+                    active_count=len(active),
+                    soft_stalled_count=len(soft_stalled_ids),
+                )
+                if effective_concurrency_limit != last_effective_concurrency_limit:
+                    observability.emit(
+                        "orchestration_concurrency_adjusted",
+                        orchestration_id=orchestration_id,
+                        concurrency_mode=request.concurrency_mode.value,
+                        configured_max_concurrency=request.max_concurrency,
+                        effective_concurrency_limit=effective_concurrency_limit,
+                        ready_work_unit_count=len(ready_ids),
+                        active_execution_count=len(active),
+                        soft_stalled_worker_count=len(soft_stalled_ids),
+                    )
+                    last_effective_concurrency_limit = effective_concurrency_limit
+
+                available_slots = (
+                    0
+                    if pause_requested
+                    else effective_concurrency_limit - len(active)
+                )
                 if (
                     available_slots > 0
                     and ready_ids
@@ -1149,7 +1210,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 claimant_id=(
                                     f"project:{orchestration_id}:dispatch:{generation}"
                                 ),
-                                concurrency_limit=request.max_concurrency,
+                                concurrency_limit=effective_concurrency_limit,
                                 active_execution_count=len(active),
                                 human_approved_work_unit_ids=(
                                     tuple(selected_ids) if request.human_approved else ()
@@ -1167,6 +1228,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 )
                                 active[future] = (outcome, generation)
                                 active_by_id[outcome.work_unit_id] = outcome
+                                active_started_at[outcome.work_unit_id] = time.time()
+                                soft_stalled_ids.discard(outcome.work_unit_id)
+                                stall_notified_ids.discard(outcome.work_unit_id)
                                 spec = specs[outcome.work_unit_id]
                                 configuration = assignment_by_id[outcome.work_unit_id].configuration
                                 observability.emit(
@@ -1205,11 +1269,20 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if active:
                     completed, _ = wait(
                         tuple(active),
+                        timeout=request.worker_observation_interval_seconds,
                         return_when=FIRST_COMPLETED,
                     )
+                    if not completed:
+                        # Observation ticks are intentionally non-terminal. They
+                        # return control to the scheduler so READY independent
+                        # work can consume capacity or a soft-stall overflow slot.
+                        continue
                     for future in completed:
                         outcome, generation = active.pop(future)
                         active_by_id.pop(outcome.work_unit_id, None)
+                        active_started_at.pop(outcome.work_unit_id, None)
+                        soft_stalled_ids.discard(outcome.work_unit_id)
+                        stall_notified_ids.discard(outcome.work_unit_id)
                         work_unit_id = outcome.work_unit_id
                         try:
                             runtime_result = future.result()
@@ -1542,7 +1615,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     ready_ids=ready_ids,
                     specs=specs,
                     active_ids=(),
-                    max_new_workers=request.max_concurrency,
+                    max_new_workers=self._effective_concurrency_limit(
+                        request,
+                        ready_count=len(ready_ids),
+                        active_count=0,
+                        soft_stalled_count=0,
+                    ),
                 )
                 if not selected_ids:
                     break
