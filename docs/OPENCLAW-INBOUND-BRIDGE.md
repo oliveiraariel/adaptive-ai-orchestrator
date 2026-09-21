@@ -63,7 +63,9 @@ fan-in / bounded replan when needed
   ↺
 ```
 
-The bridge's `--multi-agent` option is a bridge-private selector. The helper removes it and invokes the public `orchestrate` CLI command.
+The bridge's `--multi-agent` option is a bridge-private selector. It is not user-domain content. The helper removes it and invokes the public `orchestrate` CLI command.
+
+Normal user input should describe the product change, business rule, scope or desired outcome. The bridge must not require the user to describe `pending_replan`, supervisor leases, Result Store reconciliation, retry budgets, controller liveness or concurrency mechanics.
 
 ## CLI contract — single Work Unit
 
@@ -88,8 +90,7 @@ Important options include:
 adaptive-orchestrator orchestrate \
   --project-root /absolute/path/to/governed-project \
   --objective "Execute the authorized project objective." \
-  --agent main \
-  --max-concurrency 4
+  --agent main
 ```
 
 Important project-mode options include:
@@ -97,8 +98,9 @@ Important project-mode options include:
 - `--project-root` — governed project root; worker result handoff is stored under `<project>/.adaptive/runs/`;
 - `--agent` — physical OpenClaw agent/workspace owner for worker sessions;
 - `--planner-agent` — optional distinct planning agent id;
-- `--max-concurrency` — global active-worker cap;
-- `--max-work-units`, `--max-waves`, `--max-attempts`, `--max-replans` — bounded execution controls (`max-waves` is retained as the compatibility name for dispatch-generation budget);
+- `--concurrency-mode AUTO|FIXED` — AUTO is the default; FIXED is an explicit hard operator/business constraint;
+- `--max-concurrency` — normal AUTO ceiling or FIXED hard ceiling;
+- `--max-work-units`, `--max-waves`, `--max-attempts`, `--max-replans` — bounded diagnostic/operator controls; normal project execution uses autonomous defaults (64 Work Units by default, with dispatch budget scaling for larger valid graphs);
 - `--skill-registry` — explicit Ariel Agent Skills registry path when automatic sibling discovery is unavailable;
 - `--plan-file` — deterministic prebuilt plan for tests/E2E;
 - repeatable `--context` and `--constraint`;
@@ -171,7 +173,7 @@ health, locks, and runtime metadata.
 - Side effects must be explicitly allowed by the outer execution policy.
 - Human-only Work Units are not delegated to an agent.
 - Workers cannot recursively invoke the bridge/Adaptive again.
-- Replanning is bounded; new dispatches stop while active work drains before graph mutation.
+- Replanning is bounded and transactional; independent READY work is not globally stopped merely because control-plane recovery is pending.
 - New unsatisfied required prerequisites cannot be attached to already-started Work Units.
 - Retry task identities are distinct.
 - Concurrency is bounded and must be useful, not maximized for its own sake.
