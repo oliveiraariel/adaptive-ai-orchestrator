@@ -217,6 +217,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 checkpoint, "active_executions"
             )
 
+        superseded_work_unit_ids = self._restore_superseded_work_unit_ids(
+            checkpoint, work_units
+        )
+
         skill_sets = self._preflight_skill_sets(specs, request.agent)
         self._validate_graph(request, work_units, dependencies)
 
@@ -336,7 +340,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                 persist()
             while True:
-                unfinished = self._unfinished(work_units)
+                unfinished = {
+                    work_unit_id: work_unit
+                    for work_unit_id, work_unit in self._unfinished(work_units).items()
+                    if work_unit_id not in superseded_work_unit_ids
+                }
                 pause_requested = self._pause_requested(orchestration_id)
                 if pause_requested and not active:
                     persist(terminal=False)
@@ -358,6 +366,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         work_unit_id
                         for work_unit_id, work_unit in work_units.items()
                         if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                        and work_unit_id not in superseded_work_unit_ids
                     }
                     persistent_recovery_active = bool(
                         recovery_before
@@ -424,7 +433,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 work_unit_id=work_unit_id,
                                 work_unit_objective=specs[work_unit_id].objective,
                                 state_summary=self._state_summary(
-                                    work_units, outputs, output_refs
+                                    work_units,
+                                    outputs,
+                                    output_refs,
+                                    superseded_work_unit_ids=superseded_work_unit_ids,
                                 ),
                                 project_id=request.project_id,
                                 attempt_history=history,
@@ -517,6 +529,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 output_refs=output_refs,
                                 request=request,
                                 planner_feedback=replan_feedback,
+                                superseded_work_unit_ids=superseded_work_unit_ids,
                             )
                         except RecoveryPlanTopologyError as exc:
                             replan_count += 1
@@ -1095,32 +1108,37 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if not selected_ids:
                     break
 
+        operational_ids = set(work_units) - superseded_work_unit_ids
         completed_ids = tuple(
             sorted(
                 work_unit_id
                 for work_unit_id, work_unit in work_units.items()
-                if work_unit.state is WorkUnitState.COMPLETED
+                if work_unit_id in operational_ids
+                and work_unit.state is WorkUnitState.COMPLETED
             )
         )
         blocked_ids = tuple(
             sorted(
                 work_unit_id
                 for work_unit_id, work_unit in work_units.items()
-                if work_unit.state is WorkUnitState.BLOCKED
+                if work_unit_id in operational_ids
+                and work_unit.state is WorkUnitState.BLOCKED
             )
         )
         recovery_required_ids = tuple(
             sorted(
                 work_unit_id
                 for work_unit_id, work_unit in work_units.items()
-                if work_unit.state is WorkUnitState.RECOVERY_REQUIRED
+                if work_unit_id in operational_ids
+                and work_unit.state is WorkUnitState.RECOVERY_REQUIRED
             )
         )
         unfinished_ids = tuple(
             sorted(
                 work_unit_id
                 for work_unit_id, work_unit in work_units.items()
-                if work_unit.state not in {
+                if work_unit_id in operational_ids
+                and work_unit.state not in {
                     WorkUnitState.COMPLETED,
                     WorkUnitState.CANCELLED,
                     WorkUnitState.BLOCKED,
@@ -1128,7 +1146,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
         )
 
-        if len(completed_ids) == len(work_units):
+        if operational_ids and len(completed_ids) == len(operational_ids):
             status = ProjectRunStatus.COMPLETED
         elif self._pause_requested(orchestration_id):
             status = ProjectRunStatus.PAUSED
@@ -1284,6 +1302,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "active_executions": active_rows,
             "terminal": terminal,
         }
+        if isinstance(existing_checkpoint, dict):
+            for metadata_field in (
+                "work_graph_migrations",
+                "superseded_work_unit_ids",
+            ):
+                if metadata_field in existing_checkpoint:
+                    payload[metadata_field] = existing_checkpoint[metadata_field]
         self._checkpoint_store.save(orchestration_id, payload)
 
     @staticmethod
@@ -1537,6 +1562,29 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             raise ProjectOrchestrationError(
                 "Checkpoint project plan is invalid."
             ) from exc
+
+    @staticmethod
+    def _restore_superseded_work_unit_ids(
+        checkpoint: dict | None,
+        work_units: dict[str, WorkUnit],
+    ) -> set[str]:
+        if checkpoint is None:
+            return set()
+        raw = checkpoint.get("superseded_work_unit_ids", [])
+        if not isinstance(raw, list) or any(
+            not isinstance(item, str) or not item.strip() for item in raw
+        ):
+            raise ProjectOrchestrationError(
+                "Checkpoint superseded_work_unit_ids must be a list of ids."
+            )
+        values = {item.strip() for item in raw}
+        unknown = values - set(work_units)
+        if unknown:
+            raise ProjectOrchestrationError(
+                "Checkpoint supersedes unknown Work Unit(s): "
+                + ", ".join(sorted(unknown))
+            )
+        return values
 
     @classmethod
     def _restore_work_unit_states(
