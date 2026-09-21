@@ -249,3 +249,27 @@ def test_planner_without_explicit_work_unit_ids_keeps_single_unit_recovery_budge
     assert [item.id for item in plan.work_units] == ["recovered"]
     assert len(runner.requests) == 2
     assert "exactly ONE smallest safe Work Unit" in runner.requests[1].objective
+
+
+def test_planner_honors_structured_required_work_unit_ids_without_text_detection() -> None:
+    runner = _RequestCapturingSequenceRunner(
+        [
+            payload([work_unit("aggregate")]),
+            payload([work_unit("GOVERNED-01")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective="Implement the requested governed change.",
+            required_work_unit_ids=("GOVERNED-01",),
+            max_work_units=3,
+        )
+    )
+
+    assert [item.id for item in plan.work_units] == ["GOVERNED-01"]
+    assert len(runner.requests) == 2
+    assert "REQUIRED WORK UNIT IDS" in runner.requests[0].objective
+    assert "- GOVERNED-01" in runner.requests[0].objective
+    assert "- GOVERNED-01" in runner.requests[1].objective
