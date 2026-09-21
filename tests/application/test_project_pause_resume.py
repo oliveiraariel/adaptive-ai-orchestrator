@@ -2,7 +2,10 @@ import json
 
 from adaptive_orchestrator import cli
 from application.continuous_project_orchestration import RunContinuousProjectOrchestration
-from application.run_project_orchestration import ProjectOrchestrationRequest
+from application.run_project_orchestration import (
+    ConcurrencyMode,
+    ProjectOrchestrationRequest,
+)
 from domain.project_execution_plan import PlannedWorkUnit, ProjectExecutionPlan
 from domain.work_unit import WorkUnitKind
 from infrastructure.project_orchestration_checkpoint import (
@@ -98,3 +101,33 @@ def test_resume_changes_paused_checkpoint_back_to_running_before_execution(tmp_p
     assert persisted is not None
     assert persisted["desired_state"] == "RUNNING"
     assert persisted["terminal"] is False
+
+
+
+def test_legacy_checkpoint_concurrency_is_upgraded_to_auto_floor_four() -> None:
+    state = _checkpoint("orch-legacy-concurrency")
+    raw = state["request"]
+    raw.pop("concurrency_mode", None)
+    raw.pop("worker_observation_interval_seconds", None)
+    raw.pop("worker_soft_stall_seconds", None)
+    raw.pop("worker_stall_overflow_slots", None)
+    raw["max_concurrency"] = 1
+
+    request = RunContinuousProjectOrchestration._request_from_checkpoint(state)
+
+    assert request.concurrency_mode is ConcurrencyMode.AUTO
+    assert request.max_concurrency == 4
+    assert request.worker_observation_interval_seconds == 5
+    assert request.worker_soft_stall_seconds == 90
+    assert request.worker_stall_overflow_slots == 1
+
+
+def test_fixed_concurrency_checkpoint_preserves_explicit_serial_constraint() -> None:
+    state = _checkpoint("orch-fixed-concurrency")
+    state["request"]["concurrency_mode"] = ConcurrencyMode.FIXED.value
+    state["request"]["max_concurrency"] = 1
+
+    request = RunContinuousProjectOrchestration._request_from_checkpoint(state)
+
+    assert request.concurrency_mode is ConcurrencyMode.FIXED
+    assert request.max_concurrency == 1
