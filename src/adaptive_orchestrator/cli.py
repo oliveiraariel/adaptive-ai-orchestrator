@@ -11,8 +11,8 @@ from application.observability import JsonlObservabilitySink, NullObservabilityS
 from pathlib import Path
 from typing import Sequence
 
-from application.continuous_project_orchestration import (
-    RunContinuousProjectOrchestration,
+from adaptive_orchestrator.resilient_project_orchestration import (
+    RunResilientProjectOrchestration,
 )
 from application.execution_liveness import (
     ExecutionLiveness,
@@ -805,7 +805,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             orchestration_id=orchestration_id,
             observability=observability,
         )
-        result = RunContinuousProjectOrchestration(
+        result = RunResilientProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
@@ -1249,7 +1249,7 @@ def _resume_project(args: argparse.Namespace) -> int:
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
         )
-        result = RunContinuousProjectOrchestration(
+        result = RunResilientProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
