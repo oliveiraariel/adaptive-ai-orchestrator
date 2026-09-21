@@ -156,6 +156,17 @@ class RuntimeProjectPlanner:
             extract_explicit_work_unit_ids(request.objective, request.scope),
         )
 
+    @classmethod
+    def _required_ids_section(cls, request: ProjectPlanningRequest) -> str:
+        ids = cls._explicit_requested_work_unit_ids(request)
+        if not ids:
+            return "\n"
+        return (
+            "REQUIRED WORK UNIT IDS (must appear as distinct plan nodes):\n"
+            + "\n".join(f"- {item}" for item in ids)
+            + "\n\n"
+        )
+
     @staticmethod
     def _validate_explicit_work_unit_coverage(
         plan: ProjectExecutionPlan,
@@ -278,7 +289,8 @@ class RuntimeProjectPlanner:
             f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
             f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
             f"MAX WORK UNITS: {request.max_work_units}\n"
-            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
+            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n"
+            f"{self._required_ids_section(request)}"
             f"{experience + chr(10) + chr(10) if experience else ''}"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
@@ -309,7 +321,8 @@ class RuntimeProjectPlanner:
             f"CURRENT PLAN:\n{self._serialize_plan(current_plan)}\n\n"
             f"CURRENT EXECUTION STATE:\n{state_summary}\n\n"
             f"MAX WORK UNITS TOTAL: {request.max_work_units}\n"
-            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
+            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n"
+            f"{self._required_ids_section(request)}"
             f"{experience + chr(10) + chr(10) if experience else ''}"
             "REPLANNING RULES:\n"
             "- Preserve all existing Work Unit ids and semantics; do not remove, rename, or rewrite them.\n"
@@ -365,6 +378,7 @@ class RuntimeProjectPlanner:
             + "\n\n"
             + f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
             + f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
+            + self._required_ids_section(request)
             + f"VALIDATION FAILURE:\n{failure}\n\n"
             + f"{experience + chr(10) + chr(10) if experience else ''}"
             + "RECOVERY RULES:\n"
