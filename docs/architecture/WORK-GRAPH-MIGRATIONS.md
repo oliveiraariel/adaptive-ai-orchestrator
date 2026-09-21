@@ -21,7 +21,7 @@ These ideas are adapted to Adaptive's checkpointed Work Graph and Recovery Loop.
 
 1. Historical Work Units are immutable. A migration cannot remove, rename, replace, or rewrite an existing Work Unit.
 2. Historical edges are immutable. Existing dependencies remain represented in the persisted plan. A migration may add an edge only when at least one endpoint is a newly materialized Work Unit.
-3. Apply only while paused and quiescent. desired_state must be PAUSED, the checkpoint must be non-terminal, and active_executions must be empty.
+3. Apply only while paused and quiescent. desired_state must be PAUSED, the checkpoint must be non-terminal, active_executions must be empty, and controller liveness must prove that no fresh ACTIVE controller can still overwrite the checkpoint. Missing liveness fails closed.
 4. Dry-run before apply. The dry-run reports the exact checkpoint digest, before/after graph digests, new Work Units, accepted-by-lineage units, recovery targets, and blockers.
 5. Optimistic checkpoint precondition. Apply requires the checkpoint_digest emitted by the preceding dry-run. If the durable checkpoint changed, apply fails and a new dry-run is required.
 6. Versioned, idempotent migration identity. migration_id + spec_digest identifies one migration. Reapplying the same migration is a no-op. Reusing the same id with different content fails closed.
@@ -79,7 +79,7 @@ Minimal shape:
 adaptive-orchestrator pause-project --orchestration-id <id> --project-root <project>
 ~~~
 
-Wait until no active execution remains.
+Wait until no active execution remains and the controller heartbeat has closed to a non-ACTIVE state (normally TERMINAL with PAUSED status). The migration command reports controller quiescence and refuses apply when liveness is fresh ACTIVE or missing.
 
 ### 2. Dry-run the migration
 
