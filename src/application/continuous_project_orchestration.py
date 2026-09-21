@@ -111,6 +111,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             agent=request.planner_agent or request.agent,
             max_work_units=request.max_work_units,
             max_concurrency=request.max_concurrency,
+            required_work_unit_ids=request.required_work_unit_ids,
         )
         admission_only = (
             checkpoint is not None
@@ -136,6 +137,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             mode="project",
         )
         plan = request.plan or self._planner.plan(planning_request)
+        self._validate_required_work_unit_coverage(request, plan)
         if len(plan.work_units) > request.max_work_units:
             raise ProjectOrchestrationError(
                 f"Plan contains {len(plan.work_units)} Work Units; "
@@ -1322,6 +1324,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "project_id": request.project_id,
             "context": list(request.context),
             "constraints": list(request.constraints),
+            "required_work_unit_ids": list(request.required_work_unit_ids),
             "max_concurrency": request.max_concurrency,
             "max_work_units": request.max_work_units,
             "max_waves": request.max_waves,
@@ -1400,6 +1403,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 context=tuple(cls._require_string_list(raw, "context")),
                 constraints=tuple(
                     cls._require_string_list(raw, "constraints")
+                ),
+                required_work_unit_ids=tuple(
+                    cls._require_string_list_optional(
+                        raw, "required_work_unit_ids"
+                    )
                 ),
                 max_concurrency=cls._require_nonnegative_int(
                     raw, "max_concurrency"
@@ -1818,6 +1826,19 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         ):
             raise ProjectOrchestrationError(
                 f"Checkpoint field '{name}' must be a list of objects."
+            )
+        return value
+
+    @staticmethod
+    def _require_string_list_optional(payload: dict, name: str) -> list[str]:
+        value = payload.get(name)
+        if value is None:
+            return []
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
+            raise ProjectOrchestrationError(
+                f"Checkpoint field '{name}' must be a list of strings."
             )
         return value
 
