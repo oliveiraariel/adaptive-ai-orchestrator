@@ -1390,18 +1390,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                                     runtime_candidate_recorded=(
                                                         reconciled_learning.runtime_candidate_recorded
                                                     ),
+                                                    closed=reconciled_learning.closed,
                                                 )
-                                                if (
-                                                    reconciled_learning.targets
-                                                    and not reconciled_learning.closed
-                                                ):
-                                                    pending_replan = True
-                                                    replan_feedback = (
-                                                        "Corrective reconciliation "
-                                                        "succeeded but its learning "
-                                                        "lifecycle remains open for "
-                                                        f"incident {reconciled_learning.incident_id}."
-                                                    )
                             if (
                                 request.learning_after_successful_retest
                                 and self._persistent_recovery is not None
@@ -1469,22 +1459,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                             runtime_candidate_recorded=(
                                                 learning_report.runtime_candidate_recorded
                                             ),
+                                            closed=learning_report.closed,
                                         )
-                                        if (
-                                            learning_report.targets
-                                            and not learning_report.closed
-                                        ):
-                                            pending_replan = True
-                                            replan_feedback = (
-                                                "Successful retest triggered the "
-                                                "automatic learning lifecycle, but "
-                                                "runtime incorporation/consistency did "
-                                                "not close the incident. Complete the "
-                                                "remaining governed learning obligations "
-                                                f"for incident {learning_report.incident_id}. "
-                                                "Targets: "
-                                                + ", ".join(learning_report.targets)
-                                            )
                         pending_replan = (
                             pending_replan
                             or replan_signal
