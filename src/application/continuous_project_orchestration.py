@@ -898,6 +898,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             attempts=attempts[work_unit_id],
                             max_attempts=request.max_attempts_per_work_unit,
                             enforce_attempt_circuit_breaker=False,
+                            pragmatic_low_criticality_acceptance=(
+                                request.pragmatic_low_criticality_acceptance
+                                and not request.execution_policy.require_independent_review
+                            ),
                         )
                         record, recovery_signal = self._apply_strategy_exhaustion(
                             record=record,
