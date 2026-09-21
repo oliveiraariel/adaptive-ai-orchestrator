@@ -803,6 +803,25 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         }
                         previous_plan = plan
                         dependencies_before = list(dependencies)
+                        work_unit_ids_before = set(work_units)
+
+                        def rollback_replan_additions() -> None:
+                            nonlocal plan
+                            dependencies[:] = dependencies_before
+                            plan = previous_plan
+                            for added_id in set(work_units) - work_unit_ids_before:
+                                specs.pop(added_id, None)
+                                work_units.pop(added_id, None)
+                                attempts.pop(added_id, None)
+                                strategy_generations.pop(added_id, None)
+                                outputs.pop(added_id, None)
+                                output_refs.pop(added_id, None)
+                                revision_feedback.pop(added_id, None)
+                                recovery_epoch_counts.pop(added_id, None)
+                                recovery_replans_in_epoch.pop(added_id, None)
+                                recovery_no_progress_counts.pop(added_id, None)
+                                recovery_guidance.pop(added_id, None)
+
                         try:
                             plan, new_ids = self._expand_plan(
                                 planner_request=planning_request,
@@ -828,8 +847,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 for _, target_id, required in candidate_edges
                             )
                             if recovery_before and not recovery_progress:
-                                dependencies[:] = dependencies_before
-                                plan = previous_plan
                                 raise RecoveryPlanTopologyError(
                                     "Recovery replan made no material structural "
                                     "progress for RECOVERY_REQUIRED work. The next "
@@ -837,7 +854,18 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     "into the recovery Work Unit, or the strategist "
                                     "must choose a materially different disposition."
                                 )
+                            self._validate_replanned_edges(
+                                old_edges=old_edges,
+                                dependencies=dependencies,
+                                work_units=work_units,
+                            )
+                            self._validate_graph(
+                                request,
+                                work_units,
+                                dependencies,
+                            )
                         except RecoveryPlanTopologyError as exc:
+                            rollback_replan_additions()
                             replan_count += 1
                             replan_feedback = str(exc)
                             observability.emit(
@@ -862,7 +890,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             persist()
                             continue
-                        except (ProjectPlanningError, RunOrchestrationError) as exc:
+                        except (
+                            ProjectPlanningError,
+                            RunOrchestrationError,
+                            ProjectOrchestrationError,
+                        ) as exc:
+                            rollback_replan_additions()
                             replan_feedback = (
                                 f"{type(exc).__name__}: "
                                 + " ".join(str(exc).split())[:500]
@@ -894,11 +927,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         for work_unit_id in recovery_before:
                             recovery_replans_in_epoch[work_unit_id] += 1
                         replan_feedback = ""
-                        self._validate_replanned_edges(
-                            old_edges=old_edges,
-                            dependencies=dependencies,
-                            work_units=work_units,
-                        )
                         new_edges = candidate_edges
                         recovery_resumed: set[str] = set()
                         for work_unit_id in recovery_before:
@@ -971,7 +999,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                         strategy=strategy_generations[failed_id],
                                     )
                                 )
-                        self._validate_graph(request, work_units, dependencies)
                         persist()
                         continue
 
