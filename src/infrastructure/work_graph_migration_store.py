@@ -115,7 +115,7 @@ class FileWorkGraphMigrationStore:
             raise ValueError("stale_after_seconds must be positive.")
         payload = self.controller_liveness(orchestration_id)
         if payload is None:
-            return True, "controller-liveness-missing"
+            return False, "controller-liveness-missing"
         state = str(payload.get("controller_state") or "")
         last = payload.get("last_heartbeat_at")
         if state != "ACTIVE":
