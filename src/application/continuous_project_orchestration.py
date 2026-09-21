@@ -806,35 +806,32 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 )
                         except RecoveryPlanTopologyError as exc:
                             replan_count += 1
-                            for work_unit_id in recovery_before:
-                                recovery_replans_in_epoch[work_unit_id] += 1
                             replan_feedback = str(exc)
-                            pending_replan = (
-                                bool(recovery_before)
-                                if persistent_recovery_active
-                                else replan_count < request.max_replans
-                            )
                             observability.emit(
                                 "recovery_plan_rejected",
                                 orchestration_id=orchestration_id,
                                 replan_count=replan_count,
                                 reason=replan_feedback,
                             )
+                            for work_unit_id in sorted(recovery_before):
+                                if (
+                                    work_units[work_unit_id].state
+                                    is WorkUnitState.RECOVERY_REQUIRED
+                                ):
+                                    _retry_or_suspend_recovery(
+                                        work_unit_id,
+                                        reason="replan-no-structural-progress",
+                                        guidance=replan_feedback,
+                                    )
+                            pending_replan = any(
+                                item.state is WorkUnitState.RECOVERY_REQUIRED
+                                for item in work_units.values()
+                            )
                             persist()
                             continue
                         except (ProjectPlanningError, RunOrchestrationError) as exc:
-                            pending_replan = bool(recovery_before)
-                            recovery_yield_requested = bool(recovery_before)
-                            recovery_yield_reason = (
-                                "persistent-recovery:planner-transient-failure:"
-                                f"{type(exc).__name__}"
-                            )
                             replan_feedback = (
-                                "Recovery planner could not complete this "
-                                "control-plane step. Preserve the same non-terminal "
-                                "recovery state and retry on the next supervised "
-                                "controller cycle. "
-                                f"Failure: {type(exc).__name__}: "
+                                f"{type(exc).__name__}: "
                                 + " ".join(str(exc).split())[:500]
                             )
                             observability.emit(
@@ -843,8 +840,22 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 replan_count=replan_count,
                                 reason=replan_feedback,
                             )
+                            for work_unit_id in sorted(recovery_before):
+                                if (
+                                    work_units[work_unit_id].state
+                                    is WorkUnitState.RECOVERY_REQUIRED
+                                ):
+                                    _retry_or_suspend_recovery(
+                                        work_unit_id,
+                                        reason="planner-transient-failure",
+                                        guidance=replan_feedback,
+                                    )
+                            pending_replan = any(
+                                item.state is WorkUnitState.RECOVERY_REQUIRED
+                                for item in work_units.values()
+                            )
                             persist()
-                            break
+                            continue
 
                         replan_count += 1
                         for work_unit_id in recovery_before:
@@ -875,6 +886,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 + recovery_guidance.get(work_unit_id, "")
                             )
                             recovery_replans_in_epoch[work_unit_id] = 0
+                            recovery_no_progress_counts[work_unit_id] = 0
                             recovery_guidance.pop(work_unit_id, None)
                             recovery_resumed.add(work_unit_id)
                         for work_unit_id in new_ids:
@@ -882,6 +894,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             strategy_generations[work_unit_id] = 1
                             recovery_epoch_counts[work_unit_id] = 0
                             recovery_replans_in_epoch[work_unit_id] = 0
+                            recovery_no_progress_counts[work_unit_id] = 0
                         unresolved_recovery = recovery_before - recovery_resumed
                         pending_replan = (
                             bool(unresolved_recovery)
