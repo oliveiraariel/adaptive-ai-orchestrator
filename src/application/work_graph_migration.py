@@ -100,6 +100,10 @@ class WorkGraphMigrationService:
         migration: Mapping[str, Any],
     ) -> WorkGraphMigrationResult:
         checkpoint = self._load_checkpoint(orchestration_id)
+        # Dry-run validates the exact quiescent state that apply will mutate.
+        # Requiring the same pause boundary prevents operators from carrying a
+        # fingerprint across an in-flight state transition.
+        self._validate_apply_safety(checkpoint)
         normalized = self._normalize_migration(
             orchestration_id=orchestration_id,
             migration=migration,
@@ -278,7 +282,9 @@ class WorkGraphMigrationService:
         reason = self._require_nonempty_string(migration, "reason")
         expected = migration.get("expected_checkpoint_fingerprint")
         if expected is not None and (
-            not isinstance(expected, str) or len(expected) != 64
+            not isinstance(expected, str)
+            or len(expected) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in expected)
         ):
             raise WorkGraphMigrationError(
                 "expected_checkpoint_fingerprint must be a 64-character SHA-256 hex string."
@@ -630,6 +636,29 @@ class WorkGraphMigrationService:
                 ]
             )
         )
+
+        # A superseded historical prerequisite must not strand a still-operational
+        # historical dependent behind an unsatisfied required edge. Operators must
+        # either preserve that prerequisite or supersede/replace the dependent as
+        # part of the same normalization.
+        superseded_set = set(merged_superseded)
+        stranded = sorted(
+            f"{item.get('source_id')}->{item.get('target_id')}"
+            for item in dep_states
+            if isinstance(item, dict)
+            and bool(item.get("required", True))
+            and item.get("status") != "SATISFIED"
+            and item.get("source_id") in superseded_set
+            and item.get("target_id") not in superseded_set
+        )
+        if stranded:
+            raise WorkGraphMigrationError(
+                "Supersession would strand operational historical dependents behind "
+                "unsatisfied required edge(s): "
+                + ", ".join(stranded)
+                + ". Supersede/replace those dependents in the same migration."
+            )
+
         candidate[self.SUPERSEDED_FIELD] = merged_superseded
 
         # Stale replanning pressure may be cleared only when every currently
