@@ -338,14 +338,17 @@ def test_cli_project_status_reads_authoritative_checkpoint_without_runtime(
         "desired_state": "RUNNING",
         "mode": "project-status",
         "ok": True,
+        "operational_work_unit_count": 4,
         "orchestration_id": "orch-status-001",
         "pending_replan": False,
         "phase": "EXECUTION",
         "recovery_required_work_unit_ids": [],
         "replan_count": 0,
         "status": "COMPLETED",
+        "superseded_work_unit_ids": [],
         "terminal": True,
         "unfinished_work_unit_ids": [],
+        "work_graph_migration_count": 0,
         "work_unit_count": 4,
     }
 

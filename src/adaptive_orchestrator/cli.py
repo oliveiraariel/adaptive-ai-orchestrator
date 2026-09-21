@@ -40,6 +40,10 @@ from application.runtime_project_planner import (
     RuntimeProjectPlanner,
 )
 from application.skill_resolution import SkillResolutionError
+from application.work_graph_migration import (
+    WorkGraphMigrationError,
+    WorkGraphMigrationService,
+)
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from infrastructure.claim_registry import InMemoryClaimRegistry
@@ -154,6 +158,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
     )
 
+    migrate_work_graph = commands.add_parser(
+        "migrate-work-graph",
+        help=(
+            "Dry-run or apply an audited additive migration to a paused, "
+            "non-terminal persisted Work Graph."
+        ),
+    )
+    migrate_work_graph.add_argument("--orchestration-id", required=True)
+    migrate_work_graph.add_argument("--plan-file", required=True)
+    migrate_work_graph.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+    migration_mode = migrate_work_graph.add_mutually_exclusive_group(required=True)
+    migration_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the migration and print the current checkpoint fingerprint.",
+    )
+    migration_mode.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "Apply the migration. Requires desired_state=PAUSED, zero active "
+            "executions, and a matching expected_checkpoint_fingerprint."
+        ),
+    )
+
     supervise_projects = commands.add_parser(
         "supervise-projects",
         help=(
@@ -240,6 +272,15 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
     parser.add_argument("--constraint", action="append", default=[])
+    parser.add_argument(
+        "--required-work-unit-id",
+        action="append",
+        default=[],
+        help=(
+            "Declare a Work Unit id as a durable governance identity that the "
+            "Planner may not aggregate away. Repeat for multiple ids."
+        ),
+    )
     parser.add_argument("--skill-registry")
     parser.add_argument("--plan-file")
     parser.add_argument("--plan-only", action="store_true")
@@ -347,6 +388,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _resume_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
+    if args.command == "migrate-work-graph":
+        return _migrate_work_graph(args)
     if args.command == "supervise-projects":
         return _supervise_projects(args)
 
@@ -721,6 +764,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 agent=args.planner_agent or args.agent,
                 max_work_units=args.max_work_units,
                 max_concurrency=args.max_concurrency,
+                required_work_unit_ids=tuple(args.required_work_unit_id),
             )
             plan = planner.plan(planning_request)
             observability.emit(
@@ -788,6 +832,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
+                required_work_unit_ids=tuple(args.required_work_unit_id),
                 max_concurrency=args.max_concurrency,
                 max_work_units=args.max_work_units,
                 max_waves=args.max_waves,
@@ -931,18 +976,29 @@ def _project_checkpoint_status_payload(
 ) -> dict[str, object]:
     raw_states = checkpoint.get("work_unit_states")
     states = raw_states if isinstance(raw_states, dict) else {}
+    raw_superseded = checkpoint.get("superseded_work_unit_ids")
+    superseded = {
+        item
+        for item in raw_superseded
+        if isinstance(raw_superseded, list)
+        and isinstance(item, str)
+        and item in states
+    } if isinstance(raw_superseded, list) else set()
+    operational_states = {
+        key: value for key, value in states.items() if key not in superseded
+    }
     completed = sorted(
-        key for key, value in states.items() if value == "COMPLETED"
+        key for key, value in operational_states.items() if value == "COMPLETED"
     )
     blocked = sorted(
-        key for key, value in states.items() if value == "BLOCKED"
+        key for key, value in operational_states.items() if value == "BLOCKED"
     )
     recovery_required = sorted(
-        key for key, value in states.items() if value == "RECOVERY_REQUIRED"
+        key for key, value in operational_states.items() if value == "RECOVERY_REQUIRED"
     )
     unfinished = sorted(
         key
-        for key, value in states.items()
+        for key, value in operational_states.items()
         if value not in {"COMPLETED", "CANCELLED", "BLOCKED"}
     )
     terminal = checkpoint.get("terminal") is True
@@ -950,7 +1006,7 @@ def _project_checkpoint_status_payload(
 
     if not terminal:
         status = "PAUSED" if desired_state == "PAUSED" else "RUNNING"
-    elif states and len(completed) == len(states):
+    elif operational_states and len(completed) == len(operational_states):
         status = ProjectRunStatus.COMPLETED.value
     elif recovery_required and not blocked:
         status = ProjectRunStatus.RECOVERY_REQUIRED.value
@@ -969,6 +1025,13 @@ def _project_checkpoint_status_payload(
         "desired_state": desired_state,
         "phase": checkpoint.get("phase"),
         "work_unit_count": len(states),
+        "operational_work_unit_count": len(operational_states),
+        "superseded_work_unit_ids": sorted(superseded),
+        "work_graph_migration_count": len(
+            checkpoint.get("work_graph_migrations", [])
+            if isinstance(checkpoint.get("work_graph_migrations"), list)
+            else []
+        ),
         "completed_work_unit_ids": completed,
         "blocked_work_unit_ids": blocked,
         "recovery_required_work_unit_ids": recovery_required,
@@ -1003,6 +1066,48 @@ def _project_status(args: argparse.Namespace) -> int:
         OSError,
         ProjectOrchestrationError,
         ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
+
+
+def _migrate_work_graph(args: argparse.Namespace) -> int:
+    try:
+        orchestration_id = _normalize_orchestration_id(args.orchestration_id)
+        assert orchestration_id is not None
+        plan_path = Path(args.plan_file).expanduser().resolve()
+        migration = json.loads(plan_path.read_text(encoding="utf-8"))
+        if not isinstance(migration, dict):
+            raise WorkGraphMigrationError(
+                "Migration plan file must contain one JSON object."
+            )
+        service = WorkGraphMigrationService(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        result = (
+            service.apply(
+                orchestration_id=orchestration_id,
+                migration=migration,
+            )
+            if args.apply
+            else service.preview(
+                orchestration_id=orchestration_id,
+                migration=migration,
+            )
+        )
+        print(
+            json.dumps(
+                result.to_payload(),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (
+        OSError,
+        json.JSONDecodeError,
+        ProjectOrchestrationCheckpointError,
+        WorkGraphMigrationError,
         ValueError,
     ) as exc:
         return _print_error(exc)

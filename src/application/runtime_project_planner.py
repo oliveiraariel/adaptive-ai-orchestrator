@@ -27,6 +27,10 @@ from domain.project_execution_plan import (
 )
 from domain.skill_profile import SkillProfile
 from domain.work_unit import WorkUnitKind
+from domain.work_unit_identity import (
+    extract_explicit_work_unit_ids,
+    merge_required_work_unit_ids,
+)
 
 
 class ProjectPlanningError(ValueError):
@@ -42,6 +46,7 @@ class ProjectPlanningRequest:
     agent: str = "main"
     max_work_units: int = 24
     max_concurrency: int = 4
+    required_work_unit_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.objective.strip():
@@ -50,6 +55,17 @@ class ProjectPlanningRequest:
             raise ProjectPlanningError("max_work_units must be at least 1.")
         if self.max_concurrency < 1:
             raise ProjectPlanningError("max_concurrency must be at least 1.")
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in self.required_work_unit_ids
+        ):
+            raise ProjectPlanningError(
+                "required_work_unit_ids must contain only non-empty strings."
+            )
+        if len({item.upper() for item in self.required_work_unit_ids}) != len(
+            self.required_work_unit_ids
+        ):
+            raise ProjectPlanningError("required_work_unit_ids must be unique.")
 
 
 class ProjectPlanner(Protocol):
@@ -87,12 +103,21 @@ class RuntimeProjectPlanner:
         self._incident_supervisor = incident_supervisor or IncidentSupervisor()
 
     def plan(self, request: ProjectPlanningRequest) -> ProjectExecutionPlan:
+        explicit_ids = self._explicit_requested_work_unit_ids(request)
+        if len(explicit_ids) > request.max_work_units:
+            raise ProjectPlanningError(
+                "Project explicitly requires "
+                f"{len(explicit_ids)} Work Unit ids, exceeding max_work_units="
+                f"{request.max_work_units}."
+            )
         try:
             result = self._run_planner(
                 request=request,
                 objective=self._build_initial_prompt(request),
             )
-            return self.parse(result, max_work_units=request.max_work_units)
+            plan = self.parse(result, max_work_units=request.max_work_units)
+            self._validate_explicit_work_unit_coverage(plan, explicit_ids)
+            return plan
         except (ProjectPlanningError, RunOrchestrationError) as exc:
             if isinstance(exc, RunOrchestrationError) and not self._is_contract_failure(exc):
                 raise
@@ -105,12 +130,59 @@ class RuntimeProjectPlanner:
                 failure=failure,
             ),
         )
-        plan = self.parse(recovered, max_work_units=1)
+        recovery_budget = request.max_work_units if explicit_ids else 1
+        plan = self.parse(recovered, max_work_units=recovery_budget)
+        self._validate_explicit_work_unit_coverage(plan, explicit_ids)
         self._knowledge.record_planner_recovery(
             error=failure,
-            result="Recovered with one bounded Work Unit.",
+            result=(
+                "Recovered while preserving explicit Work Unit identities."
+                if explicit_ids
+                else "Recovered with one bounded Work Unit."
+            ),
         )
         return plan
+
+    @staticmethod
+    def _explicit_requested_work_unit_ids(
+        request: ProjectPlanningRequest,
+    ) -> tuple[str, ...]:
+        # Structured declarations are authoritative. Literal WU-* ids in the
+        # objective/scope are a conservative compatibility fallback for callers
+        # that predate required_work_unit_ids. Retrieved context is intentionally
+        # excluded so historical notes cannot silently enlarge the active graph.
+        return merge_required_work_unit_ids(
+            request.required_work_unit_ids,
+            extract_explicit_work_unit_ids(request.objective, request.scope),
+        )
+
+    @classmethod
+    def _required_ids_section(cls, request: ProjectPlanningRequest) -> str:
+        ids = cls._explicit_requested_work_unit_ids(request)
+        if not ids:
+            return "\n"
+        return (
+            "REQUIRED WORK UNIT IDS (must appear as distinct plan nodes):\n"
+            + "\n".join(f"- {item}" for item in ids)
+            + "\n\n"
+        )
+
+    @staticmethod
+    def _validate_explicit_work_unit_coverage(
+        plan: ProjectExecutionPlan,
+        explicit_ids: tuple[str, ...],
+    ) -> None:
+        if not explicit_ids:
+            return
+        planned = {item.id.upper() for item in plan.work_units}
+        missing = [item for item in explicit_ids if item not in planned]
+        if missing:
+            raise ProjectPlanningError(
+                "Planner omitted explicit requested Work Unit id(s): "
+                + ", ".join(missing)
+                + ". Explicit Work Unit identities may not be collapsed into "
+                "aggregate nodes."
+            )
 
     @staticmethod
     def _is_contract_failure(exc: RunOrchestrationError) -> bool:
@@ -217,7 +289,8 @@ class RuntimeProjectPlanner:
             f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
             f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
             f"MAX WORK UNITS: {request.max_work_units}\n"
-            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
+            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n"
+            f"{self._required_ids_section(request)}"
             f"{experience + chr(10) + chr(10) if experience else ''}"
             f"{self._planning_rules()}\n\n"
             f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
@@ -248,7 +321,8 @@ class RuntimeProjectPlanner:
             f"CURRENT PLAN:\n{self._serialize_plan(current_plan)}\n\n"
             f"CURRENT EXECUTION STATE:\n{state_summary}\n\n"
             f"MAX WORK UNITS TOTAL: {request.max_work_units}\n"
-            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n\n"
+            f"MAX SIMULTANEOUS WORKERS: {request.max_concurrency}\n"
+            f"{self._required_ids_section(request)}"
             f"{experience + chr(10) + chr(10) if experience else ''}"
             "REPLANNING RULES:\n"
             "- Preserve all existing Work Unit ids and semantics; do not remove, rename, or rewrite them.\n"
@@ -277,26 +351,45 @@ class RuntimeProjectPlanner:
             request,
             extra=f"planning failure: {failure}",
         )
-        return (
+        explicit_ids = self._explicit_requested_work_unit_ids(request)
+        recovery_instruction = (
+            "The previous Adaptive planning response failed validation. Recover "
+            "without dropping or aggregating any explicit user-supplied Work Unit "
+            "identity. Return a bounded full plan containing every explicit WU id "
+            "as its own node. Aggregator/fan-in nodes may be added only in addition "
+            "to those identities. "
+            if explicit_ids
+            else
             "The previous Adaptive planning response failed strict structured "
             "validation. Do not repeat the broad plan unchanged. Recover with "
             "exactly ONE smallest safe Work Unit that makes meaningful progress. "
             "If unresolved ambiguity blocks implementation, prefer one read-only "
             "DECISION or RESEARCH Work Unit that reconciles canonical sources and "
-            "produces an explicit blocker/decision contract before code changes.\n\n"
-            f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
-            f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
-            f"VALIDATION FAILURE:\n{failure}\n\n"
-            f"{experience + chr(10) + chr(10) if experience else ''}"
-            "RECOVERY RULES:\n"
-            "- Return exactly one Work Unit and no dependencies.\n"
-            "- Keep the Work Unit bounded, independently verifiable and safe.\n"
-            "- Planning remains read-only; do not modify project files.\n"
-            "- Do not invent business rules or bypass project governance.\n"
-            "- Return only one strict JSON object; no Markdown fences.\n\n"
-            f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
-            f"{self._schema_json()}"
+            "produces an explicit blocker/decision contract before code changes. "
+        )
+        recovery_rules = (
+            "- Preserve every explicit required Work Unit identifier as a distinct Work Unit; "
+            "do not replace them with an aggregate node.\n"
+            if explicit_ids
+            else "- Return exactly one Work Unit and no dependencies.\n"
+        )
+        return (
+            recovery_instruction
+            + "\n\n"
+            + f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
+            + f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
+            + self._required_ids_section(request)
+            + f"VALIDATION FAILURE:\n{failure}\n\n"
+            + f"{experience + chr(10) + chr(10) if experience else ''}"
+            + "RECOVERY RULES:\n"
+            + recovery_rules
+            + "- Keep each returned Work Unit bounded, independently verifiable and safe.\n"
+            + "- Planning remains read-only; do not modify project files.\n"
+            + "- Do not invent business rules or bypass project governance.\n"
+            + "- Return only one strict JSON object; no Markdown fences.\n\n"
+            + f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
+            + "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
+            + f"{self._schema_json()}"
         )
 
     def _build_replan_recovery_prompt(
@@ -376,6 +469,7 @@ class RuntimeProjectPlanner:
             "- Parallel work may be backend/backend, frontend/frontend, frontend/backend, research/research, or other combinations.\n"
             "- Prefer a few independently valuable Work Units over token-expensive micro-fragmentation. There is no fixed worker pool; workers exist only for useful ready units.\n"
             "- When the objective contains a long checklist of independent obligations, split it into bounded closed Work Units/lots that can each be completed and verified in one execution; do not hide an independent backlog inside one giant Work Unit merely to avoid fragmentation.\n"
+            "- Any explicit user-supplied WU-* identifier is a durable governance identity: preserve each literal id as its own Work Unit. Aggregators, gates, or fan-ins may be added only in addition to those nodes, never instead of them.\n"
             "- Missing implementation details, wiring, tests, repositories, ports, or transactions that are already authorized by a Work Unit are work inside that unit, not a blocker or HUMAN_ACTION boundary.\n"
             "- Reserve HUMAN_ACTION or blocked planning for genuine missing human decisions/authority or external prerequisites that an authorized worker cannot satisfy.\n"
             "- Give every write-capable unit precise repository-relative write_paths. If write scope is unknown or shared broadly, set parallel_safe=false.\n"

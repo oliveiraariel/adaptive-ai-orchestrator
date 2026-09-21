@@ -173,3 +173,103 @@ def test_planner_does_not_retry_unrelated_runtime_failure() -> None:
         planner.plan(ProjectPlanningRequest(objective="Do not mask runtime failures."))
 
     assert runner.calls == 1
+
+
+class _RequestCapturingSequenceRunner:
+    def __init__(self, items) -> None:
+        self.items = list(items)
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        item = self.items[len(self.requests) - 1]
+        if isinstance(item, Exception):
+            raise item
+        return SimpleNamespace(output=item)
+
+
+def test_planner_preserves_explicit_user_work_unit_ids_after_recovery() -> None:
+    runner = _RequestCapturingSequenceRunner(
+        [
+            payload([work_unit("MC-ACCOUNT")]),
+            payload([work_unit("WU-MC-01"), work_unit("WU-MC-02")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective=(
+                "Implement WU-MC-01 and WU-MC-02 as separately governed "
+                "Work Units."
+            ),
+            max_work_units=4,
+        )
+    )
+
+    assert [item.id for item in plan.work_units] == ["WU-MC-01", "WU-MC-02"]
+    assert len(runner.requests) == 2
+    assert "WU-MC-01" in runner.requests[1].objective
+    assert "do not replace them with an aggregate node" in runner.requests[1].objective
+
+
+def test_planner_rejects_explicit_work_unit_catalog_above_budget_before_runtime() -> None:
+    runner = _RequestCapturingSequenceRunner([])
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    with pytest.raises(ProjectPlanningError, match="exceeding max_work_units=1"):
+        planner.plan(
+            ProjectPlanningRequest(
+                objective="Implement WU-A-01 and WU-A-02.",
+                max_work_units=1,
+            )
+        )
+
+    assert runner.requests == []
+
+
+def test_planner_without_explicit_work_unit_ids_keeps_single_unit_recovery_budget() -> None:
+    runner = _RequestCapturingSequenceRunner(
+        [
+            RunOrchestrationError(
+                "Runtime result retrieval failed: AMEP application/json payload is invalid."
+            ),
+            payload([work_unit("recovered")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective="Recover a malformed plan without explicit governance ids.",
+            max_work_units=5,
+        )
+    )
+
+    assert [item.id for item in plan.work_units] == ["recovered"]
+    assert len(runner.requests) == 2
+    assert "exactly ONE smallest safe Work Unit" in runner.requests[1].objective
+
+
+def test_planner_honors_structured_required_work_unit_ids_without_text_detection() -> None:
+    runner = _RequestCapturingSequenceRunner(
+        [
+            payload([work_unit("aggregate")]),
+            payload([work_unit("GOVERNED-01")]),
+        ]
+    )
+    planner = RuntimeProjectPlanner(runner=runner, skill_profiles=())
+
+    plan = planner.plan(
+        ProjectPlanningRequest(
+            objective="Implement the requested governed change.",
+            required_work_unit_ids=("GOVERNED-01",),
+            max_work_units=3,
+        )
+    )
+
+    assert [item.id for item in plan.work_units] == ["GOVERNED-01"]
+    assert len(runner.requests) == 2
+    assert "REQUIRED WORK UNIT IDS" in runner.requests[0].objective
+    assert "- GOVERNED-01" in runner.requests[0].objective
+    assert "- GOVERNED-01" in runner.requests[1].objective
