@@ -1317,3 +1317,81 @@ def test_genuine_environment_blocker_remains_terminal() -> None:
     assert result.status is ProjectRunStatus.BLOCKED
     assert result.blocked_work_unit_ids == ("external-e2e",)
     assert result.recovery_required_work_unit_ids == ()
+
+
+def test_resume_ignores_superseded_historical_work_and_runs_normalized_node() -> None:
+    plan = ProjectExecutionPlan(
+        summary="migrated normalized graph",
+        work_units=(wu("OLD-AGENDA"), wu("WU-DATA-01")),
+    )
+    request = ProjectOrchestrationRequest(
+        objective="Continue normalized project",
+        orchestration_id="orch-normalized",
+        plan=plan,
+        max_concurrency=1,
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "WU-DATA-01": (
+                "validated daily date contract\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            )
+        }
+    )
+    store = MemoryProjectCheckpointStore()
+    executor = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+    )
+    store.state = {
+        "orchestration_id": "orch-normalized",
+        "phase": "EXECUTION",
+        "desired_state": "RUNNING",
+        "terminal": False,
+        "request": executor._request_to_payload(request),
+        "plan": executor._plan_to_payload(plan),
+        "work_unit_states": {
+            "OLD-AGENDA": "RECOVERY_REQUIRED",
+            "WU-DATA-01": "PLANNED",
+        },
+        "dependency_states": [],
+        "attempts": {"OLD-AGENDA": 2, "WU-DATA-01": 0},
+        "strategy_generations": {"OLD-AGENDA": 2, "WU-DATA-01": 1},
+        "outputs": {},
+        "output_refs": {},
+        "revision_feedback": {},
+        "records": [],
+        "dispatch_records": [],
+        "max_parallelism_observed": 0,
+        "replan_count": 7,
+        "dispatch_generation": 0,
+        "pending_replan": False,
+        "replan_feedback": "",
+        "recovery_epoch_counts": {"OLD-AGENDA": 1, "WU-DATA-01": 0},
+        "recovery_replans_in_epoch": {"OLD-AGENDA": 1, "WU-DATA-01": 0},
+        "recovery_guidance": {},
+        "active_executions": [],
+        "superseded_work_unit_ids": ["OLD-AGENDA"],
+        "work_graph_migrations": [
+            {
+                "schema_version": "work-graph-migration/1",
+                "migration_id": "normalized-v1",
+            }
+        ],
+    }
+
+    result = executor.resume("orch-normalized")
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert [task.work_unit_id for task in runtime.tasks] == ["WU-DATA-01"]
+    assert result.completed_work_unit_ids == ("WU-DATA-01",)
+    assert result.recovery_required_work_unit_ids == ()
+    assert store.state is not None
+    assert store.state["superseded_work_unit_ids"] == ["OLD-AGENDA"]
+    assert store.state["work_graph_migrations"][0]["migration_id"] == "normalized-v1"
+    assert store.state["work_unit_states"]["OLD-AGENDA"] == "RECOVERY_REQUIRED"
