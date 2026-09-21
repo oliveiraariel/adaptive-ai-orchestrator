@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 
 import pytest
 
@@ -47,3 +49,47 @@ def test_apply_lock_prevents_concurrent_migration(tmp_path) -> None:
 
     with store.apply_lock("orch"):
         pass
+
+
+
+def test_controller_quiescence_rejects_fresh_active_heartbeat(tmp_path) -> None:
+    store = FileWorkGraphMigrationStore(project_root=tmp_path)
+    digest = hashlib.sha256(b"orch").hexdigest()
+    path = (
+        tmp_path
+        / ".adaptive"
+        / "orchestration-liveness"
+        / f"{digest}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "orchestration_id": "orch",
+                "controller_state": "ACTIVE",
+                "last_heartbeat_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    quiescent, reason = store.controller_quiescence("orch")
+
+    assert quiescent is False
+    assert "heartbeat-fresh" in reason
+
+    path.write_text(
+        json.dumps(
+            {
+                "orchestration_id": "orch",
+                "controller_state": "TERMINAL",
+                "last_heartbeat_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    quiescent, reason = store.controller_quiescence("orch")
+
+    assert quiescent is True
+    assert reason == "controller-state:TERMINAL"
