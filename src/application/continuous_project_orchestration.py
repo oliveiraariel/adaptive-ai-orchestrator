@@ -2582,6 +2582,59 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         return resolved, failures
 
     @staticmethod
+    def _executor_capacity(request: ProjectOrchestrationRequest) -> int:
+        """Return the controller thread capacity for the configured policy.
+
+        AUTO keeps a small overflow reserve so a soft-stalled worker cannot
+        monopolize all execution capacity. FIXED is an explicit hard ceiling.
+        """
+        if request.concurrency_mode is ConcurrencyMode.FIXED:
+            return request.max_concurrency
+        return min(
+            32,
+            request.max_concurrency + request.worker_stall_overflow_slots,
+        )
+
+    @staticmethod
+    def _effective_concurrency_limit(
+        request: ProjectOrchestrationRequest,
+        *,
+        ready_count: int,
+        active_count: int,
+        soft_stalled_count: int,
+    ) -> int:
+        """Choose useful concurrency without requiring operator micromanagement.
+
+        AUTO treats max_concurrency as the normal ceiling. When a worker has
+        crossed the soft-stall window and independent READY work exists, a
+        bounded overflow slot keeps throughput moving without cancelling or
+        duplicating the stalled execution. FIXED never exceeds the explicit
+        operator limit.
+        """
+        if request.concurrency_mode is ConcurrencyMode.FIXED:
+            return request.max_concurrency
+
+        useful = min(
+            request.max_concurrency,
+            max(1, ready_count + active_count),
+        )
+        if (
+            ready_count > 0
+            and soft_stalled_count > 0
+            and active_count >= useful
+            and request.worker_stall_overflow_slots > 0
+        ):
+            useful = min(
+                32,
+                request.max_concurrency
+                + min(
+                    request.worker_stall_overflow_slots,
+                    soft_stalled_count,
+                ),
+            )
+        return useful
+
+    @staticmethod
     def _effective_wave_budget(
         request: ProjectOrchestrationRequest,
         work_unit_count: int,
