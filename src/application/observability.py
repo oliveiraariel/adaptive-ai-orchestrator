@@ -75,7 +75,8 @@ class JsonlObservabilitySink:
             "worker_escalated", "evaluation_finalized",
             "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
             "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
-            "recovery_strategy_failed",
+            "recovery_strategy_failed", "work_unit_recovery_retry",
+            "work_unit_recovery_suspended",
             "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (
