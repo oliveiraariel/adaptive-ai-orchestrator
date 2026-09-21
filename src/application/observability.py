@@ -79,6 +79,7 @@ class JsonlObservabilitySink:
             "model_selected", "worker_started", "work_unit_status_changed",
             "worker_escalated", "evaluation_finalized",
             "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
+            "worker_soft_stall_observed",
             "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
             "recovery_strategy_failed", "work_unit_recovery_retry",
             "work_unit_recovery_suspended",
