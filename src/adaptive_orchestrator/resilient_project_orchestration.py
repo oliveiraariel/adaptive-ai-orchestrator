@@ -561,13 +561,31 @@ class RunResilientProjectOrchestration(CoreContinuousProjectOrchestration):
     ) -> ProjectOrchestrationResult:
         if result.status is ProjectRunStatus.PAUSED:
             return result
+
+        checkpoint = None
+        if self._resilient_checkpoint_store is not None:
+            checkpoint = self._resilient_checkpoint_store.load(result.orchestration_id)
+
+        # Persistent recovery may intentionally yield the controller between
+        # bounded recovery epochs or after a transient control-plane failure.
+        # In that state the durable checkpoint is explicitly non-terminal and
+        # retains pending_replan=True so the detached supervisor can resume the
+        # same orchestration later. Do not convert that governed yield into a
+        # synthetic terminal BLOCKED project.
+        if (
+            result.status is ProjectRunStatus.RECOVERY_REQUIRED
+            and isinstance(checkpoint, dict)
+            and checkpoint.get("terminal") is False
+            and bool(checkpoint.get("pending_replan", False))
+            and isinstance(checkpoint.get("request"), dict)
+            and bool(checkpoint["request"].get("persistent_recovery", False))
+        ):
+            return result
+
         if not result.unfinished_work_unit_ids:
             return result
 
         reasons: dict[str, str] = {}
-        checkpoint = None
-        if self._resilient_checkpoint_store is not None:
-            checkpoint = self._resilient_checkpoint_store.load(result.orchestration_id)
 
         if isinstance(checkpoint, dict):
             states = checkpoint.get("work_unit_states")
