@@ -782,9 +782,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 if item
                             )
 
+                    # max_replans is a bounded per-recovery-epoch budget,
+                    # not a lifetime project fuse. A long-running project may
+                    # legitimately need later replans after earlier recovery
+                    # activity has already raised the cumulative audit counter.
                     can_replan = hasattr(self._planner, "replan") and (
-                        persistent_recovery_active
-                        or replan_count < request.max_replans
+                        persistent_recovery_active or request.max_replans > 0
                     )
                     if not recovery_before and persistent_recovery_active:
                         pending_replan = False
