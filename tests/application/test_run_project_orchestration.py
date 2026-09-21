@@ -11,6 +11,7 @@ from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
 from application.run_project_orchestration import (
+    ConcurrencyMode,
     ProjectOrchestrationRequest,
     ProjectRunStatus,
 )
@@ -200,6 +201,10 @@ def run(
     runtime: ConcurrentRuntime,
     *,
     max_concurrency: int = 4,
+    concurrency_mode: ConcurrencyMode = ConcurrencyMode.AUTO,
+    worker_observation_interval_seconds: int = 5,
+    worker_soft_stall_seconds: int = 90,
+    worker_stall_overflow_slots: int = 1,
     policy: ExecutionPolicy | None = None,
     planner: StaticPlanner | None = None,
     max_attempts: int = 2,
@@ -216,7 +221,13 @@ def run(
     ).execute(
         ProjectOrchestrationRequest(
             objective="Execute test project",
+            concurrency_mode=concurrency_mode,
             max_concurrency=max_concurrency,
+            worker_observation_interval_seconds=(
+                worker_observation_interval_seconds
+            ),
+            worker_soft_stall_seconds=worker_soft_stall_seconds,
+            worker_stall_overflow_slots=worker_stall_overflow_slots,
             execution_policy=policy or ExecutionPolicy(),
             max_attempts_per_work_unit=max_attempts,
             max_strategies_per_work_unit=max_strategies,
@@ -1384,3 +1395,56 @@ def test_missing_skill_blocks_only_affected_work_unit_and_independent_work_conti
     ]
     assert blocked
     assert blocked[-1].reason.startswith("skill-resolution:")
+
+
+
+def test_fixed_concurrency_one_remains_a_hard_operator_limit() -> None:
+    plan = ProjectExecutionPlan(
+        summary="explicit fixed serial policy",
+        work_units=tuple(wu(f"fixed-{index}") for index in range(3)),
+    )
+    runtime = ConcurrentRuntime(
+        delays={f"fixed-{index}": 0.03 for index in range(3)}
+    )
+
+    result, _ = run(
+        plan,
+        runtime,
+        max_concurrency=1,
+        concurrency_mode=ConcurrencyMode.FIXED,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert result.max_parallelism_observed == 1
+    assert runtime.max_active_retrievals == 1
+
+
+def test_auto_concurrency_uses_soft_stall_overflow_for_independent_work() -> None:
+    plan = ProjectExecutionPlan(
+        summary="slow worker must not monopolize auto scheduler",
+        work_units=(
+            wu("slow", priority=20),
+            wu("fast", priority=10),
+        ),
+    )
+    runtime = ConcurrentRuntime(
+        delays={
+            "slow": 1.25,
+            "fast": 0.01,
+        }
+    )
+
+    result, _ = run(
+        plan,
+        runtime,
+        max_concurrency=1,
+        concurrency_mode=ConcurrencyMode.AUTO,
+        worker_observation_interval_seconds=1,
+        worker_soft_stall_seconds=0,
+        worker_stall_overflow_slots=1,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert result.max_parallelism_observed == 2
+    assert runtime.started_at["fast"] < runtime.finished_at["slow"]
+    assert runtime.max_active_retrievals == 2

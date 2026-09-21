@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import replace
+import time
 from typing import Sequence
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from application.execution_coordinator import (
     WorkAssignment,
 )
 from application.run_project_orchestration import (
+    ConcurrencyMode,
     ParallelWaveRecord,
     ProjectOrchestrationError,
     RecoveryPlanTopologyError,
@@ -283,6 +285,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             tuple[DispatchOutcome, int],
         ] = {}
         active_by_id: dict[str, DispatchOutcome] = {}
+        active_started_at: dict[str, float] = {}
+        soft_stalled_ids: set[str] = set()
+        stall_notified_ids: set[str] = set()
+        last_effective_concurrency_limit: int | None = None
         recovery_yield_requested = False
         recovery_yield_reason = ""
 
@@ -310,6 +316,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 recovery_no_progress_counts=recovery_no_progress_counts,
                 recovery_guidance=recovery_guidance,
                 active=tuple(active.values()),
+                active_started_at=active_started_at,
                 terminal=terminal,
             )
 
@@ -475,7 +482,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         if checkpoint is None or admission_only:
             persist()
 
-        with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
+        executor_capacity = self._executor_capacity(request)
+        with ThreadPoolExecutor(max_workers=executor_capacity) as executor:
             if checkpoint is not None:
                 for item in recovered_active:
                     work_unit_id = self._require_str(item, "work_unit_id")
@@ -521,6 +529,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                     active[future] = (outcome, generation)
                     active_by_id[work_unit_id] = outcome
+                    started_at_raw = item.get("started_at")
+                    active_started_at[work_unit_id] = (
+                        float(started_at_raw)
+                        if isinstance(started_at_raw, (int, float))
+                        else time.time()
+                    )
                     observability.emit(
                         "worker_recovered",
                         orchestration_id=orchestration_id,
@@ -1076,7 +1090,67 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if human_ready:
                     persist()
 
-                available_slots = 0 if pause_requested else request.max_concurrency - len(active)
+                now = time.time()
+                soft_stalled_ids = {
+                    work_unit_id
+                    for work_unit_id in active_by_id
+                    if (
+                        now - active_started_at.get(work_unit_id, now)
+                        >= request.worker_soft_stall_seconds
+                    )
+                }
+                newly_stalled = soft_stalled_ids - stall_notified_ids
+                for work_unit_id in sorted(newly_stalled):
+                    outcome = active_by_id[work_unit_id]
+                    observability.emit(
+                        "worker_soft_stall_observed",
+                        orchestration_id=orchestration_id,
+                        work_unit_id=work_unit_id,
+                        execution_id=(
+                            outcome.execution.id
+                            if outcome.execution is not None
+                            else None
+                        ),
+                        external_id=(
+                            outcome.execution.external_id
+                            if outcome.execution is not None
+                            else None
+                        ),
+                        elapsed_seconds=round(
+                            max(
+                                0.0,
+                                now - active_started_at.get(work_unit_id, now),
+                            ),
+                            3,
+                        ),
+                        status="RUNNING",
+                    )
+                stall_notified_ids.update(newly_stalled)
+
+                effective_concurrency_limit = self._effective_concurrency_limit(
+                    request,
+                    ready_count=len(ready_ids),
+                    active_count=len(active),
+                    soft_stalled_count=len(soft_stalled_ids),
+                )
+                if effective_concurrency_limit != last_effective_concurrency_limit:
+                    observability.emit(
+                        "orchestration_concurrency_adjusted",
+                        orchestration_id=orchestration_id,
+                        concurrency_mode=request.concurrency_mode.value,
+                        configured_max_concurrency=request.max_concurrency,
+                        effective_concurrency_limit=effective_concurrency_limit,
+                        ready_work_unit_count=len(ready_ids),
+                        active_execution_count=len(active),
+                        soft_stalled_worker_count=len(soft_stalled_ids),
+                    )
+                    last_effective_concurrency_limit = effective_concurrency_limit
+
+                available_slots = (
+                    0
+                    if pause_requested
+                    else effective_concurrency_limit - len(active)
+                )
                 if (
                     available_slots > 0
                     and ready_ids
@@ -1136,7 +1210,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 claimant_id=(
                                     f"project:{orchestration_id}:dispatch:{generation}"
                                 ),
-                                concurrency_limit=request.max_concurrency,
+                                concurrency_limit=effective_concurrency_limit,
                                 active_execution_count=len(active),
                                 human_approved_work_unit_ids=(
                                     tuple(selected_ids) if request.human_approved else ()
@@ -1154,6 +1228,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 )
                                 active[future] = (outcome, generation)
                                 active_by_id[outcome.work_unit_id] = outcome
+                                active_started_at[outcome.work_unit_id] = time.time()
+                                soft_stalled_ids.discard(outcome.work_unit_id)
+                                stall_notified_ids.discard(outcome.work_unit_id)
                                 spec = specs[outcome.work_unit_id]
                                 configuration = assignment_by_id[outcome.work_unit_id].configuration
                                 observability.emit(
@@ -1192,11 +1269,20 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 if active:
                     completed, _ = wait(
                         tuple(active),
+                        timeout=request.worker_observation_interval_seconds,
                         return_when=FIRST_COMPLETED,
                     )
+                    if not completed:
+                        # Observation ticks are intentionally non-terminal. They
+                        # return control to the scheduler so READY independent
+                        # work can consume capacity or a soft-stall overflow slot.
+                        continue
                     for future in completed:
                         outcome, generation = active.pop(future)
                         active_by_id.pop(outcome.work_unit_id, None)
+                        active_started_at.pop(outcome.work_unit_id, None)
+                        soft_stalled_ids.discard(outcome.work_unit_id)
+                        stall_notified_ids.discard(outcome.work_unit_id)
                         work_unit_id = outcome.work_unit_id
                         try:
                             runtime_result = future.result()
@@ -1529,7 +1615,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     ready_ids=ready_ids,
                     specs=specs,
                     active_ids=(),
-                    max_new_workers=request.max_concurrency,
+                    max_new_workers=self._effective_concurrency_limit(
+                        request,
+                        ready_count=len(ready_ids),
+                        active_count=0,
+                        soft_stalled_count=0,
+                    ),
                 )
                 if not selected_ids:
                     break
@@ -1682,6 +1773,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         recovery_no_progress_counts: dict[str, int],
         recovery_guidance: dict[str, str],
         active: Sequence[tuple[DispatchOutcome, int]],
+        active_started_at: dict[str, float],
         terminal: bool,
     ) -> None:
         if self._checkpoint_store is None:
@@ -1697,6 +1789,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "execution_id": outcome.execution.id,
                     "external_id": outcome.execution.external_id,
                     "runtime": outcome.execution.runtime,
+                    "started_at": active_started_at.get(
+                        outcome.work_unit_id,
+                        time.time(),
+                    ),
                 }
             )
         existing_checkpoint = (
@@ -1768,7 +1864,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "project_id": request.project_id,
             "context": list(request.context),
             "constraints": list(request.constraints),
+            "concurrency_mode": request.concurrency_mode.value,
             "max_concurrency": request.max_concurrency,
+            "worker_observation_interval_seconds": (
+                request.worker_observation_interval_seconds
+            ),
+            "worker_soft_stall_seconds": request.worker_soft_stall_seconds,
+            "worker_stall_overflow_slots": request.worker_stall_overflow_slots,
             "max_work_units": request.max_work_units,
             "max_waves": request.max_waves,
             "max_attempts_per_work_unit": request.max_attempts_per_work_unit,
@@ -1840,6 +1942,25 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 raise ProjectOrchestrationError(
                     "Checkpoint planner_agent is invalid."
                 )
+
+            # Concurrency provenance was introduced after early project
+            # checkpoints had already persisted a bare integer. Those legacy
+            # values are treated as AUTO hints, not permanent operator locks.
+            # This preserves forward progress for old serial orchestrations
+            # while every new FIXED constraint is explicit and durable.
+            concurrency_mode_raw = raw.get("concurrency_mode")
+            if concurrency_mode_raw is None:
+                concurrency_mode = ConcurrencyMode.AUTO
+                max_concurrency = max(
+                    4,
+                    cls._require_nonnegative_int(raw, "max_concurrency"),
+                )
+            else:
+                concurrency_mode = ConcurrencyMode(str(concurrency_mode_raw))
+                max_concurrency = cls._require_nonnegative_int(
+                    raw, "max_concurrency"
+                )
+
             return ProjectOrchestrationRequest(
                 objective=cls._require_str(raw, "objective"),
                 orchestration_id=orchestration_id,
@@ -1851,8 +1972,28 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 constraints=tuple(
                     cls._require_string_list(raw, "constraints")
                 ),
-                max_concurrency=cls._require_nonnegative_int(
-                    raw, "max_concurrency"
+                concurrency_mode=concurrency_mode,
+                max_concurrency=max_concurrency,
+                worker_observation_interval_seconds=(
+                    cls._require_nonnegative_int(
+                        raw, "worker_observation_interval_seconds"
+                    )
+                    if "worker_observation_interval_seconds" in raw
+                    else 5
+                ),
+                worker_soft_stall_seconds=(
+                    cls._require_nonnegative_int(
+                        raw, "worker_soft_stall_seconds"
+                    )
+                    if "worker_soft_stall_seconds" in raw
+                    else 90
+                ),
+                worker_stall_overflow_slots=(
+                    cls._require_nonnegative_int(
+                        raw, "worker_stall_overflow_slots"
+                    )
+                    if "worker_stall_overflow_slots" in raw
+                    else 1
                 ),
                 max_work_units=cls._require_nonnegative_int(
                     raw, "max_work_units"
@@ -2439,6 +2580,59 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 resolved[work_unit_id] = ()
                 failures[work_unit_id] = " ".join(str(exc).split())[:500]
         return resolved, failures
+
+    @staticmethod
+    def _executor_capacity(request: ProjectOrchestrationRequest) -> int:
+        """Return the controller thread capacity for the configured policy.
+
+        AUTO keeps a small overflow reserve so a soft-stalled worker cannot
+        monopolize all execution capacity. FIXED is an explicit hard ceiling.
+        """
+        if request.concurrency_mode is ConcurrencyMode.FIXED:
+            return request.max_concurrency
+        return min(
+            32,
+            request.max_concurrency + request.worker_stall_overflow_slots,
+        )
+
+    @staticmethod
+    def _effective_concurrency_limit(
+        request: ProjectOrchestrationRequest,
+        *,
+        ready_count: int,
+        active_count: int,
+        soft_stalled_count: int,
+    ) -> int:
+        """Choose useful concurrency without requiring operator micromanagement.
+
+        AUTO treats max_concurrency as the normal ceiling. When a worker has
+        crossed the soft-stall window and independent READY work exists, a
+        bounded overflow slot keeps throughput moving without cancelling or
+        duplicating the stalled execution. FIXED never exceeds the explicit
+        operator limit.
+        """
+        if request.concurrency_mode is ConcurrencyMode.FIXED:
+            return request.max_concurrency
+
+        useful = min(
+            request.max_concurrency,
+            max(1, ready_count + active_count),
+        )
+        if (
+            ready_count > 0
+            and soft_stalled_count > 0
+            and active_count >= useful
+            and request.worker_stall_overflow_slots > 0
+        ):
+            useful = min(
+                32,
+                request.max_concurrency
+                + min(
+                    request.worker_stall_overflow_slots,
+                    soft_stalled_count,
+                ),
+            )
+        return useful
 
     @staticmethod
     def _effective_wave_budget(

@@ -79,6 +79,18 @@ class ProjectRunStatus(str, Enum):
     BLOCKED = "BLOCKED"
 
 
+class ConcurrencyMode(str, Enum):
+    """How project worker concurrency is interpreted.
+
+    AUTO is the normal autonomous mode: max_concurrency is a safe ceiling and
+    the scheduler chooses the useful number of workers from the ready frontier.
+    FIXED is reserved for an explicit operator/business constraint.
+    """
+
+    AUTO = "AUTO"
+    FIXED = "FIXED"
+
+
 @dataclass(frozen=True)
 class ProjectOrchestrationRequest:
     objective: str
@@ -89,7 +101,11 @@ class ProjectOrchestrationRequest:
     project_id: str = ""
     context: tuple[str, ...] = field(default_factory=tuple)
     constraints: tuple[str, ...] = field(default_factory=tuple)
+    concurrency_mode: ConcurrencyMode = ConcurrencyMode.AUTO
     max_concurrency: int = 4
+    worker_observation_interval_seconds: int = 5
+    worker_soft_stall_seconds: int = 90
+    worker_stall_overflow_slots: int = 1
     max_work_units: int = 24
     max_waves: int = 24
     max_attempts_per_work_unit: int = 2
@@ -111,8 +127,31 @@ class ProjectOrchestrationRequest:
             raise ValueError("Project orchestration objective must not be blank.")
         if not self.agent.strip():
             raise ValueError("Project orchestration agent must not be blank.")
+        if not isinstance(self.concurrency_mode, ConcurrencyMode):
+            raise ValueError("concurrency_mode must be AUTO or FIXED.")
         if self.max_concurrency < 1 or self.max_concurrency > 32:
             raise ValueError("max_concurrency must be between 1 and 32.")
+        if (
+            self.worker_observation_interval_seconds < 1
+            or self.worker_observation_interval_seconds > 60
+        ):
+            raise ValueError(
+                "worker_observation_interval_seconds must be between 1 and 60."
+            )
+        if (
+            self.worker_soft_stall_seconds < 0
+            or self.worker_soft_stall_seconds > 3600
+        ):
+            raise ValueError(
+                "worker_soft_stall_seconds must be between 0 and 3600."
+            )
+        if (
+            self.worker_stall_overflow_slots < 0
+            or self.worker_stall_overflow_slots > 8
+        ):
+            raise ValueError(
+                "worker_stall_overflow_slots must be between 0 and 8."
+            )
         if self.max_work_units < 1 or self.max_work_units > 128:
             raise ValueError("max_work_units must be between 1 and 128.")
         if self.max_waves < 1 or self.max_waves > 256:
