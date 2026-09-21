@@ -93,3 +93,13 @@ def test_controller_quiescence_rejects_fresh_active_heartbeat(tmp_path) -> None:
 
     assert quiescent is True
     assert reason == "controller-state:TERMINAL"
+
+
+
+def test_controller_quiescence_fails_closed_without_liveness(tmp_path) -> None:
+    store = FileWorkGraphMigrationStore(project_root=tmp_path)
+
+    quiescent, reason = store.controller_quiescence("orch")
+
+    assert quiescent is False
+    assert reason == "controller-liveness-missing"
