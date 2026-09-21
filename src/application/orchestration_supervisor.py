@@ -14,6 +14,14 @@ from infrastructure.project_orchestration_checkpoint import (
 
 
 @dataclass(frozen=True)
+class OrchestrationRecoveryFailure:
+    orchestration_id: str
+    error_type: str
+    message: str
+    retry_after_seconds: float
+
+
+@dataclass(frozen=True)
 class OrchestrationRecoveryDirective:
     orchestration_id: str
     action: str
@@ -55,6 +63,7 @@ class ProjectOrchestrationSupervisor:
             self.project_root / ".adaptive" / "orchestration-liveness"
         )
         self._lease_root = self.project_root / ".adaptive" / "supervisor-leases"
+        self.last_resume_failures: tuple[OrchestrationRecoveryFailure, ...] = ()
 
     def directives(
         self,
@@ -125,18 +134,43 @@ class ProjectOrchestrationSupervisor:
         resume: Callable[[str], object],
         *,
         orchestration_id: str | None = None,
+        continue_on_error: bool = False,
     ) -> tuple[str, ...]:
+        """Run one deterministic supervision pass.
+
+        In persistent watch mode a failed automatic resume must not kill the
+        supervisor itself. With continue_on_error=True the failure is recorded
+        and the lease is intentionally retained until expiry, creating a
+        durable cooldown before another controller-resume attempt. One-shot
+        callers keep the historical fail-fast behavior by default.
+        """
         resumed: list[str] = []
+        failures: list[OrchestrationRecoveryFailure] = []
         for directive in self.directives(orchestration_id=orchestration_id):
             if directive.action != "RESUME":
                 continue
             if not self._acquire_lease(directive.orchestration_id):
                 continue
+            release_lease = True
             try:
                 resume(directive.orchestration_id)
                 resumed.append(directive.orchestration_id)
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                release_lease = False
+                failures.append(
+                    OrchestrationRecoveryFailure(
+                        orchestration_id=directive.orchestration_id,
+                        error_type=type(exc).__name__,
+                        message=" ".join(str(exc).split())[:500],
+                        retry_after_seconds=self.lease_seconds,
+                    )
+                )
             finally:
-                self._release_lease(directive.orchestration_id)
+                if release_lease:
+                    self._release_lease(directive.orchestration_id)
+        self.last_resume_failures = tuple(failures)
         return tuple(resumed)
 
     def _controller_heartbeat(self, orchestration_id: str) -> dict | None:

@@ -189,6 +189,8 @@ The resumed Orchestrator reconciles the same persisted active execution identiti
 
 Normal CLI project execution starts a detached, per-orchestration supervisor guardian by default. The guardian is scoped to the same `orchestration_id`, observes while the controller heartbeat is fresh, resumes only after the controller becomes missing/stale, and exits when the targeted checkpoint becomes terminal. If durable admission never materializes, it exits after a bounded startup grace period instead of inventing a replacement orchestration. `--no-auto-supervisor` is an explicit diagnostic/operational opt-out, not the normal mode.
 
+A failed automatic controller-resume is **not** a reason for the guardian itself to terminate. In watch mode the supervisor records the failed resume, retains its durable lease until expiry as a retry cooldown, and continues watching the same non-terminal orchestration. One-shot supervision remains fail-fast for explicit operator diagnostics.
+
 ## 4. Failure and recovery states
 
 ### Ordinary RETURNED
@@ -215,6 +217,25 @@ RECOVERY_REQUIRED
  -> corrective prerequisite / new safe path
  -> original Work Unit resumes after prerequisite acceptance
 ```
+
+### Recovery replan progress and cooperative yield
+
+Persistent recovery must make **material state progress**, not merely spend planner calls.
+
+A recovery replan counts as progress only when it produces a structural change that can unblock the RECOVERY_REQUIRED Work Unit, normally a new required prerequisite edge into that Work Unit. Returning the same graph unchanged is classified as a rejected/no-progress replan rather than a successful replan.
+
+Replan attempts inside one recovery epoch remain bounded by max_replans. If that epoch exhausts without material graph progress, the controller cooperatively yields with:
+
+- checkpoint still non-terminal;
+- RECOVERY_REQUIRED preserved;
+- pending_replan=true;
+- prior validation/replan feedback persisted.
+
+The detached supervisor then resumes the **same** orchestration on a later controller cycle, forcing fresh strategic analysis instead of hot-looping indefinitely inside one controller process.
+
+Transient Recovery Strategist or Planner provider failures follow the same non-terminal yield path. They must not terminalize the project or erase recovery state merely because an auxiliary control-plane session expired or failed to publish a final result.
+
+The resilient composition layer must not synthesize terminal BLOCKED closure while a persistent-recovery checkpoint is explicitly non-terminal with pending_replan=true.
 
 ### Dependency block
 

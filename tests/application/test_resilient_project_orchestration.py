@@ -230,3 +230,61 @@ def test_unfinished_work_is_terminally_blocked_after_bounded_recovery(tmp_path) 
     )
     assert any(event == "orchestration_terminalized" for event, _ in sink.events)
     assert sink.events[-1][0] == "orchestration_completed"
+
+
+
+def test_persistent_recovery_yield_is_not_terminalized(tmp_path) -> None:
+    checkpoint = {
+        "work_unit_states": {
+            "wu-review": "RECOVERY_REQUIRED",
+        },
+        "attempts": {"wu-review": 2},
+        "strategy_generations": {"wu-review": 2},
+        "records": [],
+        "dispatch_generation": 6,
+        "pending_replan": True,
+        "active_executions": [],
+        "terminal": False,
+        "request": {"persistent_recovery": True},
+        "plan": {
+            "work_units": [
+                {
+                    "id": "wu-review",
+                    "role": "review",
+                    "requested_skills": ["code-review"],
+                },
+            ]
+        },
+    }
+    store = MemoryCheckpointStore(tmp_path, checkpoint)
+    sink = MemoryObservability()
+    runner = RunResilientProjectOrchestration(
+        runtime=NoopRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        planner=NoopPlanner(),
+        skill_profiles=(),
+        checkpoint_store=store,
+    )
+    result = ProjectOrchestrationResult(
+        orchestration_id="orch-recovery-yield",
+        status=ProjectRunStatus.RECOVERY_REQUIRED,
+        plan_summary="yield for next supervised recovery epoch",
+        work_unit_count=1,
+        completed_work_unit_ids=(),
+        blocked_work_unit_ids=(),
+        unfinished_work_unit_ids=("wu-review",),
+        records=(),
+        waves=(),
+        max_parallelism_observed=0,
+        replan_count=3,
+        recovery_required_work_unit_ids=("wu-review",),
+    )
+
+    preserved = runner._terminalize_unfinished(result, sink)
+
+    assert preserved is result
+    assert store.state["terminal"] is False
+    assert store.state["pending_replan"] is True
+    assert store.state["work_unit_states"]["wu-review"] == "RECOVERY_REQUIRED"
+    assert store.saved == []
+    assert not any(event == "orchestration_terminalized" for event, _ in sink.events)

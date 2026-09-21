@@ -1403,6 +1403,7 @@ def _supervise_projects(args: argparse.Namespace) -> int:
             resumed = supervisor.run_once(
                 resume_one,
                 orchestration_id=target_orchestration_id,
+                continue_on_error=bool(args.watch),
             )
         except (
             OSError,
@@ -1420,6 +1421,15 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                     "watch": bool(args.watch),
                     "target_orchestration_id": target_orchestration_id,
                     "resumed_orchestration_ids": list(resumed),
+                    "resume_failures": [
+                        {
+                            "orchestration_id": item.orchestration_id,
+                            "error_type": item.error_type,
+                            "message": item.message,
+                            "retry_after_seconds": item.retry_after_seconds,
+                        }
+                        for item in supervisor.last_resume_failures
+                    ],
                     "directives": [
                         {
                             "orchestration_id": item.orchestration_id,

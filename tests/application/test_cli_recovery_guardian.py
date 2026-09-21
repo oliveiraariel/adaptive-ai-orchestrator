@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 
 from adaptive_orchestrator import cli
@@ -135,3 +136,57 @@ def test_targeted_watcher_exits_when_checkpoint_is_terminal(tmp_path):
     )
 
     assert cli._supervise_projects(args) == 0
+
+
+
+def test_targeted_watcher_survives_failed_resume_and_keeps_watching(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    store.save(
+        "orch-watch-retry",
+        {
+            "orchestration_id": "orch-watch-retry",
+            "desired_state": "RUNNING",
+            "active_executions": [],
+            "terminal": False,
+        },
+    )
+    args = argparse.Namespace(
+        interval_seconds=0.01,
+        stale_after_seconds=0.01,
+        startup_grace_seconds=1.0,
+        exit_when_terminal=True,
+        orchestration_id="orch-watch-retry",
+        project_root=str(tmp_path),
+        watch=True,
+        session_id=None,
+        skill_registry=None,
+        gateway_url="ws://127.0.0.1:18789",
+        wait_timeout_ms=100,
+    )
+
+    monkeypatch.setattr(cli, "_resume_project", lambda _args: 2)
+
+    def finish_after_first_watch_interval(_seconds):
+        state = store.load("orch-watch-retry")
+        assert state is not None
+        state["terminal"] = True
+        store.save("orch-watch-retry", state)
+
+    monkeypatch.setattr(cli.time, "sleep", finish_after_first_watch_interval)
+
+    assert cli._supervise_projects(args) == 0
+
+    rows = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip()
+    ]
+    assert rows
+    assert rows[0]["resumed_orchestration_ids"] == []
+    assert rows[0]["resume_failures"]
+    assert rows[0]["resume_failures"][0]["orchestration_id"] == "orch-watch-retry"
+    assert rows[0]["resume_failures"][0]["error_type"] == "ProjectOrchestrationError"

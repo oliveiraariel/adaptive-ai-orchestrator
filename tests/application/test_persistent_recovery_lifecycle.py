@@ -9,6 +9,7 @@ from application.agent_runtime import (
 )
 from application.automatic_learning import AutomaticLearningCycle
 from application.continuous_project_orchestration import RunContinuousProjectOrchestration
+from application.investigation_strategy import RecoveryStrategyError
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.problem_solving_learning import (
     ProblemSolvingLearningStore,
@@ -35,6 +36,9 @@ from domain.task_package import TaskPackage
 from domain.work_unit import WorkUnitKind
 from infrastructure.claim_registry import InMemoryClaimRegistry
 from infrastructure.incident_registry import FileIncidentRegistry
+from infrastructure.project_orchestration_checkpoint import (
+    FileProjectOrchestrationCheckpointStore,
+)
 
 
 def _wu(
@@ -466,3 +470,120 @@ def test_successful_ordinary_revision_retest_triggers_learning_without_strategy_
     assert report["learning_analysis_confidence"] == 0.91
     assert report["incorporated_in"]
     assert validated.path.is_file()
+
+
+
+class FailingRecoveryStrategist:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def analyze(self, request):
+        self.calls += 1
+        raise RecoveryStrategyError("temporary strategist result was not publishable")
+
+
+def test_noop_recovery_replan_yields_nonterminal_instead_of_livelocking(tmp_path):
+    partial = (
+        "Still incomplete.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: missing causal prerequisite"
+    )
+    initial = ProjectExecutionPlan(
+        summary="original recovery target",
+        work_units=(_wu("original"),),
+    )
+    # Returning the same graph used to count as a successful replan and could
+    # spin indefinitely under max_recovery_epochs=0.
+    planner = RecoveryPlanner(initial, initial)
+    runtime = SequencedRuntime({"original": [partial]})
+    registry = FileIncidentRegistry(tmp_path / "incidents-noop")
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=FakeRecoveryStrategist(),
+        registry=registry,
+    )
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+        checkpoint_store=store,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Recover without repeating a no-op graph.",
+            orchestration_id="orch-noop-replan",
+            project_id="project-a",
+            max_attempts_per_work_unit=1,
+            max_strategies_per_work_unit=1,
+            max_replans=1,
+            persistent_recovery=True,
+            max_recovery_epochs=0,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.RECOVERY_REQUIRED
+    assert result.recovery_required_work_unit_ids == ("original",)
+    assert planner.replan_calls == 1
+    checkpoint = store.load("orch-noop-replan")
+    assert checkpoint is not None
+    assert checkpoint["terminal"] is False
+    assert checkpoint["pending_replan"] is True
+    assert checkpoint["work_unit_states"]["original"] == "RECOVERY_REQUIRED"
+    assert "no material structural progress" in checkpoint["replan_feedback"]
+
+
+def test_strategist_transient_failure_yields_nonterminal_recovery(tmp_path):
+    partial = (
+        "Still incomplete.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: investigate missing evidence"
+    )
+    initial = ProjectExecutionPlan(
+        summary="strategist transient failure",
+        work_units=(_wu("original"),),
+    )
+    planner = RecoveryPlanner(initial, initial)
+    runtime = SequencedRuntime({"original": [partial]})
+    registry = FileIncidentRegistry(tmp_path / "incidents-strategist-failure")
+    strategist = FailingRecoveryStrategist()
+    coordinator = PersistentRecoveryCoordinator(
+        strategist=strategist,
+        registry=registry,
+    )
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=planner,
+        skill_profiles=(),
+        persistent_recovery=coordinator,
+        checkpoint_store=store,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="Preserve recovery through strategist provider failure.",
+            orchestration_id="orch-strategist-failure",
+            project_id="project-a",
+            max_attempts_per_work_unit=1,
+            max_strategies_per_work_unit=1,
+            max_replans=1,
+            persistent_recovery=True,
+            max_recovery_epochs=0,
+            plan=initial,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.RECOVERY_REQUIRED
+    assert strategist.calls == 1
+    assert planner.replan_calls == 0
+    checkpoint = store.load("orch-strategist-failure")
+    assert checkpoint is not None
+    assert checkpoint["terminal"] is False
+    assert checkpoint["pending_replan"] is True
+    assert checkpoint["work_unit_states"]["original"] == "RECOVERY_REQUIRED"
+    assert "Recovery Strategist could not complete" in checkpoint["replan_feedback"]

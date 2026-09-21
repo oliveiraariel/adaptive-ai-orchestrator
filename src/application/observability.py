@@ -54,9 +54,9 @@ class JsonlObservabilitySink:
         "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
         "automatic_learning_triggered", "automatic_learning_failed",
         "orchestration_paused", "orchestration_supervisor_started",
-        "recovery_plan_rejected", "model_failover",
+        "recovery_plan_rejected", "recovery_strategy_failed", "model_failover",
         "orchestration_heartbeat", "orchestration_terminalized",
-        "orchestration_completed",
+        "orchestration_recovery_yielded", "orchestration_completed",
     }
 
     def __init__(self, path: str | Path, session_id: str | None = None) -> None:
@@ -75,6 +75,7 @@ class JsonlObservabilitySink:
             "worker_escalated", "evaluation_finalized",
             "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
             "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
+            "recovery_strategy_failed",
             "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (
