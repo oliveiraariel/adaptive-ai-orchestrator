@@ -123,9 +123,13 @@ class FileWorkGraphMigrationStore:
         if isinstance(last, bool) or not isinstance(last, (int, float)):
             return False, "controller-active-with-invalid-heartbeat"
         age = time.time() - float(last)
+        # A stale ACTIVE heartbeat is not proof that the old controller cannot
+        # wake up later and persist a pre-migration graph. Migration therefore
+        # requires an explicit non-ACTIVE controller state; staleness is useful
+        # for supervisor recovery, but is not a sufficient write fence here.
         if age <= stale_after_seconds:
             return False, f"controller-active-heartbeat-fresh:{age:.1f}s"
-        return True, f"controller-active-heartbeat-stale:{age:.1f}s"
+        return False, f"controller-active-heartbeat-stale:{age:.1f}s"
 
     def write_receipt(
         self,
