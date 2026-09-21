@@ -419,14 +419,10 @@ class RuntimeProjectPlanner:
     def _explicit_work_unit_ids(
         request: ProjectPlanningRequest,
     ) -> tuple[str, ...]:
-        text = "\n".join(
-            (
-                request.objective,
-                request.scope,
-                *request.context,
-                *request.constraints,
-            )
-        )
+        # Only the top-level objective is authoritative for explicit Work Unit
+        # identity. Context/constraints often contain historical WU references and
+        # must not accidentally resurrect them into the new graph.
+        text = request.objective
         found = re.findall(
             r"(?<![A-Za-z0-9])WU-[A-Za-z0-9][A-Za-z0-9-]*(?![A-Za-z0-9-])",
             text,
