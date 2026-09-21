@@ -368,7 +368,7 @@ class RuntimeProjectPlanner:
             "produces an explicit blocker/decision contract before code changes. "
         )
         recovery_rules = (
-            "- Preserve every explicit WU-* identifier as a distinct Work Unit; "
+            "- Preserve every explicit required Work Unit identifier as a distinct Work Unit; "
             "do not replace them with an aggregate node.\n"
             if explicit_ids
             else "- Return exactly one Work Unit and no dependencies.\n"
