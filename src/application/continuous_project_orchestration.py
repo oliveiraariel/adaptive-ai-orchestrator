@@ -280,6 +280,165 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 terminal=terminal,
             )
 
+        def _reconcile_existing_authoritative_completion(
+            work_unit_id: str,
+        ) -> bool:
+            if (
+                not request.pragmatic_low_criticality_acceptance
+                or request.execution_policy.require_independent_review
+                or specs[work_unit_id].criticality != 0
+                or work_units[work_unit_id].state
+                is not WorkUnitState.RECOVERY_REQUIRED
+            ):
+                return False
+
+            candidate: WorkUnitExecutionRecord | None = None
+            for previous in reversed(records):
+                if previous.work_unit_id != work_unit_id:
+                    continue
+                if (
+                    previous.runtime_status != "COMPLETED"
+                    or not previous.result_authoritative
+                    or not previous.result_ref
+                ):
+                    continue
+                completion = parse_worker_completion(previous.output or "")
+                if not completion.is_terminal_success:
+                    continue
+                candidate = previous
+                break
+            if candidate is None:
+                return False
+
+            work_units[work_unit_id].complete_by_reconciliation()
+            for dependency in dependencies:
+                if dependency.source_id == work_unit_id:
+                    dependency.satisfy()
+            if candidate.output:
+                outputs[work_unit_id] = candidate.output
+            if candidate.result_ref:
+                output_refs[work_unit_id] = candidate.result_ref
+            revision_feedback.pop(work_unit_id, None)
+            recovery_guidance.pop(work_unit_id, None)
+            recovery_replans_in_epoch[work_unit_id] = 0
+            recovery_no_progress_counts[work_unit_id] = 0
+            records.append(
+                WorkUnitExecutionRecord(
+                    work_unit_id=work_unit_id,
+                    role=specs[work_unit_id].role,
+                    wave=dispatch_generation + 1,
+                    attempt=attempts[work_unit_id],
+                    status=WorkUnitState.COMPLETED.value,
+                    skills=skill_sets[work_unit_id],
+                    execution_id=None,
+                    external_id=None,
+                    runtime_status=None,
+                    verdict=EvaluationVerdict.ACCEPTED.value,
+                    output=(
+                        "Recovered from prior authoritative COMPLETE evidence. "
+                        f"Source result: {candidate.result_ref}"
+                    ),
+                    result_ref=candidate.result_ref,
+                    result_authoritative=True,
+                    reason="recovery-evidence-reconciled",
+                    strategy=strategy_generations[work_unit_id],
+                )
+            )
+            observability.emit(
+                "work_unit_reconciled",
+                orchestration_id=orchestration_id,
+                work_unit_id=work_unit_id,
+                status="COMPLETED",
+                verdict="ACCEPTED",
+                reason="existing-authoritative-complete-evidence",
+                result_ref=candidate.result_ref,
+            )
+            return True
+
+        def _retry_or_suspend_recovery(
+            work_unit_id: str,
+            *,
+            reason: str,
+            guidance: str = "",
+            suspend_now: bool = False,
+        ) -> str:
+            recovery_no_progress_counts[work_unit_id] += 1
+            stalled = recovery_no_progress_counts[work_unit_id]
+            should_suspend = (
+                suspend_now
+                or stalled >= request.max_stalled_recovery_cycles
+            )
+            recovery_guidance.pop(work_unit_id, None)
+            recovery_replans_in_epoch[work_unit_id] = 0
+
+            if should_suspend:
+                work_units[work_unit_id].mark_blocked()
+                records.append(
+                    WorkUnitExecutionRecord(
+                        work_unit_id=work_unit_id,
+                        role=specs[work_unit_id].role,
+                        wave=dispatch_generation + 1,
+                        attempt=attempts[work_unit_id],
+                        status=WorkUnitState.BLOCKED.value,
+                        skills=skill_sets[work_unit_id],
+                        verdict=EvaluationVerdict.BLOCKED.value,
+                        reason=(
+                            "recovery-suspended:"
+                            f"{stalled}:{reason}"
+                        ),
+                        strategy=strategy_generations[work_unit_id],
+                    )
+                )
+                observability.emit(
+                    "work_unit_recovery_suspended",
+                    orchestration_id=orchestration_id,
+                    work_unit_id=work_unit_id,
+                    status="BLOCKED",
+                    stalled_recovery_cycles=stalled,
+                    reason=reason,
+                )
+                return "SUSPENDED"
+
+            work_units[work_unit_id].resume_after_recovery()
+            attempts[work_unit_id] = 0
+            strategy_generations[work_unit_id] = 1
+            retry_feedback = (
+                "Adaptive recovery could not justify blocking the whole project. "
+                "Retry this same Work Unit with a materially different approach, "
+                "preserve valid WIP/evidence, and focus only on its own acceptance "
+                "surface."
+            )
+            if guidance.strip():
+                retry_feedback += "\n" + guidance.strip()
+            if reason.strip():
+                retry_feedback += "\nRecovery reason: " + reason.strip()
+            revision_feedback[work_unit_id] = retry_feedback
+            records.append(
+                WorkUnitExecutionRecord(
+                    work_unit_id=work_unit_id,
+                    role=specs[work_unit_id].role,
+                    wave=dispatch_generation + 1,
+                    attempt=attempts[work_unit_id],
+                    status=WorkUnitState.REVISION_REQUIRED.value,
+                    skills=skill_sets[work_unit_id],
+                    verdict=EvaluationVerdict.RETURNED.value,
+                    reason=(
+                        "recovery-fallback-retry:"
+                        f"{stalled}:{reason}"
+                    ),
+                    strategy=strategy_generations[work_unit_id],
+                )
+            )
+            observability.emit(
+                "work_unit_recovery_retry",
+                orchestration_id=orchestration_id,
+                work_unit_id=work_unit_id,
+                status="REVISION_REQUIRED",
+                stalled_recovery_cycles=stalled,
+                reason=reason,
+            )
+            return "RETRY"
+
         if checkpoint is None or admission_only:
             persist()
 
