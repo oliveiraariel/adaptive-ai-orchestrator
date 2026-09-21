@@ -173,17 +173,18 @@ def test_apply_requires_paused_quiescent_checkpoint(tmp_path) -> None:
     orchestration_id = "orch-migrate-safety"
     _store(tmp_path, _checkpoint(orchestration_id, desired_state="RUNNING"))
     service = WorkGraphMigrationService(project_root=tmp_path)
-    preview = service.preview(
-        orchestration_id=orchestration_id,
-        migration=_migration(orchestration_id),
-    )
     migration = _migration(
         orchestration_id,
-        expected_fingerprint=preview.checkpoint_fingerprint_before,
+        expected_fingerprint="0" * 64,
     )
 
     with pytest.raises(WorkGraphMigrationError, match="desired_state=PAUSED"):
         service.apply(orchestration_id=orchestration_id, migration=migration)
+    with pytest.raises(WorkGraphMigrationError, match="desired_state=PAUSED"):
+        service.preview(
+            orchestration_id=orchestration_id,
+            migration=_migration(orchestration_id),
+        )
 
     active = [
         {
@@ -202,16 +203,13 @@ def test_apply_requires_paused_quiescent_checkpoint(tmp_path) -> None:
             active_executions=active,
         ),
     )
-    preview = service.preview(
-        orchestration_id=orchestration_id,
-        migration=_migration(orchestration_id),
-    )
-    migration = _migration(
-        orchestration_id,
-        expected_fingerprint=preview.checkpoint_fingerprint_before,
-    )
     with pytest.raises(WorkGraphMigrationError, match="zero active executions"):
         service.apply(orchestration_id=orchestration_id, migration=migration)
+    with pytest.raises(WorkGraphMigrationError, match="zero active executions"):
+        service.preview(
+            orchestration_id=orchestration_id,
+            migration=_migration(orchestration_id),
+        )
 
 
 def test_apply_adds_normalized_nodes_preserves_history_and_is_idempotent(tmp_path) -> None:
