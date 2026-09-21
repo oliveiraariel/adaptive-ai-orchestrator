@@ -40,6 +40,11 @@ from application.runtime_project_planner import (
     RuntimeProjectPlanner,
 )
 from application.skill_resolution import SkillResolutionError
+from application.work_graph_migration import (
+    WorkGraphMigrationError,
+    WorkGraphMigrationService,
+    parse_work_graph_migration,
+)
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from infrastructure.claim_registry import InMemoryClaimRegistry
@@ -58,6 +63,7 @@ from infrastructure.openclaw_gateway_client import (
     OpenClawGatewayError,
 )
 from infrastructure.result_store import FileResultStore, ResultStoreError
+from infrastructure.work_graph_migration_store import FileWorkGraphMigrationStore
 from infrastructure.skill_registry_loader import (
     SkillRegistryError,
     load_skill_profiles,
@@ -150,6 +156,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pause_project.add_argument("--orchestration-id", required=True)
     pause_project.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
+    migrate_graph = commands.add_parser(
+        "migrate-work-graph",
+        help=(
+            "Dry-run or apply one additive, versioned Work Graph migration to a "
+            "durably checkpointed non-terminal project."
+        ),
+    )
+    migrate_graph.add_argument("--orchestration-id", required=True)
+    migrate_graph.add_argument("--plan", required=True)
+    migrate_graph.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "Apply the validated migration. Without this flag the command is a "
+            "read-only dry-run."
+        ),
+    )
+    migrate_graph.add_argument(
+        "--expected-checkpoint-digest",
+        help=(
+            "Checkpoint digest emitted by the immediately preceding dry-run. "
+            "Required with --apply to fail closed on state drift."
+        ),
+    )
+    migrate_graph.add_argument(
         "--project-root",
         default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
     )
@@ -347,6 +382,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _resume_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
+    if args.command == "migrate-work-graph":
+        return _migrate_work_graph(args)
     if args.command == "supervise-projects":
         return _supervise_projects(args)
 
@@ -1002,6 +1039,137 @@ def _project_status(args: argparse.Namespace) -> int:
     except (
         OSError,
         ProjectOrchestrationError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
+
+
+def _migrate_work_graph(args: argparse.Namespace) -> int:
+    try:
+        orchestration_id = _normalize_orchestration_id(args.orchestration_id)
+        assert orchestration_id is not None
+        project_root = Path(args.project_root).expanduser().resolve()
+        plan_path = Path(args.plan).expanduser().resolve()
+        migration_text = plan_path.read_text(encoding="utf-8")
+
+        checkpoint_store = FileProjectOrchestrationCheckpointStore(
+            project_root=project_root
+        )
+        checkpoint = checkpoint_store.load(orchestration_id)
+        if checkpoint is None:
+            raise WorkGraphMigrationError(
+                f"No project checkpoint exists for orchestration '{orchestration_id}'."
+            )
+        request_raw = checkpoint.get("request")
+        if not isinstance(request_raw, dict):
+            raise WorkGraphMigrationError(
+                "Checkpoint is missing the orchestration request."
+            )
+        max_work_units = request_raw.get("max_work_units")
+        if isinstance(max_work_units, bool) or not isinstance(max_work_units, int):
+            raise WorkGraphMigrationError("Checkpoint max_work_units is invalid.")
+
+        spec = parse_work_graph_migration(
+            migration_text,
+            max_new_work_units=max_work_units,
+        )
+        service = WorkGraphMigrationService()
+        preview = service.preview(
+            orchestration_id=orchestration_id,
+            checkpoint=checkpoint,
+            spec=spec,
+        )
+
+        if not args.apply:
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "mode": "migrate-work-graph",
+                        "operation": "dry-run",
+                        "orchestration_id": orchestration_id,
+                        **preview.as_dict(),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 0
+
+        if not args.expected_checkpoint_digest:
+            raise WorkGraphMigrationError(
+                "--expected-checkpoint-digest is required with --apply. "
+                "Run the command once without --apply and use its checkpoint_digest."
+            )
+
+        migration_store = FileWorkGraphMigrationStore(project_root=project_root)
+        artifact_ref = migration_store.artifact_ref(
+            orchestration_id=orchestration_id,
+            migration_id=spec.migration_id,
+            spec_digest=spec.digest,
+        )
+
+        with migration_store.apply_lock(orchestration_id):
+            current = checkpoint_store.load(orchestration_id)
+            if current is None:
+                raise WorkGraphMigrationError(
+                    "Project checkpoint disappeared before migration apply."
+                )
+            migrated, receipt, already_applied = service.apply(
+                orchestration_id=orchestration_id,
+                checkpoint=current,
+                spec=spec,
+                expected_checkpoint_digest=args.expected_checkpoint_digest,
+                artifact_ref=artifact_ref,
+            )
+            if not already_applied:
+                checkpoint_store.save(orchestration_id, migrated)
+            written_ref = migration_store.write_receipt(
+                orchestration_id=orchestration_id,
+                migration_id=spec.migration_id,
+                spec_digest=spec.digest,
+                receipt=receipt,
+            )
+
+        final_checkpoint = checkpoint_store.load(orchestration_id)
+        if final_checkpoint is None:
+            raise WorkGraphMigrationError(
+                "Project checkpoint is unavailable after migration apply."
+            )
+        final_preview = service.preview(
+            orchestration_id=orchestration_id,
+            checkpoint=final_checkpoint,
+            spec=spec,
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "migrate-work-graph",
+                    "operation": "apply",
+                    "orchestration_id": orchestration_id,
+                    "migration_id": spec.migration_id,
+                    "spec_digest": spec.digest,
+                    "already_applied": already_applied,
+                    "artifact_ref": written_ref,
+                    "work_unit_count": len(
+                        final_checkpoint.get("work_unit_states", {})
+                    ),
+                    "pending_replan": bool(
+                        final_checkpoint.get("pending_replan", False)
+                    ),
+                    "desired_state": final_checkpoint.get("desired_state"),
+                    "preview": final_preview.as_dict(),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (
+        OSError,
+        WorkGraphMigrationError,
         ProjectOrchestrationCheckpointError,
         ValueError,
     ) as exc:
