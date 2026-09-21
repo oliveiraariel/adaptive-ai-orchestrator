@@ -261,6 +261,21 @@ class WorkGraphMigrationService:
             "dependencies",
             "supersede_for_scheduling",
         }
+        required = {
+            "schema_version",
+            "migration_id",
+            "orchestration_id",
+            "reason",
+            "new_work_units",
+            "dependencies",
+            "supersede_for_scheduling",
+        }
+        missing = required - set(migration)
+        if missing:
+            raise WorkGraphMigrationError(
+                "Migration document is missing required field(s): "
+                + ", ".join(sorted(missing))
+            )
         unknown = set(migration) - allowed
         if unknown:
             raise WorkGraphMigrationError(
@@ -323,7 +338,11 @@ class WorkGraphMigrationService:
             raise WorkGraphMigrationError(
                 "supersede_for_scheduling must be an array of non-empty Work Unit ids."
             )
-        superseded = list(dict.fromkeys(item.strip() for item in raw_superseded))
+        superseded = [item.strip() for item in raw_superseded]
+        if len(superseded) != len(set(superseded)):
+            raise WorkGraphMigrationError(
+                "supersede_for_scheduling must not contain duplicate Work Unit ids."
+            )
 
         return {
             "schema_version": self.SCHEMA_VERSION,
