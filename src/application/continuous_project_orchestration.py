@@ -1657,9 +1657,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "persistent_recovery": request.persistent_recovery,
             "max_recovery_epochs": request.max_recovery_epochs,
             "max_stalled_recovery_cycles": request.max_stalled_recovery_cycles,
-            "continue_independent_work_during_recovery": (
-                request.continue_independent_work_during_recovery
-            ),
             "pragmatic_low_criticality_acceptance": (
                 request.pragmatic_low_criticality_acceptance
             ),
@@ -1764,9 +1761,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                     if "max_stalled_recovery_cycles" in raw
                     else 3
-                ),
-                continue_independent_work_during_recovery=bool(
-                    raw.get("continue_independent_work_during_recovery", True)
                 ),
                 pragmatic_low_criticality_acceptance=bool(
                     raw.get("pragmatic_low_criticality_acceptance", True)
