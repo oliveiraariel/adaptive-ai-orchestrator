@@ -558,11 +558,31 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                     break
 
+                # Recovery/replan is control-plane work, but it must not
+                # globally starve ordinary execution. If an independent Work Unit
+                # is already ready, prefer useful functional progress first and
+                # return to recovery when the execution lane has no ready work.
+                ready_before_control = self._ready_ids(unfinished, dependencies)
+                dispatchable_before_control = [
+                    work_unit_id
+                    for work_unit_id in ready_before_control
+                    if work_units[work_unit_id].kind is not WorkUnitKind.HUMAN_ACTION
+                ]
+                prefer_execution_over_recovery = bool(
+                    dispatchable_before_control
+                    and not pause_requested
+                    and dispatch_generation
+                    < self._effective_wave_budget(request, len(work_units))
+                )
+
                 # A replan signal is itself pending orchestration work. Process it
-                # before declaring the current graph terminal, because the worker
-                # that requested replanning may have been the last current Work
-                # Unit and the replan may legitimately add the next required unit.
-                if pending_replan and not active:
+                # before declaring the current graph terminal only when there is
+                # no independent functional work ready to run.
+                if (
+                    pending_replan
+                    and not active
+                    and not prefer_execution_over_recovery
+                ):
                     recovery_before = {
                         work_unit_id
                         for work_unit_id, work_unit in work_units.items()
@@ -1058,8 +1078,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
 
                 available_slots = 0 if pause_requested else request.max_concurrency - len(active)
                 if (
-                    not pending_replan
-                    and available_slots > 0
+                    available_slots > 0
                     and ready_ids
                     and dispatch_generation
                     < self._effective_wave_budget(request, len(work_units))
