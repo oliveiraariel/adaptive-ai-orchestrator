@@ -1008,7 +1008,7 @@ def _project_checkpoint_status_payload(
         else []
     )
     evidence_lineage = checkpoint.get("work_unit_evidence_lineage")
-    return {
+    payload = {
         "ok": True,
         "mode": "project-status",
         "orchestration_id": orchestration_id,
@@ -1024,12 +1024,16 @@ def _project_checkpoint_status_payload(
         "active_execution_count": len(active) if isinstance(active, list) else 0,
         "pending_replan": bool(checkpoint.get("pending_replan", False)),
         "replan_count": checkpoint.get("replan_count", 0),
-        "graph_migration_count": len(migration_ids),
-        "graph_migration_ids": migration_ids,
-        "evidence_lineage_work_unit_count": (
-            len(evidence_lineage) if isinstance(evidence_lineage, dict) else 0
-        ),
     }
+    # Keep the legacy project-status surface byte-for-byte compatible for
+    # checkpoints that predate Work Graph migration metadata.
+    if migration_ids or isinstance(evidence_lineage, dict):
+        payload["graph_migration_count"] = len(migration_ids)
+        payload["graph_migration_ids"] = migration_ids
+        payload["evidence_lineage_work_unit_count"] = (
+            len(evidence_lineage) if isinstance(evidence_lineage, dict) else 0
+        )
+    return payload
 
 
 def _project_status(args: argparse.Namespace) -> int:
