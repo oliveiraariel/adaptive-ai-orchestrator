@@ -397,3 +397,43 @@ def test_cli_dry_run_then_apply_and_project_status_hide_superseded_history(
     assert status["superseded_work_unit_ids"] == ["OLD-AGENDA"]
     assert status["work_graph_migration_count"] == 1
     assert "OLD-AGENDA" not in status["recovery_required_work_unit_ids"]
+
+
+def test_supersession_rejects_stranded_historical_dependent(tmp_path) -> None:
+    orchestration_id = "orch-migrate-stranded"
+    checkpoint = _checkpoint(orchestration_id)
+    checkpoint["plan"]["work_units"].append(_planned_spec("OLD-VERIFY"))
+    checkpoint["plan"]["dependencies"].append(
+        {
+            "source_id": "OLD-AGENDA",
+            "target_id": "OLD-VERIFY",
+            "required": True,
+            "condition": None,
+        }
+    )
+    checkpoint["work_unit_states"]["OLD-VERIFY"] = "PLANNED"
+    checkpoint["attempts"]["OLD-VERIFY"] = 0
+    checkpoint["strategy_generations"]["OLD-VERIFY"] = 1
+    checkpoint["recovery_epoch_counts"]["OLD-VERIFY"] = 0
+    checkpoint["recovery_replans_in_epoch"]["OLD-VERIFY"] = 0
+    checkpoint["dependency_states"].append(
+        {
+            "source_id": "OLD-AGENDA",
+            "target_id": "OLD-VERIFY",
+            "required": True,
+            "status": "BLOCKED",
+        }
+    )
+    _store(tmp_path, checkpoint)
+    service = WorkGraphMigrationService(project_root=tmp_path)
+
+    migration = _migration(orchestration_id)
+    with pytest.raises(WorkGraphMigrationError, match="would strand operational"):
+        service.preview(orchestration_id=orchestration_id, migration=migration)
+
+    migration["supersede_for_scheduling"] = ["OLD-AGENDA", "OLD-VERIFY"]
+    preview = service.preview(
+        orchestration_id=orchestration_id,
+        migration=migration,
+    )
+    assert preview.superseded_work_unit_ids == ("OLD-AGENDA", "OLD-VERIFY")
