@@ -60,6 +60,10 @@ from domain.result_package import ResultPackage, ResultPackageStatus
 from domain.skill_profile import SkillProfile
 from domain.task_package import TaskPackage
 from domain.work_unit import WorkUnit, WorkUnitId, WorkUnitKind, WorkUnitState
+from domain.work_unit_identity import (
+    extract_explicit_work_unit_ids,
+    merge_required_work_unit_ids,
+)
 from domain.work_unit_readiness import ReadinessStatus, WorkUnitReadinessEvaluator
 
 
@@ -89,6 +93,7 @@ class ProjectOrchestrationRequest:
     project_id: str = ""
     context: tuple[str, ...] = field(default_factory=tuple)
     constraints: tuple[str, ...] = field(default_factory=tuple)
+    required_work_unit_ids: tuple[str, ...] = field(default_factory=tuple)
     max_concurrency: int = 4
     max_work_units: int = 24
     max_waves: int = 24
@@ -125,6 +130,17 @@ class ProjectOrchestrationRequest:
             raise ValueError("max_recovery_epochs must be between 0 and 1000; 0 means no fixed epoch cap.")
         if self.dependency_context_chars < 256:
             raise ValueError("dependency_context_chars must be at least 256.")
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in self.required_work_unit_ids
+        ):
+            raise ValueError(
+                "required_work_unit_ids must contain only non-empty strings."
+            )
+        if len({item.upper() for item in self.required_work_unit_ids}) != len(
+            self.required_work_unit_ids
+        ):
+            raise ValueError("required_work_unit_ids must be unique.")
 
 
 @dataclass(frozen=True)
@@ -223,8 +239,10 @@ class RunProjectOrchestration:
             agent=request.planner_agent or request.agent,
             max_work_units=request.max_work_units,
             max_concurrency=request.max_concurrency,
+            required_work_unit_ids=request.required_work_unit_ids,
         )
         plan = request.plan or self._planner.plan(planning_request)
+        self._validate_required_work_unit_coverage(request, plan)
         if len(plan.work_units) > request.max_work_units:
             raise ProjectOrchestrationError(
                 f"Plan contains {len(plan.work_units)} Work Units; "
@@ -484,6 +502,35 @@ class RunProjectOrchestration:
             max_parallelism_observed=max_parallelism_observed,
             replan_count=replan_count,
         )
+
+    @staticmethod
+    def _validate_required_work_unit_coverage(
+        request: ProjectOrchestrationRequest,
+        plan: ProjectExecutionPlan,
+    ) -> None:
+        required = merge_required_work_unit_ids(
+            request.required_work_unit_ids,
+            extract_explicit_work_unit_ids(request.objective, request.scope),
+        )
+        if len(required) > request.max_work_units:
+            raise ProjectOrchestrationError(
+                "Project explicitly requires "
+                f"{len(required)} Work Unit ids, exceeding max_work_units="
+                f"{request.max_work_units}."
+            )
+        if not required:
+            return
+        planned_by_upper = {item.id.upper(): item.id for item in plan.work_units}
+        missing = [
+            item for item in required if item.upper() not in planned_by_upper
+        ]
+        if missing:
+            raise ProjectOrchestrationError(
+                "Project plan omitted required Work Unit id(s): "
+                + ", ".join(missing)
+                + ". Explicit governance identities may not be collapsed into "
+                "aggregate nodes."
+            )
 
     @staticmethod
     def _instantiate_work_unit(spec: PlannedWorkUnit) -> WorkUnit:
