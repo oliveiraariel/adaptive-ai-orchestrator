@@ -1773,6 +1773,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         recovery_no_progress_counts: dict[str, int],
         recovery_guidance: dict[str, str],
         active: Sequence[tuple[DispatchOutcome, int]],
+        active_started_at: dict[str, float],
         terminal: bool,
     ) -> None:
         if self._checkpoint_store is None:
@@ -1788,6 +1789,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "execution_id": outcome.execution.id,
                     "external_id": outcome.execution.external_id,
                     "runtime": outcome.execution.runtime,
+                    "started_at": active_started_at.get(
+                        outcome.work_unit_id,
+                        time.time(),
+                    ),
                 }
             )
         existing_checkpoint = (
@@ -1859,7 +1864,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "project_id": request.project_id,
             "context": list(request.context),
             "constraints": list(request.constraints),
+            "concurrency_mode": request.concurrency_mode.value,
             "max_concurrency": request.max_concurrency,
+            "worker_observation_interval_seconds": (
+                request.worker_observation_interval_seconds
+            ),
+            "worker_soft_stall_seconds": request.worker_soft_stall_seconds,
+            "worker_stall_overflow_slots": request.worker_stall_overflow_slots,
             "max_work_units": request.max_work_units,
             "max_waves": request.max_waves,
             "max_attempts_per_work_unit": request.max_attempts_per_work_unit,
@@ -1931,6 +1942,25 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 raise ProjectOrchestrationError(
                     "Checkpoint planner_agent is invalid."
                 )
+
+            # Concurrency provenance was introduced after early project
+            # checkpoints had already persisted a bare integer. Those legacy
+            # values are treated as AUTO hints, not permanent operator locks.
+            # This preserves forward progress for old serial orchestrations
+            # while every new FIXED constraint is explicit and durable.
+            concurrency_mode_raw = raw.get("concurrency_mode")
+            if concurrency_mode_raw is None:
+                concurrency_mode = ConcurrencyMode.AUTO
+                max_concurrency = max(
+                    4,
+                    cls._require_nonnegative_int(raw, "max_concurrency"),
+                )
+            else:
+                concurrency_mode = ConcurrencyMode(str(concurrency_mode_raw))
+                max_concurrency = cls._require_nonnegative_int(
+                    raw, "max_concurrency"
+                )
+
             return ProjectOrchestrationRequest(
                 objective=cls._require_str(raw, "objective"),
                 orchestration_id=orchestration_id,
@@ -1942,8 +1972,28 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 constraints=tuple(
                     cls._require_string_list(raw, "constraints")
                 ),
-                max_concurrency=cls._require_nonnegative_int(
-                    raw, "max_concurrency"
+                concurrency_mode=concurrency_mode,
+                max_concurrency=max_concurrency,
+                worker_observation_interval_seconds=(
+                    cls._require_nonnegative_int(
+                        raw, "worker_observation_interval_seconds"
+                    )
+                    if "worker_observation_interval_seconds" in raw
+                    else 5
+                ),
+                worker_soft_stall_seconds=(
+                    cls._require_nonnegative_int(
+                        raw, "worker_soft_stall_seconds"
+                    )
+                    if "worker_soft_stall_seconds" in raw
+                    else 90
+                ),
+                worker_stall_overflow_slots=(
+                    cls._require_nonnegative_int(
+                        raw, "worker_stall_overflow_slots"
+                    )
+                    if "worker_stall_overflow_slots" in raw
+                    else 1
                 ),
                 max_work_units=cls._require_nonnegative_int(
                     raw, "max_work_units"
