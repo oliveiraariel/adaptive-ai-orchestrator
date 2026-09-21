@@ -41,6 +41,7 @@ The developer remains the final authority over important project decisions.
 - dynamic multi-agent execution with dependency-aware parallelism and fan-in;
 - capability/Skill/model/resource selection;
 - independent result evaluation and bounded replanning;
+- governed Work Graph migration/normalization for evidence-preserving repair of non-terminal graphs;
 - **Recovery Loop** for persistent recovery, retest, and automatic learning;
 - durable inter-component communication through **AMEP v1**;
 - execution integrity, liveness reconciliation, continuity, and observability;
@@ -84,7 +85,7 @@ The repository keeps presentation, current operational context, architecture, pr
 - `README.md` / `README.pt-BR.md` — stable project landing pages; summarize rather than accumulate implementation chronology;
 - `CONTEXT.md` — current resume entry point for humans and AI agents;
 - `PROJECT-KNOWLEDGE-MANIFEST.yaml` — authority/retrieval map for project knowledge;
-- `docs/architecture/` — canonical architecture and subsystem contracts, including [`RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md);
+- `docs/architecture/` — canonical architecture and subsystem contracts, including [`RECOVERY-LOOP.md`](docs/architecture/RECOVERY-LOOP.md) and [`WORK-GRAPH-MIGRATIONS.md`](docs/architecture/WORK-GRAPH-MIGRATIONS.md);
 - `docs/process/` — development, governance, continuity, gates, and execution process;
 - `docs/prompts/` — operational prompts;
 - `docs/runbooks/`, `docs/incidents/`, and `docs/reviews/` — diagnostics, field evidence, and reviews;
