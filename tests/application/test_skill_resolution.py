@@ -60,14 +60,30 @@ def test_resolver_includes_declared_skill_dependencies() -> None:
     assert result.skill_ids == ("base", "dependent")
 
 
-def test_resolver_rejects_unknown_requested_skill() -> None:
+def test_resolver_ignores_unknown_requested_skill_preference() -> None:
     resolver = SkillResolver((skill("known", "cap.a"),))
 
-    with pytest.raises(SkillResolutionError, match="unknown"):
+    result = resolver.execute(
+        SkillResolutionRequest(
+            required_capabilities=(),
+            requested_skill_ids=("missing",),
+            agent_id="main",
+            runtime="openclaw",
+        )
+    )
+
+    assert result.skill_ids == ()
+    assert result.covered_capabilities == ()
+
+
+def test_resolver_still_fails_when_required_capability_is_unavailable() -> None:
+    resolver = SkillResolver((skill("known", "cap.a"),))
+
+    with pytest.raises(SkillResolutionError, match="No compatible skill set"):
         resolver.execute(
             SkillResolutionRequest(
-                required_capabilities=(),
-                requested_skill_ids=("missing",),
+                required_capabilities=("cap.missing",),
+                requested_skill_ids=("missing-preference",),
                 agent_id="main",
                 runtime="openclaw",
             )
