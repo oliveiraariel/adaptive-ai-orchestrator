@@ -46,9 +46,11 @@ class SkillResolver:
 
         for skill_id in request.requested_skill_ids:
             profile = self._by_id.get(skill_id)
-            if profile is None:
-                raise SkillResolutionError(f"Requested skill '{skill_id}' is unknown.")
-            self._ensure_compatible(profile, request)
+            # Requested skills are preferences. A stale planner hint must not
+            # block the Work Unit when its actual required capabilities can be
+            # satisfied without that hint.
+            if profile is None or not self._compatible(profile, request):
+                continue
             if profile not in selected:
                 selected.append(profile)
 

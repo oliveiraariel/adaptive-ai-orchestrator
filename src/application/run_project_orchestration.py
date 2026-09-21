@@ -97,6 +97,8 @@ class ProjectOrchestrationRequest:
     max_replans: int = 2
     persistent_recovery: bool = False
     max_recovery_epochs: int = 0
+    max_stalled_recovery_cycles: int = 3
+    pragmatic_low_criticality_acceptance: bool = True
     recovery_strategist_agent: str | None = None
     learning_after_successful_retest: bool = True
     dependency_context_chars: int = 6000
@@ -123,6 +125,13 @@ class ProjectOrchestrationRequest:
             raise ValueError("max_replans must be between 0 and 8.")
         if self.max_recovery_epochs < 0 or self.max_recovery_epochs > 1000:
             raise ValueError("max_recovery_epochs must be between 0 and 1000; 0 means no fixed epoch cap.")
+        if (
+            self.max_stalled_recovery_cycles < 1
+            or self.max_stalled_recovery_cycles > 32
+        ):
+            raise ValueError(
+                "max_stalled_recovery_cycles must be between 1 and 32."
+            )
         if self.dependency_context_chars < 256:
             raise ValueError("dependency_context_chars must be at least 256.")
 
@@ -797,6 +806,7 @@ class RunProjectOrchestration:
         attempts: int,
         max_attempts: int,
         enforce_attempt_circuit_breaker: bool = True,
+        pragmatic_low_criticality_acceptance: bool = False,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -844,6 +854,19 @@ class RunProjectOrchestration:
             evidence_items.append(
                 f"worker-status:{completion.status.value.casefold()}"
             )
+        if (
+            pragmatic_low_criticality_acceptance
+            and spec.criticality == 0
+            and runtime_status is AgentRuntimeStatus.COMPLETED
+            and completion.is_terminal_success
+            and result_authoritative
+            and result_ref
+        ):
+            # For ordinary low-criticality Work Units, a transport-verified
+            # authoritative result plus an explicit COMPLETE/no-unmet-criteria
+            # footer is stronger evidence than literal criterion text matching.
+            # Critical or independently-reviewed work remains on the strict path.
+            evidence_items.append("authoritative-worker-complete")
 
         package = ResultPackage(
             task_id=f"project-result:{outcome.work_unit_id}:wave:{wave}",

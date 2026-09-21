@@ -205,6 +205,7 @@ def run(
     max_attempts: int = 2,
     max_strategies: int = 2,
     max_replans: int = 2,
+    max_waves: int = 24,
 ):
     actual_planner = planner or StaticPlanner(plan)
     result = RunContinuousProjectOrchestration(
@@ -220,6 +221,7 @@ def run(
             max_attempts_per_work_unit=max_attempts,
             max_strategies_per_work_unit=max_strategies,
             max_replans=max_replans,
+            max_waves=max_waves,
             plan=plan,
         )
     )
@@ -1317,3 +1319,68 @@ def test_genuine_environment_blocker_remains_terminal() -> None:
     assert result.status is ProjectRunStatus.BLOCKED
     assert result.blocked_work_unit_ids == ("external-e2e",)
     assert result.recovery_required_work_unit_ids == ()
+
+
+
+def test_dispatch_budget_scales_with_serial_graph_instead_of_stopping_early() -> None:
+    plan = ProjectExecutionPlan(
+        summary="serial graph larger than explicit base wave budget",
+        work_units=tuple(wu(f"serial-{index}") for index in range(1, 7)),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            f"serial-{index}": f"done-{index}"
+            for index in range(1, 7)
+        }
+    )
+
+    result, _ = run(
+        plan,
+        runtime,
+        max_concurrency=1,
+        max_waves=1,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert len(result.completed_work_unit_ids) == 6
+    assert len(result.waves) == 6
+
+
+def test_missing_skill_blocks_only_affected_work_unit_and_independent_work_continues() -> None:
+    from domain.work_unit import WorkUnitKind
+
+    missing_skill = PlannedWorkUnit(
+        id="missing-skill",
+        objective="Needs a capability that is not registered",
+        role="specialist",
+        kind=WorkUnitKind.EXECUTION,
+        required_capabilities=("capability.not-registered",),
+        expected_output=("result",),
+        acceptance_criteria=("runtime-completed",),
+        parallel_safe=True,
+        priority=20,
+    )
+    healthy = wu("healthy", priority=10)
+    plan = ProjectExecutionPlan(
+        summary="skill-resolution bulkhead",
+        work_units=(missing_skill, healthy),
+    )
+    runtime = ConcurrentRuntime(outputs={"healthy": "HEALTHY_DONE"})
+
+    result, _ = run(
+        plan,
+        runtime,
+        max_concurrency=1,
+    )
+
+    assert result.status is ProjectRunStatus.PARTIAL
+    assert result.completed_work_unit_ids == ("healthy",)
+    assert result.blocked_work_unit_ids == ("missing-skill",)
+    assert [task.work_unit_id for task in runtime.tasks] == ["healthy"]
+    blocked = [
+        record
+        for record in result.records
+        if record.work_unit_id == "missing-skill"
+    ]
+    assert blocked
+    assert blocked[-1].reason.startswith("skill-resolution:")

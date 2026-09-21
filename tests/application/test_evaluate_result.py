@@ -132,3 +132,32 @@ def test_partial_result_is_never_accepted_as_terminal() -> None:
     ).evaluation
 
     assert evaluation.verdict is EvaluationVerdict.RETURNED
+
+
+
+def test_authoritative_worker_complete_evidence_satisfies_low_risk_criteria() -> None:
+    result = make_result(
+        evidence=(
+            "runtime-completed",
+            "worker-status:complete",
+            "authoritative-worker-complete",
+        )
+    )
+
+    evaluation = EvaluateResult().execute(
+        EvaluateResultRequest(
+            result_package=result,
+            criteria=(
+                "persist the complete commitment date",
+                "return the day through REST",
+            ),
+            evaluator_id="adaptive-orchestrator:project",
+        )
+    ).evaluation
+
+    assert evaluation.verdict is EvaluationVerdict.ACCEPTED
+    assert evaluation.confidence == 1.0
+    assert all(
+        finding.startswith("SATISFIED:")
+        for finding in evaluation.findings
+    )

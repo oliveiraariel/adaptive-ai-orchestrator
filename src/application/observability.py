@@ -44,7 +44,7 @@ class JsonlObservabilitySink:
         "confidence", "scope", "targets", "runtime_candidate_recorded", "mode",
         "strategy", "summary", "work_unit_count", "recovered", "replan_count",
         "auth_profile_configured", "auth_product", "from_model", "to_model",
-        "runtime_attempt", "circuit_state",
+        "runtime_attempt", "circuit_state", "stalled_recovery_cycles", "result_ref",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -52,6 +52,7 @@ class JsonlObservabilitySink:
         "work_unit_status_changed", "worker_escalated", "evaluation_finalized",
         "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
         "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
+        "work_unit_recovery_retry", "work_unit_recovery_suspended",
         "automatic_learning_triggered", "automatic_learning_failed",
         "orchestration_paused", "orchestration_supervisor_started",
         "recovery_plan_rejected", "recovery_strategy_failed", "model_failover",
@@ -75,7 +76,8 @@ class JsonlObservabilitySink:
             "worker_escalated", "evaluation_finalized",
             "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
             "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
-            "recovery_strategy_failed",
+            "recovery_strategy_failed", "work_unit_recovery_retry",
+            "work_unit_recovery_suspended",
             "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (
