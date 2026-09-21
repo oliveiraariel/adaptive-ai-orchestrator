@@ -343,27 +343,28 @@ class RuntimeProjectPlanner:
             "DECISION or RESEARCH Work Unit that reconciles canonical sources and "
             "produces an explicit blocker/decision contract before code changes. "
         )
+        recovery_rules = (
+            "- Preserve every explicit WU-* identifier as a distinct Work Unit; "
+            "do not replace them with an aggregate node.\n"
+            if explicit_ids
+            else "- Return exactly one Work Unit and no dependencies.\n"
+        )
         return (
             recovery_instruction
             + "\n\n"
-            f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
-            f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
-            f"VALIDATION FAILURE:\n{failure}\n\n"
-            f"{experience + chr(10) + chr(10) if experience else ''}"
-            "RECOVERY RULES:\n"
-            + (
-                "- Preserve every explicit WU-* identifier as a distinct Work Unit; "
-                "do not replace them with an aggregate node.\n"
-                if explicit_ids
-                else "- Return exactly one Work Unit and no dependencies.\n"
-            )
-            "- Keep the Work Unit bounded, independently verifiable and safe.\n"
-            "- Planning remains read-only; do not modify project files.\n"
-            "- Do not invent business rules or bypass project governance.\n"
-            "- Return only one strict JSON object; no Markdown fences.\n\n"
-            f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
-            "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
-            f"{self._schema_json()}"
+            + f"PROJECT OBJECTIVE:\n{request.objective}\n\n"
+            + f"SCOPE:\n{request.scope or '(not separately specified)'}\n\n"
+            + f"VALIDATION FAILURE:\n{failure}\n\n"
+            + f"{experience + chr(10) + chr(10) if experience else ''}"
+            + "RECOVERY RULES:\n"
+            + recovery_rules
+            + "- Keep each returned Work Unit bounded, independently verifiable and safe.\n"
+            + "- Planning remains read-only; do not modify project files.\n"
+            + "- Do not invent business rules or bypass project governance.\n"
+            + "- Return only one strict JSON object; no Markdown fences.\n\n"
+            + f"AVAILABLE SKILLS:\n{self._skill_catalog_json()}\n\n"
+            + "OUTPUT JSON SCHEMA (return a validating JSON instance; do not return the schema itself):\n"
+            + f"{self._schema_json()}"
         )
 
     def _build_replan_recovery_prompt(
