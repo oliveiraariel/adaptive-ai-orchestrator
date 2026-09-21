@@ -9,7 +9,8 @@ Schemas here define stable transport envelopes and governed payload contracts.
 Current schemas:
 - `amep-message-ref-v1.schema.json` — compact control-plane reference;
 - `amep-manifest-v1.schema.json` — durable message manifest;
-- `planner-output-v1.schema.json` — mandatory Planner → Adaptive work-graph document.
+- `planner-output-v1.schema.json` — mandatory Planner → Adaptive work-graph document;
+- `work-graph-migration-v1.schema.json` — governed additive normalization of a persisted non-terminal Work Graph.
 
 Rules:
 1. never change an existing schema version incompatibly;
