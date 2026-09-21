@@ -7,6 +7,7 @@ from typing import Sequence
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntimeResult
+from application.completion_integrity import parse_worker_completion
 from application.project_orchestration_checkpoint import ProjectOrchestrationCheckpointStore
 from application.observability import NullObservabilitySink, ObservabilitySink
 from application.execution_coordinator import (
@@ -30,6 +31,7 @@ from application.investigation_strategy import RecoveryStrategyError
 from application.run_orchestration import RunOrchestrationError
 from application.runtime_project_planner import ProjectPlanningError, ProjectPlanningRequest
 from domain.dependency import Dependency, DependencyStatus
+from domain.investigation import RecoveryDisposition
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from domain.project_execution_plan import (
@@ -172,6 +174,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             replan_feedback = ""
             recovery_epoch_counts = {work_unit_id: 0 for work_unit_id in work_units}
             recovery_replans_in_epoch = {work_unit_id: 0 for work_unit_id in work_units}
+            recovery_no_progress_counts = {
+                work_unit_id: 0 for work_unit_id in work_units
+            }
             recovery_guidance: dict[str, str] = {}
             recovered_active: list[dict] = []
         else:
@@ -212,6 +217,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
             recovery_replans_in_epoch = self._restore_optional_int_map(
                 checkpoint, "recovery_replans_in_epoch", tuple(work_units), default=0
+            )
+            recovery_no_progress_counts = self._restore_optional_int_map(
+                checkpoint,
+                "recovery_no_progress_counts",
+                tuple(work_units),
+                default=0,
             )
             recovery_guidance = self._restore_str_map_optional(
                 checkpoint, "recovery_guidance"
@@ -263,6 +274,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 replan_feedback=replan_feedback,
                 recovery_epoch_counts=recovery_epoch_counts,
                 recovery_replans_in_epoch=recovery_replans_in_epoch,
+                recovery_no_progress_counts=recovery_no_progress_counts,
                 recovery_guidance=recovery_guidance,
                 active=tuple(active.values()),
                 terminal=terminal,
@@ -1348,6 +1360,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         replan_feedback: str,
         recovery_epoch_counts: dict[str, int],
         recovery_replans_in_epoch: dict[str, int],
+        recovery_no_progress_counts: dict[str, int],
         recovery_guidance: dict[str, str],
         active: Sequence[tuple[DispatchOutcome, int]],
         terminal: bool,
@@ -1411,6 +1424,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "replan_feedback": replan_feedback,
             "recovery_epoch_counts": dict(recovery_epoch_counts),
             "recovery_replans_in_epoch": dict(recovery_replans_in_epoch),
+            "recovery_no_progress_counts": dict(recovery_no_progress_counts),
             "recovery_guidance": dict(recovery_guidance),
             "active_executions": active_rows,
             "terminal": terminal,
@@ -1443,6 +1457,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "max_replans": request.max_replans,
             "persistent_recovery": request.persistent_recovery,
             "max_recovery_epochs": request.max_recovery_epochs,
+            "max_stalled_recovery_cycles": request.max_stalled_recovery_cycles,
+            "continue_independent_work_during_recovery": (
+                request.continue_independent_work_during_recovery
+            ),
+            "pragmatic_low_criticality_acceptance": (
+                request.pragmatic_low_criticality_acceptance
+            ),
             "recovery_strategist_agent": request.recovery_strategist_agent,
             "learning_after_successful_retest": request.learning_after_successful_retest,
             "dependency_context_chars": request.dependency_context_chars,
@@ -1537,6 +1558,19 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     cls._require_nonnegative_int(raw, "max_recovery_epochs")
                     if "max_recovery_epochs" in raw
                     else 0
+                ),
+                max_stalled_recovery_cycles=(
+                    cls._require_nonnegative_int(
+                        raw, "max_stalled_recovery_cycles"
+                    )
+                    if "max_stalled_recovery_cycles" in raw
+                    else 3
+                ),
+                continue_independent_work_during_recovery=bool(
+                    raw.get("continue_independent_work_during_recovery", True)
+                ),
+                pragmatic_low_criticality_acceptance=bool(
+                    raw.get("pragmatic_low_criticality_acceptance", True)
                 ),
                 recovery_strategist_agent=(
                     str(raw.get("recovery_strategist_agent"))
