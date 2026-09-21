@@ -807,6 +807,7 @@ class RunProjectOrchestration:
         attempts: int,
         max_attempts: int,
         enforce_attempt_circuit_breaker: bool = True,
+        pragmatic_low_criticality_acceptance: bool = False,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -854,6 +855,19 @@ class RunProjectOrchestration:
             evidence_items.append(
                 f"worker-status:{completion.status.value.casefold()}"
             )
+        if (
+            pragmatic_low_criticality_acceptance
+            and spec.criticality == 0
+            and runtime_status is AgentRuntimeStatus.COMPLETED
+            and completion.is_terminal_success
+            and result_authoritative
+            and result_ref
+        ):
+            # For ordinary low-criticality Work Units, a transport-verified
+            # authoritative result plus an explicit COMPLETE/no-unmet-criteria
+            # footer is stronger evidence than literal criterion text matching.
+            # Critical or independently-reviewed work remains on the strict path.
+            evidence_items.append("authoritative-worker-complete")
 
         package = ResultPackage(
             task_id=f"project-result:{outcome.work_unit_id}:wave:{wave}",
