@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import replace
+import time
 from typing import Sequence
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from application.execution_coordinator import (
     WorkAssignment,
 )
 from application.run_project_orchestration import (
+    ConcurrencyMode,
     ParallelWaveRecord,
     ProjectOrchestrationError,
     RecoveryPlanTopologyError,
@@ -283,6 +285,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             tuple[DispatchOutcome, int],
         ] = {}
         active_by_id: dict[str, DispatchOutcome] = {}
+        active_started_at: dict[str, float] = {}
+        soft_stalled_ids: set[str] = set()
+        stall_notified_ids: set[str] = set()
         recovery_yield_requested = False
         recovery_yield_reason = ""
 
@@ -310,6 +315,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 recovery_no_progress_counts=recovery_no_progress_counts,
                 recovery_guidance=recovery_guidance,
                 active=tuple(active.values()),
+                active_started_at=active_started_at,
                 terminal=terminal,
             )
 
@@ -475,7 +481,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         if checkpoint is None or admission_only:
             persist()
 
-        with ThreadPoolExecutor(max_workers=request.max_concurrency) as executor:
+        executor_capacity = self._executor_capacity(request)
+        with ThreadPoolExecutor(max_workers=executor_capacity) as executor:
             if checkpoint is not None:
                 for item in recovered_active:
                     work_unit_id = self._require_str(item, "work_unit_id")
@@ -521,6 +528,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                     active[future] = (outcome, generation)
                     active_by_id[work_unit_id] = outcome
+                    started_at_raw = item.get("started_at")
+                    active_started_at[work_unit_id] = (
+                        float(started_at_raw)
+                        if isinstance(started_at_raw, (int, float))
+                        else time.time()
+                    )
                     observability.emit(
                         "worker_recovered",
                         orchestration_id=orchestration_id,
