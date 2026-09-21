@@ -114,12 +114,12 @@ It does **not** impose a barrier between batches of workers. Its loop is:
 2. order candidates by priority/criticality;
 3. compare candidates with all currently active workers for write/resource conflicts;
 4. dispatch as many conflict-free Work Units as available concurrency slots permit;
-5. wait only until at least one active execution completes;
-6. evaluate and finalize each completed result immediately;
+5. return from result waiting on completion **or on a short observation interval**;
+6. evaluate and finalize completed results immediately;
 7. satisfy dependencies only for accepted results;
 8. propagate bounded accepted outputs to dependent Work Units;
-9. recompute the frontier immediately;
-10. fill newly free slots while unrelated workers remain active.
+9. recompute the frontier immediately even while other workers remain active;
+10. fill newly free slots and, in AUTO mode, use bounded soft-stall overflow capacity when one slow worker would otherwise monopolize useful throughput.
 
 Example with `max_concurrency=2`:
 
@@ -143,17 +143,22 @@ For compatibility, result records historically named `waves` are retained, but i
 
 Concurrency is a capability, not a target metric.
 
-Defaults are intentionally bounded:
+Defaults are intentionally bounded but large-project capable:
 
-- `max_concurrency = 4`;
-- `max_work_units = 24`;
-- `max_waves = 24` (compatibility name for maximum dispatch generations);
+- `concurrency_mode = AUTO`;
+- `max_concurrency = 4` as the normal AUTO ceiling;
+- `max_work_units = 64`;
+- `max_waves = 24` as a compatibility floor; the effective dispatch budget scales with graph size and bounded retry policy;
 - `max_attempts_per_work_unit = 2`;
-- `max_replans = 2`.
+- `max_replans = 2`;
+- worker result observation returns to the scheduler every 5 seconds;
+- AUTO soft-stall observation begins at 90 seconds and allows one bounded overflow slot by default.
 
-The CLI accepts other bounded values; concurrency is validated in the range 1–32.
+AUTO is the normal policy. Adaptive chooses useful parallelism from the safe READY frontier and may temporarily use bounded overflow capacity when a slow worker would otherwise consume all normal slots. FIXED is reserved for an explicit operator/business constraint and is never exceeded.
 
-The planner is instructed to avoid token-expensive micro-fragmentation. The worker count follows the useful ready frontier, not a fixed pool. Two useful workers should not become six merely because the limit permits six. Conversely, six genuinely independent useful Work Units may use six slots when policy and budget allow it.
+Legacy checkpoints that predate concurrency provenance are interpreted as AUTO. A historical bare value below the current autonomous floor is upgraded on resume rather than permanently throttling a large project.
+
+The planner is instructed to avoid token-expensive micro-fragmentation. The worker count follows the useful ready frontier, not a fixed pool. Two useful workers should not become six merely because capacity permits six. Conversely, six genuinely independent useful Work Units may use six slots when policy and budget allow it.
 
 `SkillResolver` further reduces context by selecting the smallest compatible deterministic skill set that covers each Work Unit's capabilities, including only required skill dependencies.
 
@@ -243,9 +248,9 @@ When genuinely necessary missing work is discovered, the worker may return:
 ADAPTIVE_REPLAN_REQUIRED: <reason>
 ```
 
-Only an **accepted** Work Unit can request replanning. Once such a request appears, the continuous scheduler stops launching additional workers, allows already-active work to drain, then performs bounded replanning against a stable execution state.
+Only an **accepted** Work Unit can request ordinary additive replanning. Recovery replanning is separately governed by the Recovery Strategist.
 
-This conservative drain-before-replan rule avoids mutating dependencies underneath in-flight Work Units and keeps planner activity inside the project concurrency budget.
+A pending replan is **not** a project-wide dispatch lock. Independent READY Work Units continue to execute. Synchronous planning/recovery is taken when no independent executable work can use the current safe frontier, preserving both graph integrity and useful throughput.
 
 The executor admits only controlled additive evolution:
 
@@ -279,14 +284,15 @@ Every retry receives a distinct task identity. This prevents a third or later re
 
 ## 13. CLI
 
-High-level project mode:
+High-level project mode normally requires only the governed project objective and authority boundary:
 
 ```bash
 adaptive-orchestrator orchestrate \
   --objective "Implement the authorized project objective." \
-  --agent main \
-  --max-concurrency 4
+  --agent main
 ```
+
+AUTO concurrency, persistent recovery and the detached supervisor are normal defaults. Technical scheduler/recovery flags remain diagnostic/operator controls, not information the user is expected to encode into a functional prompt.
 
 For repository edits, the caller must explicitly authorize the effect:
 

@@ -41,7 +41,7 @@ class ProjectPlanningRequest:
     context: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
     agent: str = "main"
-    max_work_units: int = 24
+    max_work_units: int = 64
     max_concurrency: int = 4
 
     def __post_init__(self) -> None:

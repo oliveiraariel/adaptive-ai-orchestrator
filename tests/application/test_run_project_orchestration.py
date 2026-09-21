@@ -1448,3 +1448,14 @@ def test_auto_concurrency_uses_soft_stall_overflow_for_independent_work() -> Non
     assert result.max_parallelism_observed == 2
     assert runtime.started_at["fast"] < runtime.finished_at["slow"]
     assert runtime.max_active_retrievals == 2
+
+
+
+def test_large_project_defaults_support_forty_plus_work_units() -> None:
+    from application.runtime_project_planner import ProjectPlanningRequest
+
+    request = ProjectOrchestrationRequest(objective="Large governed project")
+    planning = ProjectPlanningRequest(objective="Large governed project")
+
+    assert request.max_work_units == 64
+    assert planning.max_work_units == 64

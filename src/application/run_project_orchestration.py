@@ -106,7 +106,7 @@ class ProjectOrchestrationRequest:
     worker_observation_interval_seconds: int = 5
     worker_soft_stall_seconds: int = 90
     worker_stall_overflow_slots: int = 1
-    max_work_units: int = 24
+    max_work_units: int = 64
     max_waves: int = 24
     max_attempts_per_work_unit: int = 2
     max_strategies_per_work_unit: int = 2

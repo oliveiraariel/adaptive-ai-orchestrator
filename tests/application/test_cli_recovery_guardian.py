@@ -34,6 +34,8 @@ def _args(project_root, **overrides):
 def test_orchestrate_parser_enables_auto_supervisor_by_default():
     args = cli.build_parser().parse_args(["orchestrate", "--objective", "x"])
     assert args.auto_supervisor is True
+    assert args.max_work_units == 64
+    assert args.concurrency_mode == "AUTO"
 
 
 def test_guardian_is_detached_targets_same_orchestration_and_keeps_secrets_out_of_argv(
