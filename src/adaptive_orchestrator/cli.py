@@ -997,6 +997,17 @@ def _project_checkpoint_status_payload(
         status = ProjectRunStatus.BLOCKED.value
 
     active = checkpoint.get("active_executions")
+    graph_migrations = checkpoint.get("graph_migrations")
+    migration_ids = (
+        [
+            str(item.get("migration_id"))
+            for item in graph_migrations
+            if isinstance(item, dict) and item.get("migration_id")
+        ]
+        if isinstance(graph_migrations, list)
+        else []
+    )
+    evidence_lineage = checkpoint.get("work_unit_evidence_lineage")
     return {
         "ok": True,
         "mode": "project-status",
@@ -1013,6 +1024,11 @@ def _project_checkpoint_status_payload(
         "active_execution_count": len(active) if isinstance(active, list) else 0,
         "pending_replan": bool(checkpoint.get("pending_replan", False)),
         "replan_count": checkpoint.get("replan_count", 0),
+        "graph_migration_count": len(migration_ids),
+        "graph_migration_ids": migration_ids,
+        "evidence_lineage_work_unit_count": (
+            len(evidence_lineage) if isinstance(evidence_lineage, dict) else 0
+        ),
     }
 
 
