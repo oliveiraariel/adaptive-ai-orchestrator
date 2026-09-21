@@ -877,20 +877,42 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 replan_count=replan_count,
                                 reason=replan_feedback,
                             )
-                            for work_unit_id in sorted(recovery_before):
-                                if (
-                                    work_units[work_unit_id].state
-                                    is WorkUnitState.RECOVERY_REQUIRED
-                                ):
-                                    _retry_or_suspend_recovery(
-                                        work_unit_id,
-                                        reason="replan-no-structural-progress",
-                                        guidance=replan_feedback,
+                            if persistent_recovery_active:
+                                per_epoch_limit = max(1, request.max_replans)
+                                for work_unit_id in recovery_before:
+                                    recovery_replans_in_epoch[work_unit_id] += 1
+                                retry_planner = any(
+                                    recovery_replans_in_epoch[work_unit_id]
+                                    < per_epoch_limit
+                                    for work_unit_id in recovery_before
+                                    if (
+                                        work_units[work_unit_id].state
+                                        is WorkUnitState.RECOVERY_REQUIRED
                                     )
-                            pending_replan = any(
-                                item.state is WorkUnitState.RECOVERY_REQUIRED
-                                for item in work_units.values()
-                            )
+                                )
+                                if retry_planner:
+                                    pending_replan = True
+                                    persist()
+                                    continue
+                                for work_unit_id in sorted(recovery_before):
+                                    if (
+                                        work_units[work_unit_id].state
+                                        is WorkUnitState.RECOVERY_REQUIRED
+                                    ):
+                                        _retry_or_suspend_recovery(
+                                            work_unit_id,
+                                            reason="replan-no-structural-progress",
+                                            guidance=replan_feedback,
+                                        )
+                                pending_replan = any(
+                                    item.state is WorkUnitState.RECOVERY_REQUIRED
+                                    for item in work_units.values()
+                                )
+                            else:
+                                pending_replan = (
+                                    request.max_replans > 0
+                                    and replan_count < request.max_replans
+                                )
                             persist()
                             continue
                         except (
@@ -909,20 +931,23 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 replan_count=replan_count,
                                 reason=replan_feedback,
                             )
-                            for work_unit_id in sorted(recovery_before):
-                                if (
-                                    work_units[work_unit_id].state
-                                    is WorkUnitState.RECOVERY_REQUIRED
-                                ):
-                                    _retry_or_suspend_recovery(
-                                        work_unit_id,
-                                        reason="planner-transient-failure",
-                                        guidance=replan_feedback,
-                                    )
-                            pending_replan = any(
-                                item.state is WorkUnitState.RECOVERY_REQUIRED
-                                for item in work_units.values()
-                            )
+                            if persistent_recovery_active:
+                                for work_unit_id in sorted(recovery_before):
+                                    if (
+                                        work_units[work_unit_id].state
+                                        is WorkUnitState.RECOVERY_REQUIRED
+                                    ):
+                                        _retry_or_suspend_recovery(
+                                            work_unit_id,
+                                            reason="planner-transient-failure",
+                                            guidance=replan_feedback,
+                                        )
+                                pending_replan = any(
+                                    item.state is WorkUnitState.RECOVERY_REQUIRED
+                                    for item in work_units.values()
+                                )
+                            else:
+                                pending_replan = False
                             persist()
                             continue
 
