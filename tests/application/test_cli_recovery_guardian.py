@@ -36,7 +36,46 @@ def test_orchestrate_parser_enables_auto_supervisor_by_default():
     assert args.auto_supervisor is True
     assert args.max_work_units == 64
     assert args.concurrency_mode == "AUTO"
+    assert args.recovery_loop_mode == "AUTO"
+    assert args.acceptance_mode == "AUTO"
+    assert args.max_idle_without_worker_seconds == 30
+    assert args.recovery_human_consultation is True
 
+
+
+
+def test_plain_language_recovery_loop_directive_is_resolved_from_objective():
+    disabled = cli.build_parser().parse_args(
+        [
+            "orchestrate",
+            "--objective",
+            "Ajuste o frontend e realize sem Recovery loop.",
+        ]
+    )
+    enabled = cli.build_parser().parse_args(
+        [
+            "orchestrate",
+            "--objective",
+            "Ajuste o frontend com recovery loop.",
+        ]
+    )
+
+    assert cli._resolve_recovery_loop_mode(disabled).value == "DISABLED"
+    assert cli._resolve_recovery_loop_mode(enabled).value == "ENABLED"
+
+
+def test_explicit_recovery_loop_flag_overrides_prompt_wording():
+    args = cli.build_parser().parse_args(
+        [
+            "orchestrate",
+            "--objective",
+            "Realizar sem recovery loop.",
+            "--recovery-loop-mode",
+            "ENABLED",
+        ]
+    )
+
+    assert cli._resolve_recovery_loop_mode(args).value == "ENABLED"
 
 def test_guardian_is_detached_targets_same_orchestration_and_keeps_secrets_out_of_argv(
     tmp_path,

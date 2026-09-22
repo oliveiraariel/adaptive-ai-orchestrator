@@ -38,6 +38,7 @@ class RecoveryStrategyAnalysis:
     human_decision_required: bool
     external_research_required: bool
     confidence: float
+    human_question: str = ""
 
     @property
     def recommended_path(self) -> CandidateRecoveryPath | None:
@@ -57,6 +58,8 @@ class RecoveryStrategyAnalysis:
             f"external_research_required={str(self.external_research_required).lower()}",
             f"confidence={self.confidence:.2f}",
         ]
+        if self.human_question.strip():
+            lines.append(f"human_question={self.human_question.strip()}")
         if self.previous_path_failures:
             lines.append("previous_path_failures:")
             lines.extend(f"- {item}" for item in self.previous_path_failures)

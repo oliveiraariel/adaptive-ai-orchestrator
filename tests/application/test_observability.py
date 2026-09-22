@@ -90,6 +90,40 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         confidence=0.9,
     )
     sink.emit(
+        "work_unit_practical_test_ready",
+        orchestration_id="orch-1",
+        work_unit_id="wu-ui",
+        execution_id="exec-ui",
+        wave=7,
+        status="COMPLETED",
+        verdict="ACCEPTED",
+    )
+    sink.emit(
+        "work_unit_recovery_skipped",
+        orchestration_id="orch-1",
+        work_unit_id="wu-returned",
+        status="BLOCKED",
+        reason="recovery-loop-disabled",
+    )
+    sink.emit(
+        "recovery_human_question_requested",
+        orchestration_id="orch-1",
+        work_unit_id="wu-recovery",
+        recovery_epoch=3,
+        question="Qual comportamento visual deve prevalecer?",
+        suggested_skills=["grill", "grill-me"],
+        status="WAIT_HUMAN",
+    )
+    sink.emit(
+        "orchestration_idle_watchdog_triggered",
+        orchestration_id="orch-1",
+        idle_seconds=31.5,
+        active_execution_count=0,
+        ready_work_unit_count=2,
+        pending_replan=False,
+        recovery_loop_mode="DISABLED",
+    )
+    sink.emit(
         "automatic_learning_triggered",
         orchestration_id="orch-1",
         work_unit_id="wu-1",
@@ -119,6 +153,10 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         "worker_recovered",
         "work_unit_reconciled",
         "recovery_strategy_analyzed",
+        "work_unit_practical_test_ready",
+        "work_unit_recovery_skipped",
+        "recovery_human_question_requested",
+        "orchestration_idle_watchdog_triggered",
         "automatic_learning_triggered",
         "orchestration_paused",
         "orchestration_supervisor_started",
@@ -126,7 +164,11 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
     assert events[1]["reconciled_by_work_unit_id"] == "wu-fix"
     assert events[2]["incident_id"] == "INC-1"
     assert events[2]["recovery_epoch"] == 2
-    assert events[3]["targets"] == [
+    assert events[3]["work_unit_id"] == "wu-ui"
+    assert events[5]["question"].startswith("Qual comportamento")
+    assert events[5]["suggested_skills"] == ["grill", "grill-me"]
+    assert events[6]["idle_seconds"] == 31.5
+    assert events[7]["targets"] == [
         "adaptive:problem-solving",
         "skills:debugging",
     ]

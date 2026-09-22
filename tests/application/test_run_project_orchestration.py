@@ -11,7 +11,9 @@ from application.continuous_project_orchestration import (
     RunContinuousProjectOrchestration,
 )
 from application.run_project_orchestration import (
+    AcceptanceMode,
     ConcurrencyMode,
+    RecoveryLoopMode,
     ProjectOrchestrationRequest,
     ProjectRunStatus,
 )
@@ -211,6 +213,8 @@ def run(
     max_strategies: int = 2,
     max_replans: int = 2,
     max_waves: int = 24,
+    recovery_loop_mode: RecoveryLoopMode = RecoveryLoopMode.ENABLED,
+    acceptance_mode: AcceptanceMode = AcceptanceMode.STRICT,
 ):
     actual_planner = planner or StaticPlanner(plan)
     result = RunContinuousProjectOrchestration(
@@ -233,10 +237,100 @@ def run(
             max_strategies_per_work_unit=max_strategies,
             max_replans=max_replans,
             max_waves=max_waves,
+            recovery_loop_mode=recovery_loop_mode,
+            acceptance_mode=acceptance_mode,
             plan=plan,
         )
     )
     return result, actual_planner
+
+
+
+
+def test_practical_frontend_partial_is_released_for_real_world_testing() -> None:
+    plan = ProjectExecutionPlan(
+        summary="frontend practical delivery",
+        work_units=(
+            wu("frontend-card", role="frontend"),
+            wu("next-independent", role="backend"),
+        ),
+    )
+    partial = (
+        "Implementation is usable but final visual inspection is pending.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: confirm visual spacing in real browser"
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "frontend-card": partial,
+            "next-independent": "done",
+        },
+        result_refs={
+            "frontend-card": "/tmp/result/frontend-card/manifest.json",
+        },
+    )
+
+    result, _ = run(
+        plan,
+        runtime,
+        acceptance_mode=AcceptanceMode.AUTO,
+        max_attempts=2,
+        max_strategies=2,
+    )
+
+    assert result.status is ProjectRunStatus.COMPLETED
+    record = next(
+        item for item in result.records if item.work_unit_id == "frontend-card"
+    )
+    assert record.verdict == "ACCEPTED"
+    assert record.reason == "practical-test-ready"
+    assert len(
+        [task for task in runtime.tasks if task.work_unit_id == "frontend-card"]
+    ) == 1
+
+
+def test_recovery_disabled_defers_returned_unit_and_continues_independent_work() -> None:
+    plan = ProjectExecutionPlan(
+        summary="no recovery loop bulkhead",
+        work_units=(
+            wu("returned-worker", role="backend"),
+            wu("healthy-worker", role="backend"),
+        ),
+    )
+    partial = (
+        "Still incomplete.\n"
+        "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: unresolved backend item"
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "returned-worker": partial,
+            "healthy-worker": "healthy",
+        }
+    )
+
+    result, planner = run(
+        plan,
+        runtime,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        acceptance_mode=AcceptanceMode.STRICT,
+        max_attempts=2,
+        max_strategies=2,
+    )
+
+    assert "healthy-worker" in result.completed_work_unit_ids
+    assert "returned-worker" in result.blocked_work_unit_ids
+    assert result.recovery_required_work_unit_ids == ()
+    assert planner.replan_calls == 0
+    assert len(
+        [task for task in runtime.tasks if task.work_unit_id == "returned-worker"]
+    ) == 1
+    returned_record = next(
+        item for item in result.records if item.work_unit_id == "returned-worker"
+    )
+    assert returned_record.reason.startswith("recovery-loop-disabled:")
 
 
 def test_contract_unlocks_parallel_backend_frontend_then_fan_in() -> None:

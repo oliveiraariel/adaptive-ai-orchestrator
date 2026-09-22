@@ -91,6 +91,21 @@ class ConcurrencyMode(str, Enum):
     FIXED = "FIXED"
 
 
+class RecoveryLoopMode(str, Enum):
+    """Whether returned work enters Adaptive's strategist-guided recovery loop."""
+
+    ENABLED = "ENABLED"
+    DISABLED = "DISABLED"
+
+
+class AcceptanceMode(str, Enum):
+    """How aggressively ordinary implementation work may be released for testing."""
+
+    AUTO = "AUTO"
+    STRICT = "STRICT"
+    PRACTICAL_TEST = "PRACTICAL_TEST"
+
+
 @dataclass(frozen=True)
 class ProjectOrchestrationRequest:
     objective: str
@@ -112,6 +127,10 @@ class ProjectOrchestrationRequest:
     max_strategies_per_work_unit: int = 2
     max_replans: int = 2
     persistent_recovery: bool = False
+    recovery_loop_mode: RecoveryLoopMode = RecoveryLoopMode.ENABLED
+    acceptance_mode: AcceptanceMode = AcceptanceMode.AUTO
+    max_idle_without_worker_seconds: int = 30
+    recovery_human_consultation: bool = True
     max_recovery_epochs: int = 0
     max_stalled_recovery_cycles: int = 3
     pragmatic_low_criticality_acceptance: bool = True
@@ -129,6 +148,16 @@ class ProjectOrchestrationRequest:
             raise ValueError("Project orchestration agent must not be blank.")
         if not isinstance(self.concurrency_mode, ConcurrencyMode):
             raise ValueError("concurrency_mode must be AUTO or FIXED.")
+        if not isinstance(self.recovery_loop_mode, RecoveryLoopMode):
+            raise ValueError("recovery_loop_mode must be ENABLED or DISABLED.")
+        if not isinstance(self.acceptance_mode, AcceptanceMode):
+            raise ValueError(
+                "acceptance_mode must be AUTO, STRICT, or PRACTICAL_TEST."
+            )
+        if self.max_idle_without_worker_seconds < 1 or self.max_idle_without_worker_seconds > 3600:
+            raise ValueError(
+                "max_idle_without_worker_seconds must be between 1 and 3600."
+            )
         if self.max_concurrency < 1 or self.max_concurrency > 32:
             raise ValueError("max_concurrency must be between 1 and 32.")
         if (
@@ -446,6 +475,11 @@ class RunProjectOrchestration:
                     orchestration_id=orchestration_id,
                     attempts=attempts[work_unit_id],
                     max_attempts=request.max_attempts_per_work_unit,
+                    practical_test_acceptance=(
+                        self._practical_test_acceptance_enabled(
+                            request, specs[work_unit_id]
+                        )
+                    ),
                 )
                 records.append(record)
                 if record.output:
@@ -846,6 +880,7 @@ class RunProjectOrchestration:
         max_attempts: int,
         enforce_attempt_circuit_breaker: bool = True,
         pragmatic_low_criticality_acceptance: bool = False,
+        practical_test_acceptance: bool = False,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -947,6 +982,27 @@ class RunProjectOrchestration:
         elif verdict is EvaluationVerdict.ACCEPTED:
             reason = "accepted"
 
+        # PRACTICAL_TEST is deliberately a delivery-mode acceptance, not a claim
+        # that every visual/subtle criterion was objectively proven. For ordinary
+        # low-criticality frontend/UI work, a transport-verified runtime completion
+        # with no genuine blocker is enough to release the implementation for
+        # real-browser/human testing and to unblock independent downstream work.
+        # Explicit runtime/environment/authority/human/planning blockers remain
+        # non-acceptable, as do blocking incidents.
+        if (
+            practical_test_acceptance
+            and spec.criticality == 0
+            and runtime_status is AgentRuntimeStatus.COMPLETED
+            and result_authoritative
+            and result_ref
+            and not incident_requires_replan
+            and not completion.is_genuine_blocker
+            and not completion.is_recoverable_planning_blocker
+        ):
+            if verdict is not EvaluationVerdict.ACCEPTED:
+                verdict = EvaluationVerdict.ACCEPTED
+                reason = "practical-test-ready"
+
         finalized = FinalizeExecution(self._claims).execute(
             FinalizeExecutionRequest(
                 work_unit=work_unit,
@@ -995,6 +1051,44 @@ class RunProjectOrchestration:
                 or incident_requires_replan
                 or (accepted and self.REPLAN_MARKER in output)
             ),
+        )
+
+    @staticmethod
+    def _practical_test_acceptance_enabled(
+        request: ProjectOrchestrationRequest,
+        spec: PlannedWorkUnit,
+    ) -> bool:
+        if request.acceptance_mode is AcceptanceMode.STRICT:
+            return False
+        if request.acceptance_mode is AcceptanceMode.PRACTICAL_TEST:
+            return spec.criticality == 0
+
+        # AUTO intentionally targets ordinary frontend/UI implementation only.
+        # Backend/data/critical work stays on the strict evidence path unless the
+        # caller explicitly selects PRACTICAL_TEST.
+        text = " ".join(
+            (
+                spec.role,
+                spec.objective,
+                spec.scope,
+                *spec.requested_skills,
+            )
+        ).casefold()
+        frontend_markers = (
+            "frontend",
+            "front-end",
+            "web-frontend",
+            "interface",
+            "visual",
+            "ui ",
+            " ui",
+            "layout",
+            "view",
+            "agenda",
+            "table",
+        )
+        return spec.criticality == 0 and any(
+            marker in text for marker in frontend_markers
         )
 
     def _incident_signal_constraint(self) -> str:

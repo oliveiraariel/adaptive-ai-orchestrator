@@ -48,6 +48,7 @@ class JsonlObservabilitySink:
         "concurrency_mode", "configured_max_concurrency",
         "effective_concurrency_limit", "ready_work_unit_count",
         "active_execution_count", "soft_stalled_worker_count", "elapsed_seconds",
+        "idle_seconds", "recovery_loop_mode", "question", "suggested_skills",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -57,11 +58,14 @@ class JsonlObservabilitySink:
         "worker_soft_stall_observed", "orchestration_concurrency_adjusted",
         "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
         "work_unit_recovery_retry", "work_unit_recovery_suspended",
+        "work_unit_recovery_skipped", "work_unit_practical_test_ready",
+        "recovery_human_question_requested",
         "automatic_learning_triggered", "automatic_learning_failed",
         "orchestration_paused", "orchestration_supervisor_started",
         "recovery_plan_rejected", "recovery_strategy_failed", "model_failover",
         "orchestration_heartbeat", "orchestration_terminalized",
-        "orchestration_recovery_yielded", "orchestration_completed",
+        "orchestration_recovery_yielded", "orchestration_idle_watchdog_triggered",
+        "orchestration_completed",
     }
 
     def __init__(self, path: str | Path, session_id: str | None = None) -> None:
@@ -82,7 +86,8 @@ class JsonlObservabilitySink:
             "worker_soft_stall_observed",
             "worker_recovered", "work_unit_reconciled", "recovery_strategy_analyzed",
             "recovery_strategy_failed", "work_unit_recovery_retry",
-            "work_unit_recovery_suspended",
+            "work_unit_recovery_suspended", "work_unit_recovery_skipped",
+            "work_unit_practical_test_ready", "recovery_human_question_requested",
             "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (
