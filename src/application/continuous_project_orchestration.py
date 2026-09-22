@@ -19,7 +19,9 @@ from application.execution_coordinator import (
     WorkAssignment,
 )
 from application.run_project_orchestration import (
+    AcceptanceMode,
     ConcurrencyMode,
+    RecoveryLoopMode,
     ParallelWaveRecord,
     ProjectOrchestrationError,
     RecoveryPlanTopologyError,
@@ -291,6 +293,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         last_effective_concurrency_limit: int | None = None
         recovery_yield_requested = False
         recovery_yield_reason = ""
+        last_productive_activity_at = time.monotonic()
 
         def persist(*, terminal: bool = False) -> None:
             self._save_checkpoint(
@@ -589,6 +592,71 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     < self._effective_wave_budget(request, len(work_units))
                 )
 
+                # Heartbeat is not progress. When there is actionable work and no
+                # worker is active, 30s (configurable) is a watchdog ceiling, not
+                # an intentional idle period. The loop immediately continues into
+                # dispatch/recovery; the event makes any breach externally visible.
+                actionable_without_worker = bool(
+                    not active
+                    and not pause_requested
+                    and (dispatchable_before_control or pending_replan)
+                )
+                idle_seconds = time.monotonic() - last_productive_activity_at
+                if (
+                    actionable_without_worker
+                    and idle_seconds >= request.max_idle_without_worker_seconds
+                ):
+                    observability.emit(
+                        "orchestration_idle_watchdog_triggered",
+                        orchestration_id=orchestration_id,
+                        idle_seconds=round(idle_seconds, 3),
+                        active_execution_count=0,
+                        ready_work_unit_count=len(dispatchable_before_control),
+                        pending_replan=pending_replan,
+                        recovery_loop_mode=request.recovery_loop_mode.value,
+                    )
+                    last_productive_activity_at = time.monotonic()
+
+                # A recovery-disabled run never enters strategist/replan churn for
+                # returned work. Legacy RECOVERY_REQUIRED state is isolated and
+                # independent work is allowed to continue.
+                if (
+                    request.recovery_loop_mode is RecoveryLoopMode.DISABLED
+                    and pending_replan
+                    and not active
+                ):
+                    changed = False
+                    for work_unit_id, work_unit in work_units.items():
+                        if work_unit.state is not WorkUnitState.RECOVERY_REQUIRED:
+                            continue
+                        work_unit.mark_blocked()
+                        records.append(
+                            WorkUnitExecutionRecord(
+                                work_unit_id=work_unit_id,
+                                role=specs[work_unit_id].role,
+                                wave=dispatch_generation + 1,
+                                attempt=attempts[work_unit_id],
+                                status=WorkUnitState.BLOCKED.value,
+                                skills=skill_sets[work_unit_id],
+                                verdict=EvaluationVerdict.BLOCKED.value,
+                                reason="recovery-loop-disabled:deferred",
+                                strategy=strategy_generations[work_unit_id],
+                            )
+                        )
+                        observability.emit(
+                            "work_unit_recovery_skipped",
+                            orchestration_id=orchestration_id,
+                            work_unit_id=work_unit_id,
+                            status="BLOCKED",
+                            reason="recovery-loop-disabled",
+                        )
+                        changed = True
+                    pending_replan = False
+                    if changed:
+                        last_productive_activity_at = time.monotonic()
+                    persist()
+                    continue
+
                 # A replan signal is itself pending orchestration work. Process it
                 # before declaring the current graph terminal only when there is
                 # no independent functional work ready to run.
@@ -604,6 +672,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     }
                     persistent_recovery_active = bool(
                         recovery_before
+                        and request.recovery_loop_mode is RecoveryLoopMode.ENABLED
                         and request.persistent_recovery
                         and self._persistent_recovery is not None
                     )
@@ -732,6 +801,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             recovery_guidance[work_unit_id] = (
                                 cycle.analysis.planner_guidance()
                             )
+                            last_productive_activity_at = time.monotonic()
                             observability.emit(
                                 "recovery_strategy_analyzed",
                                 orchestration_id=orchestration_id,
@@ -1229,6 +1299,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 active[future] = (outcome, generation)
                                 active_by_id[outcome.work_unit_id] = outcome
                                 active_started_at[outcome.work_unit_id] = time.time()
+                                last_productive_activity_at = time.monotonic()
                                 soft_stalled_ids.discard(outcome.work_unit_id)
                                 stall_notified_ids.discard(outcome.work_unit_id)
                                 spec = specs[outcome.work_unit_id]
@@ -1301,9 +1372,46 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 max_attempts=request.max_attempts_per_work_unit,
                                 max_strategies=request.max_strategies_per_work_unit,
                             )
+                            if (
+                                request.recovery_loop_mode
+                                is RecoveryLoopMode.DISABLED
+                                and work_units[work_unit_id].state
+                                in {
+                                    WorkUnitState.REVISION_REQUIRED,
+                                    WorkUnitState.RECOVERY_REQUIRED,
+                                }
+                            ):
+                                work_units[work_unit_id].mark_blocked()
+                                records.append(
+                                    WorkUnitExecutionRecord(
+                                        work_unit_id=work_unit_id,
+                                        role=specs[work_unit_id].role,
+                                        wave=generation,
+                                        attempt=attempts[work_unit_id],
+                                        status=WorkUnitState.BLOCKED.value,
+                                        skills=skill_sets[work_unit_id],
+                                        verdict=EvaluationVerdict.BLOCKED.value,
+                                        reason=(
+                                            "recovery-loop-disabled:"
+                                            "runtime-result-error"
+                                        ),
+                                        strategy=strategy_generations[
+                                            work_unit_id
+                                        ],
+                                    )
+                                )
+                                observability.emit(
+                                    "work_unit_recovery_skipped",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    status="BLOCKED",
+                                    reason="runtime-result-error",
+                                )
+                                runtime_recovery_signal = False
                             pending_replan = (
                                 pending_replan or runtime_recovery_signal
                             )
+                            last_productive_activity_at = time.monotonic()
                             persist()
                             continue
 
@@ -1323,17 +1431,66 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 request.pragmatic_low_criticality_acceptance
                                 and not request.execution_policy.require_independent_review
                             ),
+                            practical_test_acceptance=(
+                                self._practical_test_acceptance_enabled(
+                                    request, specs[work_unit_id]
+                                )
+                            ),
                         )
-                        record, recovery_signal = self._apply_strategy_exhaustion(
-                            record=record,
-                            work_unit=work_units[work_unit_id],
-                            attempts=attempts,
-                            strategy_generations=strategy_generations,
-                            work_unit_id=work_unit_id,
-                            max_attempts=request.max_attempts_per_work_unit,
-                            max_strategies=request.max_strategies_per_work_unit,
-                        )
+                        if (
+                            request.recovery_loop_mode
+                            is RecoveryLoopMode.DISABLED
+                            and record.verdict
+                            != EvaluationVerdict.ACCEPTED.value
+                            and work_units[work_unit_id].state
+                            in {
+                                WorkUnitState.REVISION_REQUIRED,
+                                WorkUnitState.RECOVERY_REQUIRED,
+                            }
+                        ):
+                            work_units[work_unit_id].mark_blocked()
+                            record = replace(
+                                record,
+                                status=WorkUnitState.BLOCKED.value,
+                                verdict=EvaluationVerdict.BLOCKED.value,
+                                reason=(
+                                    "recovery-loop-disabled:"
+                                    + (record.reason or "returned")
+                                ),
+                            )
+                            recovery_signal = False
+                            # A planning/recovery return must not keep the control
+                            # plane pending when recovery is explicitly disabled.
+                            replan_signal = False
+                            observability.emit(
+                                "work_unit_recovery_skipped",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id,
+                                status="BLOCKED",
+                                reason=record.reason,
+                            )
+                        else:
+                            record, recovery_signal = self._apply_strategy_exhaustion(
+                                record=record,
+                                work_unit=work_units[work_unit_id],
+                                attempts=attempts,
+                                strategy_generations=strategy_generations,
+                                work_unit_id=work_unit_id,
+                                max_attempts=request.max_attempts_per_work_unit,
+                                max_strategies=request.max_strategies_per_work_unit,
+                            )
                         records.append(record)
+                        last_productive_activity_at = time.monotonic()
+                        if record.reason == "practical-test-ready":
+                            observability.emit(
+                                "work_unit_practical_test_ready",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=record.work_unit_id,
+                                execution_id=record.execution_id,
+                                wave=record.wave,
+                                status=record.status,
+                                verdict=record.verdict,
+                            )
                         observability.emit(
                             "work_unit_status_changed", orchestration_id=orchestration_id,
                             work_unit_id=record.work_unit_id, execution_id=record.execution_id,
@@ -1877,6 +2034,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "max_strategies_per_work_unit": request.max_strategies_per_work_unit,
             "max_replans": request.max_replans,
             "persistent_recovery": request.persistent_recovery,
+            "recovery_loop_mode": request.recovery_loop_mode.value,
+            "acceptance_mode": request.acceptance_mode.value,
+            "max_idle_without_worker_seconds": (
+                request.max_idle_without_worker_seconds
+            ),
+            "recovery_human_consultation": request.recovery_human_consultation,
             "max_recovery_epochs": request.max_recovery_epochs,
             "max_stalled_recovery_cycles": request.max_stalled_recovery_cycles,
             "pragmatic_low_criticality_acceptance": (
@@ -2011,6 +2174,22 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 ),
                 max_replans=cls._require_nonnegative_int(raw, "max_replans"),
                 persistent_recovery=bool(raw.get("persistent_recovery", False)),
+                recovery_loop_mode=RecoveryLoopMode(
+                    str(raw.get("recovery_loop_mode") or RecoveryLoopMode.ENABLED.value)
+                ),
+                acceptance_mode=AcceptanceMode(
+                    str(raw.get("acceptance_mode") or AcceptanceMode.AUTO.value)
+                ),
+                max_idle_without_worker_seconds=(
+                    cls._require_nonnegative_int(
+                        raw, "max_idle_without_worker_seconds"
+                    )
+                    if "max_idle_without_worker_seconds" in raw
+                    else 30
+                ),
+                recovery_human_consultation=bool(
+                    raw.get("recovery_human_consultation", True)
+                ),
                 max_recovery_epochs=(
                     cls._require_nonnegative_int(raw, "max_recovery_epochs")
                     if "max_recovery_epochs" in raw
