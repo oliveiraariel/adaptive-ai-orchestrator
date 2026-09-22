@@ -83,6 +83,11 @@ class RuntimeRecoveryStrategist:
                     "debugging",
                     "technical-research",
                     "work-decomposition",
+                    # Optional OpenClaw recovery-dialogue skills. They are hints,
+                    # not hard capabilities; the strategist still works when the
+                    # runtime does not materialize them.
+                    "grill",
+                    "grill-me",
                 ),
                 scope="Read-only recovery strategy analysis. Do not modify project files.",
                 context=(
@@ -125,8 +130,11 @@ class RuntimeRecoveryStrategist:
             "external_research_required",
             "confidence",
         }
-        if set(payload) != required:
-            raise RecoveryStrategyError("Recovery strategist JSON has an unexpected shape")
+        if not required.issubset(payload):
+            missing = ", ".join(sorted(required - set(payload)))
+            raise RecoveryStrategyError(
+                "Recovery strategist JSON is missing required fields: " + missing
+            )
 
         for key in ("failure_class", "problem_summary", "recommended_path_id", "disposition", "work_graph_guidance"):
             if not isinstance(payload[key], str):
@@ -169,8 +177,11 @@ class RuntimeRecoveryStrategist:
                 "expected_evidence",
                 "external_research",
             }
-            if set(row) != required_path:
-                raise RecoveryStrategyError("candidate path has an unexpected shape")
+            if not required_path.issubset(row):
+                missing = ", ".join(sorted(required_path - set(row)))
+                raise RecoveryStrategyError(
+                    "candidate path is missing required fields: " + missing
+                )
             for key in ("id", "title", "rationale", "novelty"):
                 if not isinstance(row[key], str) or not row[key].strip():
                     raise RecoveryStrategyError(f"candidate path {key} must be non-empty")
@@ -209,6 +220,12 @@ class RuntimeRecoveryStrategist:
         }:
             raise RecoveryStrategyError("a recovery disposition with candidate paths needs a recommendation")
 
+        human_question = payload.get("human_question", "")
+        if human_question is None:
+            human_question = ""
+        if not isinstance(human_question, str):
+            raise RecoveryStrategyError("human_question must be a string when provided")
+
         return RecoveryStrategyAnalysis(
             failure_class=payload["failure_class"].strip(),
             problem_summary=payload["problem_summary"].strip(),
@@ -222,6 +239,7 @@ class RuntimeRecoveryStrategist:
             human_decision_required=payload["human_decision_required"],
             external_research_required=payload["external_research_required"],
             confidence=confidence,
+            human_question=human_question.strip(),
         )
 
     @staticmethod
@@ -233,7 +251,11 @@ class RuntimeRecoveryStrategist:
             "that is not merely waiting on another dependency. Reanalyze the problem "
             "from first principles and propose materially different safe paths. "
             "You are an analyst only: return organization and options to the "
-            "orchestrator; do not implement or dispatch.\n\n"
+            "orchestrator; do not implement or dispatch. When one concise answer "
+            "from the developer could materially improve the next attempt, use a "
+            "grill/grill-me style question: set disposition WAIT_HUMAN, "
+            "human_decision_required=true, and populate human_question. Do not ask "
+            "for information the repository/runtime can discover itself.\n\n"
             f"PROJECT OBJECTIVE:\n{request.project_objective}\n\n"
             f"WORK UNIT {request.work_unit_id}:\n{request.work_unit_objective}\n\n"
             f"CURRENT STATE:\n{request.state_summary}\n\n"
@@ -251,5 +273,6 @@ class RuntimeRecoveryStrategist:
               '"disposition":"REPLAN_WITH_PREREQUISITE",'
               '"work_graph_guidance":"...",'
               '"human_decision_required":false,'
+              '"human_question":"",'
               '"external_research_required":false,"confidence":0.8}'
         )
