@@ -30,7 +30,9 @@ from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
 from application.run_project_orchestration import (
+    AcceptanceMode,
     ConcurrencyMode,
+    RecoveryLoopMode,
     ProjectOrchestrationError,
     ProjectOrchestrationRequest,
     ProjectRunStatus,
@@ -341,6 +343,45 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--max-replans", type=int, default=2)
     parser.add_argument(
+        "--recovery-loop-mode",
+        choices=("AUTO", RecoveryLoopMode.ENABLED.value, RecoveryLoopMode.DISABLED.value),
+        default="AUTO",
+        help=(
+            "AUTO recognizes plain-language directives such as 'sem recovery loop' "
+            "or 'com recovery loop' inside the project objective/constraints. "
+            "ENABLED/DISABLED force the policy explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--acceptance-mode",
+        choices=[item.value for item in AcceptanceMode],
+        default=AcceptanceMode.AUTO.value,
+        help=(
+            "AUTO releases ordinary low-criticality frontend/UI work for practical "
+            "testing when runtime/result integrity is sound; STRICT requires normal "
+            "criterion acceptance; PRACTICAL_TEST applies the practical gate to all "
+            "low-criticality work."
+        ),
+    )
+    parser.add_argument(
+        "--max-idle-without-worker-seconds",
+        type=int,
+        default=30,
+        help=(
+            "Watchdog ceiling for RUNNING orchestration with actionable work but "
+            "no active worker/progress. Heartbeat alone is not progress."
+        ),
+    )
+    parser.add_argument(
+        "--recovery-human-consultation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Allow Recovery Strategist to formulate a concise user question when "
+            "human context could materially improve the next recovery attempt."
+        ),
+    )
+    parser.add_argument(
         "--persistent-recovery",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -368,6 +409,44 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dependency-context-chars", type=int, default=6000)
     _add_policy_arguments(parser)
     _add_gateway_arguments(parser)
+
+
+def _resolve_recovery_loop_mode(args: argparse.Namespace) -> RecoveryLoopMode:
+    explicit = str(getattr(args, "recovery_loop_mode", "AUTO") or "AUTO").upper()
+    if explicit != "AUTO":
+        return RecoveryLoopMode(explicit)
+
+    text = " ".join(
+        (
+            str(getattr(args, "objective", "") or ""),
+            *(str(item) for item in getattr(args, "constraint", ()) or ()),
+        )
+    ).casefold()
+    disabled_phrases = (
+        "sem recovery loop",
+        "sem o recovery loop",
+        "recovery loop desativado",
+        "recovery loop desligado",
+        "without recovery loop",
+        "disable recovery loop",
+    )
+    enabled_phrases = (
+        "com recovery loop",
+        "com o recovery loop",
+        "recovery loop ativado",
+        "recovery loop ligado",
+        "with recovery loop",
+        "enable recovery loop",
+    )
+    disabled_at = max((text.rfind(item) for item in disabled_phrases), default=-1)
+    enabled_at = max((text.rfind(item) for item in enabled_phrases), default=-1)
+    if disabled_at >= 0 or enabled_at >= 0:
+        return (
+            RecoveryLoopMode.DISABLED
+            if disabled_at > enabled_at
+            else RecoveryLoopMode.ENABLED
+        )
+    return RecoveryLoopMode.ENABLED
 
 
 def _add_policy_arguments(parser: argparse.ArgumentParser) -> None:
@@ -877,6 +956,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 max_strategies_per_work_unit=args.max_strategies,
                 max_replans=args.max_replans,
                 persistent_recovery=args.persistent_recovery,
+                recovery_loop_mode=_resolve_recovery_loop_mode(args),
+                acceptance_mode=AcceptanceMode(args.acceptance_mode),
+                max_idle_without_worker_seconds=(
+                    args.max_idle_without_worker_seconds
+                ),
+                recovery_human_consultation=args.recovery_human_consultation,
                 max_recovery_epochs=args.max_recovery_epochs,
                 recovery_strategist_agent=args.recovery_strategist_agent,
                 learning_after_successful_retest=args.learning_after_successful_retest,
@@ -943,6 +1028,11 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "unfinished_work_unit_ids": list(result.unfinished_work_unit_ids),
                 "max_parallelism_observed": result.max_parallelism_observed,
                 "replan_count": result.replan_count,
+                "recovery_loop_mode": _resolve_recovery_loop_mode(args).value,
+                "acceptance_mode": AcceptanceMode(args.acceptance_mode).value,
+                "max_idle_without_worker_seconds": (
+                    args.max_idle_without_worker_seconds
+                ),
                 "stop_reasons": stop_reasons,
                 "requires_human_decision": requires_human_decision,
                 "incident_reports": incident_reports,
