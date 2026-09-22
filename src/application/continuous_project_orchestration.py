@@ -425,6 +425,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         status=WorkUnitState.BLOCKED.value,
                         skills=skill_sets[work_unit_id],
                         verdict=EvaluationVerdict.BLOCKED.value,
+                        output=guidance.strip(),
                         reason=(
                             "recovery-suspended:"
                             f"{stalled}:{reason}"
@@ -813,6 +814,30 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 confidence=cycle.analysis.confidence,
                             )
                             disposition = cycle.analysis.disposition
+                            human_question = cycle.analysis.human_question.strip()
+                            if (
+                                request.recovery_human_consultation
+                                and human_question
+                            ):
+                                observability.emit(
+                                    "recovery_human_question_requested",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    recovery_epoch=cycle.recovery_epoch,
+                                    question=human_question,
+                                    suggested_skills=["grill", "grill-me"],
+                                    status="WAIT_HUMAN",
+                                )
+                                _retry_or_suspend_recovery(
+                                    work_unit_id,
+                                    reason=(
+                                        "human-question:"
+                                        + " ".join(human_question.split())[:400]
+                                    ),
+                                    guidance=cycle.analysis.planner_guidance(),
+                                    suspend_now=True,
+                                )
+                                continue
                             if (
                                 cycle.analysis.human_decision_required
                                 or disposition
