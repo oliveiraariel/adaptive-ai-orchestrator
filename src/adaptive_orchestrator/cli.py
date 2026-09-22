@@ -48,6 +48,11 @@ from application.work_graph_migration import (
     WorkGraphMigrationService,
     parse_work_graph_migration,
 )
+from application.reconcile_historical_work_unit import (
+    HistoricalWorkUnitReconciliationError,
+    ReconcileHistoricalWorkUnit,
+    ReconciliationDecision,
+)
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from infrastructure.claim_registry import InMemoryClaimRegistry
@@ -67,6 +72,10 @@ from infrastructure.openclaw_gateway_client import (
 )
 from infrastructure.result_store import FileResultStore, ResultStoreError
 from infrastructure.work_graph_migration_store import FileWorkGraphMigrationStore
+from infrastructure.orchestration_control_plane import (
+    FileOrchestrationControlPlane,
+    OrchestrationControlPlaneError,
+)
 from infrastructure.skill_registry_loader import (
     SkillRegistryError,
     load_skill_profiles,
@@ -148,6 +157,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("ADAPTIVE_SESSION_ID"),
     )
     resume_project.add_argument("--skill-registry")
+    resume_project.add_argument(
+        "--recovery-loop-mode",
+        choices=[item.value for item in RecoveryLoopMode],
+        help="Governed override persisted for this resumed orchestration.",
+    )
+    resume_project.add_argument(
+        "--acceptance-mode",
+        choices=[item.value for item in AcceptanceMode],
+        help="Governed override persisted for this resumed orchestration.",
+    )
     _add_gateway_arguments(resume_project)
 
     pause_project = commands.add_parser(
@@ -159,6 +178,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pause_project.add_argument("--orchestration-id", required=True)
     pause_project.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
+    reconcile_work_unit = commands.add_parser(
+        "reconcile-work-unit",
+        help=(
+            "Append an evidence-gated ACCEPTED or PRACTICAL_TEST_READY decision "
+            "to a historical RETURNED Work Unit while paused and quiescent."
+        ),
+    )
+    reconcile_work_unit.add_argument("--orchestration-id", required=True)
+    reconcile_work_unit.add_argument("--work-unit-id", required=True)
+    reconcile_work_unit.add_argument(
+        "--decision",
+        required=True,
+        choices=[item.value.lower().replace("_", "-") for item in ReconciliationDecision],
+    )
+    reconcile_work_unit.add_argument("--reason", required=True)
+    reconcile_work_unit.add_argument("--actor", default="adaptive-cli")
+    reconcile_work_unit.add_argument(
+        "--policy", default="evidence-gated-historical-reconciliation-v1"
+    )
+    reconcile_work_unit.add_argument(
         "--project-root",
         default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
     )
@@ -500,6 +543,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _resume_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
+    if args.command == "reconcile-work-unit":
+        return _reconcile_work_unit(args)
     if args.command == "migrate-work-graph":
         return _migrate_work_graph(args)
     if args.command == "supervise-projects":
@@ -1143,6 +1188,16 @@ def _project_checkpoint_status_payload(
         else []
     )
     evidence_lineage = checkpoint.get("work_unit_evidence_lineage")
+    reconciliation_decisions = checkpoint.get("reconciliation_decisions")
+    practical_test_ready = sorted(
+        {
+            str(item.get("work_unit_id"))
+            for item in reconciliation_decisions
+            if isinstance(item, dict)
+            and item.get("decision") == ReconciliationDecision.PRACTICAL_TEST_READY.value
+            and isinstance(item.get("work_unit_id"), str)
+        }
+    ) if isinstance(reconciliation_decisions, list) else []
     payload = {
         "ok": True,
         "mode": "project-status",
@@ -1160,6 +1215,9 @@ def _project_checkpoint_status_payload(
         "pending_replan": bool(checkpoint.get("pending_replan", False)),
         "replan_count": checkpoint.get("replan_count", 0),
     }
+    if isinstance(reconciliation_decisions, list):
+        payload["practical_test_ready_work_unit_ids"] = practical_test_ready
+        payload["reconciliation_decision_count"] = len(reconciliation_decisions)
     # Keep the legacy project-status surface byte-for-byte compatible for
     # checkpoints that predate Work Graph migration metadata.
     if migration_ids or isinstance(evidence_lineage, dict):
@@ -1183,9 +1241,18 @@ def _project_status(args: argparse.Namespace) -> int:
             raise ProjectOrchestrationError(
                 f"No project checkpoint exists for orchestration '{orchestration_id}'."
             )
+        payload = _project_checkpoint_status_payload(orchestration_id, checkpoint)
+        control = FileOrchestrationControlPlane(
+            project_root=Path(args.project_root).expanduser().resolve()
+        ).load(orchestration_id)
+        if isinstance(control, dict):
+            payload["controller_control_plane_state"] = control.get("state")
+            payload["mutation_authority_released"] = bool(
+                control.get("mutation_authority_released", False)
+            )
         print(
             json.dumps(
-                _project_checkpoint_status_payload(orchestration_id, checkpoint),
+                payload,
                 ensure_ascii=False,
                 sort_keys=True,
             )
@@ -1357,6 +1424,8 @@ def _resume_project(args: argparse.Namespace) -> int:
         args.session_id,
     )
     try:
+        project_root = Path(args.project_root).expanduser().resolve()
+        control_plane = FileOrchestrationControlPlane(project_root=project_root)
         registry_path = (
             Path(args.skill_registry).expanduser().resolve()
             if args.skill_registry
@@ -1382,8 +1451,28 @@ def _resume_project(args: argparse.Namespace) -> int:
             ),
         )
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
-            project_root=Path(args.project_root).expanduser().resolve()
+            project_root=project_root
         )
+        # Preserve the quiescent audit event, then explicitly transfer the
+        # control-plane fence to the new governed controller immediately before
+        # it can transition desired_state back to RUNNING.
+        control_plane.activate(
+            orchestration_id=args.orchestration_id,
+            reason="resume-project:governed-controller-start",
+        )
+
+        def mark_controller_quiescent(orchestration_id: str) -> None:
+            checkpoint = checkpoint_store.load(orchestration_id)
+            if checkpoint is None:
+                raise OrchestrationControlPlaneError(
+                    "Project checkpoint disappeared before controller quiescence."
+                )
+            control_plane.mark_quiescent(
+                orchestration_id=orchestration_id,
+                checkpoint=checkpoint,
+                reason="controller-observed-pause:no-active-executions",
+            )
+
         result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
@@ -1391,9 +1480,20 @@ def _resume_project(args: argparse.Namespace) -> int:
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
             persistent_recovery=persistent_recovery,
+            on_quiescent=mark_controller_quiescent,
         ).resume(
             args.orchestration_id,
             observability=observability,
+            recovery_loop_mode=(
+                RecoveryLoopMode(getattr(args, "recovery_loop_mode", None))
+                if getattr(args, "recovery_loop_mode", None)
+                else None
+            ),
+            acceptance_mode=(
+                AcceptanceMode(getattr(args, "acceptance_mode", None))
+                if getattr(args, "acceptance_mode", None)
+                else None
+            ),
         )
     except (
         OSError,
@@ -1405,6 +1505,7 @@ def _resume_project(args: argparse.Namespace) -> int:
         OpenClawGatewayError,
         ResultStoreError,
         ProjectOrchestrationCheckpointError,
+        OrchestrationControlPlaneError,
         ValueError,
     ) as exc:
         observability.emit(
@@ -1608,7 +1709,18 @@ def _pause_project(args: argparse.Namespace) -> int:
             )
         checkpoint["desired_state"] = "PAUSED"
         store.save(args.orchestration_id, checkpoint)
+        control = FileOrchestrationControlPlane(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
         active = checkpoint.get("active_executions")
+        control_state = "QUIESCING"
+        if isinstance(active, list) and not active:
+            control.mark_quiescent(
+                orchestration_id=args.orchestration_id,
+                checkpoint=checkpoint,
+                reason="pause-project:no-active-executions",
+            )
+            control_state = "QUIESCENT"
         records = checkpoint.get("records")
         print(
             json.dumps(
@@ -1617,6 +1729,8 @@ def _pause_project(args: argparse.Namespace) -> int:
                     "mode": "pause-project",
                     "orchestration_id": args.orchestration_id,
                     "desired_state": "PAUSED",
+                    "controller_control_plane_state": control_state,
+                    "mutation_authority_released": control_state == "QUIESCENT",
                     "active_executions": active if isinstance(active, list) else [],
                     "work_unit_states": checkpoint.get("work_unit_states", {}),
                     "attempts": checkpoint.get("attempts", {}),
@@ -1644,6 +1758,56 @@ def _pause_project(args: argparse.Namespace) -> int:
         OSError,
         ProjectOrchestrationError,
         ProjectOrchestrationCheckpointError,
+        OrchestrationControlPlaneError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
+
+
+def _reconcile_work_unit(args: argparse.Namespace) -> int:
+    try:
+        project_root = Path(args.project_root).expanduser().resolve()
+        decision = ReconciliationDecision(
+            str(args.decision).upper().replace("-", "_")
+        )
+        checkpoints = FileProjectOrchestrationCheckpointStore(project_root=project_root)
+        result = ReconcileHistoricalWorkUnit(
+            project_root=project_root,
+            checkpoint_store=checkpoints,
+            control_plane=FileOrchestrationControlPlane(project_root=project_root),
+        ).execute(
+            orchestration_id=args.orchestration_id,
+            work_unit_id=args.work_unit_id,
+            decision=decision,
+            reason=args.reason,
+            actor=args.actor,
+            policy=args.policy,
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "reconcile-work-unit",
+                    "orchestration_id": result.orchestration_id,
+                    "work_unit_id": result.work_unit_id,
+                    "decision": result.decision.value,
+                    "decision_id": result.decision_id,
+                    "already_reconciled": result.already_reconciled,
+                    "historical_verdict_preserved": "RETURNED",
+                    "source_execution_id": result.source_execution_id,
+                    "source_result_ref": result.source_result_ref,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (
+        OSError,
+        HistoricalWorkUnitReconciliationError,
+        ProjectOrchestrationCheckpointError,
+        OrchestrationControlPlaneError,
+        ResultStoreError,
         ValueError,
     ) as exc:
         return _print_error(exc)

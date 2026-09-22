@@ -4,7 +4,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import replace
 import time
-from typing import Sequence
+from typing import Callable, Sequence
 from uuid import uuid4
 
 from application.agent_runtime import AgentRuntimeResult
@@ -66,10 +66,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         self,
         *args,
         checkpoint_store: ProjectOrchestrationCheckpointStore | None = None,
+        on_quiescent: Callable[[str], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._checkpoint_store = checkpoint_store
+        # The scheduler deliberately depends only on this narrow callback.  The
+        # filesystem control-plane implementation is infrastructure owned by
+        # the CLI, not a dependency of the application scheduler.
+        self._on_quiescent = on_quiescent
 
     def execute(
         self,
@@ -84,6 +89,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         orchestration_id: str,
         *,
         observability: ObservabilitySink | None = None,
+        recovery_loop_mode: RecoveryLoopMode | None = None,
+        acceptance_mode: AcceptanceMode | None = None,
     ) -> ProjectOrchestrationResult:
         if self._checkpoint_store is None:
             raise ProjectOrchestrationError(
@@ -95,9 +102,16 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 f"No project checkpoint exists for orchestration '{orchestration_id}'."
             )
         request = self._request_from_checkpoint(checkpoint)
+        if recovery_loop_mode is not None or acceptance_mode is not None:
+            request = replace(
+                request,
+                recovery_loop_mode=(recovery_loop_mode or request.recovery_loop_mode),
+                acceptance_mode=(acceptance_mode or request.acceptance_mode),
+            )
+            checkpoint["request"] = self._request_to_payload(request)
         if checkpoint.get("desired_state") == "PAUSED":
             checkpoint["desired_state"] = "RUNNING"
-            self._checkpoint_store.save(orchestration_id, checkpoint)
+        self._checkpoint_store.save(orchestration_id, checkpoint)
         return self._execute(
             request,
             observability=observability,
@@ -567,6 +581,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 pause_requested = self._pause_requested(orchestration_id)
                 if pause_requested and not active:
                     persist(terminal=False)
+                    if self._on_quiescent is not None:
+                        self._on_quiescent(orchestration_id)
                     observability.emit(
                         "orchestration_paused",
                         orchestration_id=orchestration_id,
@@ -2030,7 +2046,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         # checkpoint refreshes must preserve it exactly; otherwise the first
         # post-migration resume would erase evidence lineage and migration history.
         if isinstance(existing_checkpoint, dict):
-            for key in ("graph_migrations", "work_unit_evidence_lineage"):
+            for key in (
+                "graph_migrations",
+                "work_unit_evidence_lineage",
+                "reconciliation_decisions",
+            ):
                 if key in existing_checkpoint:
                     payload[key] = deepcopy(existing_checkpoint[key])
         self._checkpoint_store.save(orchestration_id, payload)

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from application.work_graph_migration import WorkGraphMigrationError
+from infrastructure.orchestration_control_plane import (
+    FileOrchestrationControlPlane,
+    OrchestrationControlPlaneError,
+)
 
 
 class FileWorkGraphMigrationStore:
@@ -113,6 +117,19 @@ class FileWorkGraphMigrationStore:
     ) -> tuple[bool, str]:
         if stale_after_seconds <= 0:
             raise ValueError("stale_after_seconds must be positive.")
+        # A governed pause may explicitly release mutation authority while a
+        # legacy diagnostic heartbeat remains ACTIVE.  Heartbeat is not a lease.
+        # Prefer the durable control-plane fence, which is written only after
+        # PAUSED + no active execution have been verified by a supported command.
+        try:
+            if FileOrchestrationControlPlane(
+                project_root=self.project_root
+            ).is_quiescent(orchestration_id):
+                return True, "controller-state:QUIESCENT-control-plane"
+        except OrchestrationControlPlaneError as exc:
+            raise WorkGraphMigrationError(
+                "Controller control-plane record cannot be read safely."
+            ) from exc
         payload = self.controller_liveness(orchestration_id)
         if payload is None:
             return False, "controller-liveness-missing"

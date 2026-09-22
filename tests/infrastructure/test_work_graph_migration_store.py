@@ -8,6 +8,7 @@ import pytest
 
 from application.work_graph_migration import WorkGraphMigrationError
 from infrastructure.work_graph_migration_store import FileWorkGraphMigrationStore
+from infrastructure.orchestration_control_plane import FileOrchestrationControlPlane
 
 
 def test_receipt_is_immutable_and_idempotent(tmp_path) -> None:
@@ -134,3 +135,22 @@ def test_controller_quiescence_rejects_stale_active_heartbeat(tmp_path) -> None:
 
     assert quiescent is False
     assert "heartbeat-stale" in reason
+
+
+def test_governed_quiescence_fence_allows_admin_operation_despite_active_heartbeat(tmp_path) -> None:
+    store = FileWorkGraphMigrationStore(project_root=tmp_path)
+    checkpoint = {"desired_state": "PAUSED", "active_executions": []}
+    FileOrchestrationControlPlane(project_root=tmp_path).mark_quiescent(
+        orchestration_id="orch", checkpoint=checkpoint, reason="test-pause"
+    )
+    digest = hashlib.sha256(b"orch").hexdigest()
+    liveness = tmp_path / ".adaptive" / "orchestration-liveness" / f"{digest}.json"
+    liveness.parent.mkdir(parents=True, exist_ok=True)
+    liveness.write_text(json.dumps({
+        "orchestration_id": "orch", "controller_state": "ACTIVE", "last_heartbeat_at": time.time(),
+    }), encoding="utf-8")
+
+    quiescent, reason = store.controller_quiescence("orch")
+
+    assert quiescent is True
+    assert reason == "controller-state:QUIESCENT-control-plane"

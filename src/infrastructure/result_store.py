@@ -362,6 +362,44 @@ class FileResultStore:
             manifest=manifest,
         )
 
+    def read_manifest_ref(
+        self,
+        *,
+        orchestration_id: str,
+        work_unit_id: str,
+        execution_id: str,
+        manifest_ref: str,
+    ) -> StoredResult:
+        """Read one persisted manifest reference through the normal verifier.
+
+        Administrative reconciliation must never trust a checkpoint pointer by
+        itself.  This method rejects paths outside this project-local Result
+        Store and then applies the exact same integrity checks as runtime
+        consumption, without writing anything.
+        """
+        reference = Path(manifest_ref).expanduser()
+        if not reference.is_absolute():
+            if self.project_root is None:
+                raise ResultStoreError("Relative manifest reference requires project root.")
+            reference = self.project_root / reference
+        try:
+            resolved = reference.resolve(strict=True)
+        except OSError as exc:
+            raise ResultStoreError("Referenced result manifest is unavailable.") from exc
+        target = ResultStoreTarget(
+            root=self.root,
+            orchestration_id=orchestration_id,
+            work_unit_id=work_unit_id,
+            execution_id=execution_id,
+            project_root=self.project_root,
+        )
+        if resolved != target.manifest_path.resolve():
+            raise ResultStoreError("Referenced manifest does not match its execution target.")
+        stored = self.read_result(target)
+        if stored is None:
+            raise ResultStoreError("Referenced result has no final manifest.")
+        return stored
+
     @staticmethod
     def worker_instructions(target: ResultStoreTarget) -> str:
         payload = target.as_payload()

@@ -934,6 +934,50 @@ class MemoryProjectCheckpointStore:
         self.saves.append(payload)
 
 
+def test_controller_observed_idle_pause_calls_quiescence_hook_without_dispatch() -> None:
+    class PausingStore(MemoryProjectCheckpointStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self._pause_next_load = False
+
+        def save(self, orchestration_id: str, payload: dict) -> None:
+            super().save(orchestration_id, payload)
+            if payload.get("phase") == "EXECUTION" and not self._pause_next_load:
+                self._pause_next_load = True
+
+        def load(self, orchestration_id: str):
+            state = super().load(orchestration_id)
+            if state is not None and self._pause_next_load:
+                state["desired_state"] = "PAUSED"
+            return state
+
+    plan = ProjectExecutionPlan(summary="pause", work_units=(wu("ready"),))
+    store = PausingStore()
+    quiescent: list[str] = []
+    runtime = ConcurrentRuntime()
+
+    result = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=store,
+        on_quiescent=quiescent.append,
+    ).execute(
+        ProjectOrchestrationRequest(
+            objective="pause before dispatch",
+            orchestration_id="orch-quiescent",
+            plan=plan,
+        )
+    )
+
+    assert result.status is ProjectRunStatus.PAUSED
+    assert runtime.tasks == []
+    assert quiescent == ["orch-quiescent"]
+    assert store.state is not None
+    assert store.state["active_executions"] == []
+
+
 class RecoverableProjectRuntime:
     def __init__(self, *, wrong_recovery_identity: bool = False) -> None:
         self.submitted: list[str] = []
