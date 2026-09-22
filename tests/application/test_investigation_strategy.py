@@ -69,7 +69,24 @@ def test_recovery_strategist_returns_structured_analysis():
     assert "RECOVERY STRATEGIST ANALYSIS" in result.planner_guidance()
     request = runner.requests[0]
     assert "investigation" in request.skills
+    assert "grill" in request.skills
+    assert "grill-me" in request.skills
     assert request.requested_side_effects == ()
+
+
+
+
+def test_recovery_strategist_accepts_additive_json_and_human_question():
+    payload = _payload().replace(
+        '"external_research_required": false,',
+        '"human_question": "Qual comportamento visual você considera aceitável para a próxima tentativa?",\n'
+        '      "external_research_required": false,\n'
+        '      "provider_note": "additive metadata",'
+    )
+    result = RuntimeRecoveryStrategist.parse(payload)
+
+    assert "comportamento visual" in result.human_question
+    assert "human_question=" in result.planner_guidance()
 
 
 def test_recovery_strategist_rejects_unknown_recommended_path():
