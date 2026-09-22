@@ -493,6 +493,8 @@ class RunResilientProjectOrchestration(CoreContinuousProjectOrchestration):
         orchestration_id: str,
         *,
         observability: ObservabilitySink | None = None,
+        recovery_loop_mode=None,
+        acceptance_mode=None,
     ) -> ProjectOrchestrationResult:
         self._prebind_recovered_contexts(orchestration_id)
         return self._run_resilient(
@@ -500,6 +502,8 @@ class RunResilientProjectOrchestration(CoreContinuousProjectOrchestration):
             operation=lambda sink: super(RunResilientProjectOrchestration, self).resume(
                 orchestration_id,
                 observability=sink,
+                recovery_loop_mode=recovery_loop_mode,
+                acceptance_mode=acceptance_mode,
             ),
             observability=observability,
         )

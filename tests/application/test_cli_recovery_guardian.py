@@ -8,6 +8,7 @@ from adaptive_orchestrator import cli
 from infrastructure.project_orchestration_checkpoint import (
     FileProjectOrchestrationCheckpointStore,
 )
+from infrastructure.orchestration_control_plane import FileOrchestrationControlPlane
 
 
 class MemoryObservability:
@@ -76,6 +77,46 @@ def test_explicit_recovery_loop_flag_overrides_prompt_wording():
     )
 
     assert cli._resolve_recovery_loop_mode(args).value == "ENABLED"
+
+
+def test_pause_project_releases_governed_mutation_authority_when_idle(tmp_path, capsys):
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    store.save(
+        "orch-paused",
+        {
+            "orchestration_id": "orch-paused",
+            "desired_state": "RUNNING",
+            "active_executions": [],
+            "work_unit_states": {},
+            "attempts": {},
+        },
+    )
+    args = argparse.Namespace(orchestration_id="orch-paused", project_root=str(tmp_path))
+
+    assert cli._pause_project(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    control = FileOrchestrationControlPlane(project_root=tmp_path).load("orch-paused")
+    assert payload["controller_control_plane_state"] == "QUIESCENT"
+    assert payload["mutation_authority_released"] is True
+    assert control is not None
+    assert control["state"] == "QUIESCENT"
+
+
+def test_reconcile_work_unit_parser_requires_auditable_decision_inputs():
+    args = cli.build_parser().parse_args(
+        [
+            "reconcile-work-unit",
+            "--orchestration-id", "orch-1",
+            "--work-unit-id", "WU-1",
+            "--decision", "practical-test-ready",
+            "--reason", "verified complete result",
+        ]
+    )
+
+    assert args.command == "reconcile-work-unit"
+    assert args.actor == "adaptive-cli"
+    assert args.policy == "evidence-gated-historical-reconciliation-v1"
 
 def test_guardian_is_detached_targets_same_orchestration_and_keeps_secrets_out_of_argv(
     tmp_path,
