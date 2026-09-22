@@ -386,15 +386,37 @@ class FileResultStore:
             resolved = reference.resolve(strict=True)
         except OSError as exc:
             raise ResultStoreError("Referenced result manifest is unavailable.") from exc
+        # Historic checkpoints can use an external runtime execution identity
+        # (for example ``openclaw:gateway:...``), whereas the Result Store has
+        # always owned a separate final-publication identity.  Do not conflate
+        # the two.  Establish the target from the manifest's own immutable
+        # identity, while still requiring the reference to live exactly under
+        # this orchestration/work-unit's local Result Store directory.
+        work_unit_root = (
+            self.root
+            / _safe_segment(orchestration_id, fallback="orchestration")
+            / _safe_segment(work_unit_id, fallback="work-unit")
+        ).resolve()
+        if resolved.name != "manifest.json" or resolved.parent.parent != work_unit_root:
+            raise ResultStoreError(
+                "Referenced manifest is outside the Work Unit Result Store target."
+            )
+        try:
+            manifest = json.loads(resolved.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ResultStoreError("Referenced result manifest is unreadable or invalid JSON.") from exc
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("execution_id"), str):
+            raise ResultStoreError("Referenced result manifest has no valid execution identity.")
+        publication_execution_id = manifest["execution_id"]
         target = ResultStoreTarget(
             root=self.root,
             orchestration_id=orchestration_id,
             work_unit_id=work_unit_id,
-            execution_id=execution_id,
+            execution_id=publication_execution_id,
             project_root=self.project_root,
         )
         if resolved != target.manifest_path.resolve():
-            raise ResultStoreError("Referenced manifest does not match its execution target.")
+            raise ResultStoreError("Referenced manifest does not match its publication target.")
         stored = self.read_result(target)
         if stored is None:
             raise ResultStoreError("Referenced result has no final manifest.")
