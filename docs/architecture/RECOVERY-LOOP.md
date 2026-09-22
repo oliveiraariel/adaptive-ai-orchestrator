@@ -265,6 +265,44 @@ Investigation must not manufacture a solution when progress requires:
 
 These become explicit governed stops/waits rather than fake technical retries.
 
+## 4.1 Recovery loop policy and practical frontend delivery
+
+Adaptive supports two recovery-loop policies per durable project request:
+
+- `ENABLED`: returned/strategy-exhausted work may enter the existing Recovery Strategist / replan / retry lifecycle.
+- `DISABLED`: returned work does not enter the Recovery Strategist loop. The affected Work Unit is isolated/deferred and Adaptive immediately recomputes the independent frontier.
+
+The policy is persisted in the project checkpoint. The CLI accepts an explicit `--recovery-loop-mode`, but normal product-facing requests may also say **"sem recovery loop"** or **"com recovery loop"** anywhere in the objective/constraints; `AUTO` resolves that simple language at admission time.
+
+Recovery disablement never deletes recovery capability. It is a per-orchestration operating mode. A later project can start with recovery enabled again without code changes.
+
+### Practical-test acceptance
+
+`acceptance_mode=AUTO` keeps strict acceptance for backend/data/critical work but treats ordinary low-criticality frontend/UI implementation as eligible for **practical-test acceptance** when all of these hold:
+
+- runtime completed successfully;
+- authoritative Result Store transport is complete;
+- no genuine human/authority/environment/runtime/external blocker was declared;
+- no planning blocker or blocking incident was observed.
+
+In that case, an evaluator RETURNED caused by unresolved visual/browser-level evidence can be promoted to `ACCEPTED` with reason `practical-test-ready`. This is deliberately a delivery decision: it means **safe enough to inspect in the real application**, not that every subjective visual criterion has been proven automatically. The event `work_unit_practical_test_ready` preserves that distinction for observability.
+
+`STRICT` disables this promotion. `PRACTICAL_TEST` explicitly applies the practical gate to every low-criticality Work Unit.
+
+### No-recovery bulkhead
+
+With recovery disabled, a returned Work Unit is converted into an isolated blocked/deferred result with reason `recovery-loop-disabled:...`. It must not consume repeated strategies or stall unrelated work. Required dependents remain naturally ineligible; independent Work Units continue.
+
+### Recovery consultation
+
+With recovery enabled, the Strategist may formulate one concise developer question when an answer could materially improve the next attempt. The strategist is prompted to use the optional `grill` / `grill-me` dialogue skills as hints. The structured analysis carries `human_question`; Adaptive emits `recovery_human_question_requested` and suspends only the affected Work Unit while unrelated work continues.
+
+The strategist JSON contract is additive-tolerant: extra provider/model metadata no longer causes the whole recovery lane to fail merely because the JSON object contains additional keys. Required recovery fields remain validated.
+
+### Productive-idle watchdog
+
+A controller heartbeat is not functional progress. Project requests persist `max_idle_without_worker_seconds` (default **30 seconds**). When the project is RUNNING, no worker is active, and dispatch/recovery work is actionable, Adaptive emits `orchestration_idle_watchdog_triggered` and immediately continues the dispatch/recovery decision path. Recovery-disabled projects cannot remain alive solely because returned work is waiting for a strategist that is intentionally disabled.
+
 ## 5. Persistent recovery epochs
 
 Normal attempts remain bounded. Persistence exists at the lifecycle level, not by making one retry loop infinite.
