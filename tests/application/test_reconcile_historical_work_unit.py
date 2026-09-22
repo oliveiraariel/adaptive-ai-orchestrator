@@ -212,6 +212,28 @@ def test_reconciliation_can_release_an_administratively_blocked_returned_result(
     assert final["reconciliation_decisions"][-1]["historical_verdict"] == "RETURNED"
 
 
+def test_reconciliation_accepts_legacy_runtime_execution_id_when_manifest_is_intact(tmp_path: Path) -> None:
+    store = _checkpoint(tmp_path)
+    checkpoint = store.load(ORCHESTRATION_ID) or {}
+    record = next(item for item in checkpoint["records"] if item["work_unit_id"] == "WU-DATA-01")
+    # Legacy checkpoints stored the Gateway/runtime execution identity here,
+    # while Result Store publication used its own immutable UUID directory.
+    record["execution_id"] = "openclaw:gateway:logical:WU-DATA-01"
+    store.save(ORCHESTRATION_ID, checkpoint)
+
+    result = _service(tmp_path, store).execute(
+        orchestration_id=ORCHESTRATION_ID,
+        work_unit_id="WU-DATA-01",
+        decision=ReconciliationDecision.PRACTICAL_TEST_READY,
+        reason="legacy runtime id; final publication manifest independently verifies",
+        actor="test",
+        policy="practical-test-v1",
+    )
+
+    assert result.source_execution_id == "openclaw:gateway:logical:WU-DATA-01"
+    assert (store.load(ORCHESTRATION_ID) or {})["work_unit_states"]["WU-DATA-01"] == "COMPLETED"
+
+
 def test_partial_or_blocked_historical_result_cannot_be_promoted(tmp_path: Path) -> None:
     store = _checkpoint(tmp_path)
     with pytest.raises(HistoricalWorkUnitReconciliationError, match="not a usable COMPLETE"):
