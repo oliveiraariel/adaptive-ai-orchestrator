@@ -111,6 +111,32 @@ Project mode does not use the single-unit `--side-effect`/`--accept` contract. T
 
 The default side-effect policy is read-only. The planner cannot grant itself authority that the outer caller did not provide.
 
+## Authoritative project lifecycle reporting
+
+Always pass an explicit existing `--project-root` when the Bridge launches
+multiagent project mode. The Bridge must use that exact root to verify the
+durable checkpoint and to perform its authoritative `project-status` query.
+A project path mentioned only inside the `--objective` text is not sufficient.
+
+`project-status` exposes distinct concepts:
+
+- `status` and `terminal`: **authoritative lifecycle outcome**. For example,
+  `status=COMPLETED`, `terminal=true` means the orchestration is finished.
+- `lifecycle_phase`: effective operational phase: `TERMINAL` for any terminal
+  checkpoint, otherwise the persisted controller phase.
+- `desired_state`: persisted pause/resume **control intent** (`RUNNING` or
+  `PAUSED`), not proof of active workers. It may remain `RUNNING` after
+  a successful terminal completion.
+- `phase`: the last persisted controller phase. Historic and new terminal
+  checkpoints may record `EXECUTION` for recovery/audit compatibility.
+- `active_execution_count`: the number of checkpoint-recorded active
+  executions; use this with lifecycle fields rather than reading
+  `desired_state` in isolation.
+
+Do not rewrite existing checkpoint fields to improve presentation: doing so
+could affect pause/resume/recovery semantics. Prefer `status`, `terminal` and
+`lifecycle_phase` for UI and user-facing summaries.
+
 ## Worker sessions and skills
 
 Each ready Work Unit becomes an independent runtime execution with a unique task/session identity. Several Work Units may use the same configured OpenClaw agent id while behaving as separate logical specialists through their role, scope, selected skills, and bounded context.
