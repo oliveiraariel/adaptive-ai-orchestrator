@@ -341,6 +341,7 @@ def test_cli_project_status_reads_authoritative_checkpoint_without_runtime(
         "orchestration_id": "orch-status-001",
         "pending_replan": False,
         "phase": "EXECUTION",
+        "lifecycle_phase": "TERMINAL",
         "recovery_required_work_unit_ids": [],
         "replan_count": 0,
         "status": "COMPLETED",
@@ -385,6 +386,7 @@ def test_cli_project_status_reports_nonterminal_project_as_running(
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["terminal"] is False
+    assert payload["lifecycle_phase"] == "EXECUTION"
     assert payload["status"] == "RUNNING"
     assert payload["active_execution_count"] == 1
     assert payload["unfinished_work_unit_ids"] == ["fix", "gates"]
