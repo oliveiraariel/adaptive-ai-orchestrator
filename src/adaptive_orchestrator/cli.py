@@ -1206,6 +1206,10 @@ def _project_checkpoint_status_payload(
         "terminal": terminal,
         "desired_state": desired_state,
         "phase": checkpoint.get("phase"),
+        # The persisted phase is the last controller execution phase. A
+        # terminal checkpoint retains phase=EXECUTION for recovery/audit
+        # compatibility, but must also expose an unambiguous lifecycle phase.
+        "lifecycle_phase": "TERMINAL" if terminal else checkpoint.get("phase"),
         "work_unit_count": len(states),
         "completed_work_unit_ids": completed,
         "blocked_work_unit_ids": blocked,
