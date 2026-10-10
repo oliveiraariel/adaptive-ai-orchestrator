@@ -377,7 +377,23 @@ adaptive-orchestrator run \
 
 This path remains useful for one governed task and preserves the original readiness, claim, execution-policy, delegation, evaluation and finalization seams. `--accept` is mandatory and must name literal semantic evidence; `runtime-completed` is telemetry and is rejected as an acceptance criterion. A completed runtime is accepted only after the authoritative Result Store contains a structured `ADAPTIVE_WORK_STATUS: COMPLETE` footer with no unmet criteria. A missing, partial, or blocked footer returns the Work Unit instead of promoting it to success.
 
-Use `orchestrate`, rather than `run`, for project work that needs durable admission, a checkpoint, controller supervision, recovery, replanning, or more than one evidence-gated Work Unit.
+Use `orchestrate`, rather than `run`, for project work that needs durable admission, a checkpoint, controller supervision, recovery, replanning, or more than one evidence-gated Work Unit. Work-Unit count and worker concurrency are independent of that choice: a continuity-sensitive project with exactly one Work Unit or one executor still uses `orchestrate`.
+
+### Durable single-worker project mode
+
+```bash
+adaptive-orchestrator orchestrate \
+  --objective "Implement one authorized continuity-sensitive change." \
+  --agent main \
+  --project-root /absolute/path/to/governed-project \
+  --max-concurrency 1 \
+  --concurrency-mode FIXED
+```
+
+This is not the bounded `run` path. Adaptive creates the project checkpoint,
+starts the per-orchestration guardian, and can resume the same orchestration id
+after controller loss. The fixed concurrency ceiling only limits execution to
+one useful worker at a time.
 
 ### Multiagent project mode
 

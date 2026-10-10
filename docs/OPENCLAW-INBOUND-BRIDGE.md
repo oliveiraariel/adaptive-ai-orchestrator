@@ -6,7 +6,7 @@ The Adaptive AI Orchestrator remains an orchestration engine, not an OpenClaw sk
 
 The bridge must not duplicate planning, policy, claims, evaluation, frontier, concurrency, fan-in, or replanning logic.
 
-## Two inbound execution modes
+## Three inbound execution modes
 
 ### Bounded single Work Unit
 
@@ -64,6 +64,30 @@ fan-in / bounded replan when needed
 ```
 
 The bridge's `--multi-agent` option is a bridge-private selector. It is not user-domain content. The helper removes it and invokes the public `orchestrate` CLI command.
+
+### Durable single-worker project execution
+
+```text
+User
+  ↓
+OpenClaw Dashboard / Chat
+  ↓
+adaptive-orchestrator-bridge --durable-single-worker
+  ↓
+adaptive-orchestrator orchestrate --max-concurrency 1
+  ↓
+durable checkpoint + guardian + continuous project scheduler
+  ↓
+one useful worker at a time, with recovery and resume under the same identity
+```
+
+`--durable-single-worker` is also bridge-private. It is for continuity-sensitive
+development or integration work that happens to have one Work Unit or requires
+one executor. It must not be translated to `run`: Work-Unit count, worker
+concurrency, orchestration mode, and persistence are independent dimensions.
+The Bridge requires an explicit existing `--project-root`, preserves the
+caller-allocated orchestration id, and delegates to the existing public
+`orchestrate` command. It does not introduce another scheduler.
 
 Normal user input should describe the product change, business rule, scope or desired outcome. The bridge must not require the user to describe `pending_replan`, supervisor leases, Result Store reconciliation, retry budgets, controller liveness or concurrency mechanics.
 
@@ -171,7 +195,7 @@ The bridge and project orchestrator normally omit explicit model/provider overri
 
 ## Acceptance semantics
 
-For a single Work Unit, a concrete machine-verifiable literal marker may be supplied with `--accept`.
+For the bounded `run`/`dispatch` single-Work-Unit contract, one or more concrete machine-verifiable literal `--accept` criteria are mandatory. `runtime-completed` is telemetry and is rejected as acceptance evidence.
 
 For project mode, runtime completion is normally the per-worker execution gate, while semantic confidence is established through explicit testing, review, security, integration, or other verification Work Units in the graph. Runtime completion by itself is not semantic proof.
 
