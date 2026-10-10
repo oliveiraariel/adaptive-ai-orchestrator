@@ -1943,6 +1943,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "request": self._request_to_payload(request),
                 "desired_state": "RUNNING",
                 "terminal": False,
+                # New admissions explicitly opt into the guarded global
+                # recovery policy. Historical checkpoints have no such marker
+                # and therefore remain detect-and-hold under global startup
+                # supervision until a targeted guardian or human reviews them.
+                "checkpoint_administration": {
+                    "schema_version": 1,
+                    "global_auto_resume": True,
+                    "reports": [],
+                },
             },
         )
 
@@ -2050,6 +2059,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "graph_migrations",
                 "work_unit_evidence_lineage",
                 "reconciliation_decisions",
+                "checkpoint_administration",
             ):
                 if key in existing_checkpoint:
                     payload[key] = deepcopy(existing_checkpoint[key])

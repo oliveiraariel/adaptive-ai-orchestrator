@@ -135,6 +135,7 @@ class ProjectOrchestrationSupervisor:
         *,
         orchestration_id: str | None = None,
         continue_on_error: bool = False,
+        eligible_orchestration_ids: frozenset[str] | None = None,
     ) -> tuple[str, ...]:
         """Run one deterministic supervision pass.
 
@@ -148,6 +149,11 @@ class ProjectOrchestrationSupervisor:
         failures: list[OrchestrationRecoveryFailure] = []
         for directive in self.directives(orchestration_id=orchestration_id):
             if directive.action != "RESUME":
+                continue
+            if (
+                eligible_orchestration_ids is not None
+                and directive.orchestration_id not in eligible_orchestration_ids
+            ):
                 continue
             if not self._acquire_lease(directive.orchestration_id):
                 continue

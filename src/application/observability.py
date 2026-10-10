@@ -49,6 +49,7 @@ class JsonlObservabilitySink:
         "effective_concurrency_limit", "ready_work_unit_count",
         "active_execution_count", "soft_stalled_worker_count", "elapsed_seconds",
         "idle_seconds", "recovery_loop_mode", "question", "suggested_skills",
+        "classification", "report_id", "checkpoint_digest", "backup_sha256",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -66,6 +67,8 @@ class JsonlObservabilitySink:
         "orchestration_heartbeat", "orchestration_terminalized",
         "orchestration_recovery_yielded", "orchestration_idle_watchdog_triggered",
         "orchestration_completed",
+        "checkpoint_reconciliation_detected", "checkpoint_reconciliation_classified",
+        "checkpoint_reconciliation_persisted",
     }
 
     def __init__(self, path: str | Path, session_id: str | None = None) -> None:

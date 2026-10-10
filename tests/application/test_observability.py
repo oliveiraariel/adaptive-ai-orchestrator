@@ -144,6 +144,15 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         status="WATCHING",
         mode="detached-per-orchestration",
     )
+    sink.emit(
+        "checkpoint_reconciliation_classified",
+        orchestration_id="orch-1",
+        classification="HUMAN_DECISION_REQUIRED",
+        action="PAUSE",
+        reason="workspace-dirty",
+        checkpoint_digest="a" * 64,
+        prompt="must not persist",
+    )
 
     events = [
         json.loads(line)
@@ -160,6 +169,7 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         "automatic_learning_triggered",
         "orchestration_paused",
         "orchestration_supervisor_started",
+        "checkpoint_reconciliation_classified",
     ]
     assert events[1]["reconciled_by_work_unit_id"] == "wu-fix"
     assert events[2]["incident_id"] == "INC-1"
@@ -173,4 +183,6 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         "skills:debugging",
     ]
 
-    assert events[-1]["mode"] == "detached-per-orchestration"
+    assert events[-2]["mode"] == "detached-per-orchestration"
+    assert events[-1]["classification"] == "HUMAN_DECISION_REQUIRED"
+    assert "prompt" not in events[-1]

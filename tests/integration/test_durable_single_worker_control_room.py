@@ -202,3 +202,70 @@ def test_durable_single_worker_cli_checkpoint_and_control_room_projection(
         except subprocess.TimeoutExpired:
             server.kill()
             server.wait(timeout=5)
+
+
+def test_checkpoint_administration_hold_projects_to_control_room(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    control_room = Path(__file__).resolve().parents[3] / "adaptive-control-room"
+    if not (control_room / "src" / "server.js").is_file():
+        pytest.skip("Control Room sibling checkout is unavailable for local integration")
+
+    project = tmp_path / "governed-project"
+    project.mkdir()
+    FileProjectOrchestrationCheckpointStore(project_root=project).save(
+        "checkpoint-history",
+        {
+            "orchestration_id": "checkpoint-history",
+            "desired_state": "RUNNING",
+            "terminal": False,
+            "active_executions": [{"work_unit_id": "WU-1", "execution_id": "exec-1"}],
+            "work_unit_states": {"WU-1": "RUNNING"},
+            "records": [],
+        },
+    )
+    source = tmp_path / "adaptive-observability.jsonl"
+    projection = tmp_path / "control-room-events.jsonl"
+    port = _free_port()
+    environment = {
+        **os.environ,
+        "ADAPTIVE_OBSERVABILITY_LOG": str(source),
+        "CONTROL_ROOM_EVENTS": str(projection),
+        "PORT": str(port),
+    }
+    server = subprocess.Popen(
+        ["node", "src/server.js"], cwd=control_room, env=environment,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_for_json(f"http://127.0.0.1:{port}/api/health", lambda payload: payload.get("ok") is True)
+        monkeypatch.setenv("ADAPTIVE_OBSERVABILITY_LOG", str(source))
+        assert cli.main(["supervise-projects", "--project-root", str(project)]) == 0
+        capsys.readouterr()
+
+        snapshot = _wait_for_json(
+            f"http://127.0.0.1:{port}/api/snapshot",
+            lambda payload: any(
+                event.get("event_type") == "checkpoint_reconciliation_persisted"
+                and event.get("orchestration_id") == "checkpoint-history"
+                for event in payload.get("checkpoint_administrations", [])
+            ),
+        )
+        reconciliation = next(
+            event for event in snapshot["checkpoint_administrations"]
+            if event.get("event_type") == "checkpoint_reconciliation_persisted"
+        )
+        assert reconciliation["classification"] == "HUMAN_DECISION_REQUIRED"
+        assert reconciliation["action"] == "PAUSE"
+        session = next(
+            item for item in snapshot["operational_sessions"]
+            if item["orchestration_id"] == "checkpoint-history"
+        )
+        assert session["status"] == "PAUSED"
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)

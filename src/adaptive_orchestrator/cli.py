@@ -29,6 +29,11 @@ from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
+from application.checkpoint_administration import (
+    CheckpointAdministrationError,
+    CheckpointAdministrationAction,
+    CheckpointAdministrator,
+)
 from application.run_project_orchestration import (
     AcceptanceMode,
     ConcurrencyMode,
@@ -1627,6 +1632,10 @@ def _supervise_projects(args: argparse.Namespace) -> int:
             project_root=project_root,
             stale_after_seconds=args.stale_after_seconds,
         )
+        administrator = CheckpointAdministrator(
+            project_root=project_root,
+            stale_after_seconds=args.stale_after_seconds,
+        )
     except (OSError, ValueError, ProjectOrchestrationCheckpointError) as exc:
         return _print_error(exc)
 
@@ -1658,6 +1667,46 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 return 0
 
         try:
+            administration = administrator.reconcile(
+                orchestration_id=target_orchestration_id,
+                allow_resume=target_orchestration_id is not None,
+            )
+            observability = JsonlObservabilitySink(
+                canonical_observability_path(),
+                getattr(args, "session_id", None),
+            )
+            for item in administration:
+                observability.emit(
+                    "checkpoint_reconciliation_detected",
+                    orchestration_id=item.orchestration_id,
+                    checkpoint_digest=item.checkpoint_digest,
+                )
+                observability.emit(
+                    "checkpoint_reconciliation_classified",
+                    orchestration_id=item.orchestration_id,
+                    classification=item.classification.value,
+                    action=item.action.value,
+                    reason=item.reason,
+                    checkpoint_digest=item.checkpoint_digest,
+                )
+                if item.persisted:
+                    observability.emit(
+                        "checkpoint_reconciliation_persisted",
+                        orchestration_id=item.orchestration_id,
+                        classification=item.classification.value,
+                        action=item.action.value,
+                        reason=item.reason,
+                        report_id=item.report_id,
+                        checkpoint_digest=item.checkpoint_digest,
+                    )
+                    if item.action is CheckpointAdministrationAction.PAUSE:
+                        observability.emit(
+                            "orchestration_paused",
+                            orchestration_id=item.orchestration_id,
+                            status="PAUSED",
+                            terminal=False,
+                            reason="checkpoint-administration",
+                        )
             directives = supervisor.directives(
                 orchestration_id=target_orchestration_id
             )
@@ -1665,11 +1714,17 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 resume_one,
                 orchestration_id=target_orchestration_id,
                 continue_on_error=bool(args.watch),
+                eligible_orchestration_ids=frozenset(
+                    item.orchestration_id
+                    for item in administration
+                    if item.action is CheckpointAdministrationAction.RESUME
+                ),
             )
         except (
             OSError,
             ProjectOrchestrationError,
             ProjectOrchestrationCheckpointError,
+            CheckpointAdministrationError,
             ValueError,
         ) as exc:
             return _print_error(exc)
@@ -1701,6 +1756,18 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                             "last_controller_heartbeat_at": item.last_controller_heartbeat_at,
                         }
                         for item in directives
+                    ],
+                    "administration": [
+                        {
+                            "orchestration_id": item.orchestration_id,
+                            "classification": item.classification.value,
+                            "action": item.action.value,
+                            "reason": item.reason,
+                            "checkpoint_digest": item.checkpoint_digest,
+                            "report_id": item.report_id,
+                            "persisted": item.persisted,
+                        }
+                        for item in administration
                     ],
                 },
                 ensure_ascii=False,
