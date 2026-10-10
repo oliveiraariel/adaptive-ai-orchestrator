@@ -598,7 +598,7 @@ def _run(args: argparse.Namespace) -> int:
                 inputs=tuple(args.input),
                 constraints=tuple(args.constraint),
                 expected_output=tuple(args.expected_output) or ("agent response",),
-                acceptance_criteria=tuple(args.accept) or ("runtime-completed",),
+                acceptance_criteria=_single_work_unit_acceptance_criteria(args),
                 execution_policy=policy,
                 requested_side_effects=tuple(args.side_effect),
                 human_approved=args.human_approved,
@@ -648,8 +648,29 @@ def _run(args: argparse.Namespace) -> int:
     )
     return 0 if accepted else 3
 
+def _single_work_unit_acceptance_criteria(args: argparse.Namespace) -> tuple[str, ...]:
+    """Require a semantic acceptance contract for one-off work.
+
+    ``runtime-completed`` is telemetry, not an acceptance criterion.  Allowing
+    it as the implicit default was enough to turn a worker's stopped runtime
+    into a false success, bypassing the durable project/recovery path.
+    """
+    criteria = tuple(item.strip() for item in args.accept if item.strip())
+    if not criteria:
+        raise ValueError(
+            "SINGLE_WORK_UNIT_ACCEPTANCE_REQUIRED: pass one or more literal "
+            "--accept criteria, or use orchestrate for project work."
+        )
+    if "runtime-completed" in criteria:
+        raise ValueError(
+            "INVALID_ACCEPTANCE_CRITERION: runtime-completed is runtime "
+            "telemetry, not semantic acceptance evidence."
+        )
+    return criteria
+
+
 def _request_from_args(args: argparse.Namespace) -> RunOrchestrationRequest:
-    return RunOrchestrationRequest(objective=args.objective, agent=args.agent, skills=tuple(args.skill), model=args.model, provider=args.provider, tools=tuple(args.tool), scope=args.scope, context=tuple(args.context), inputs=tuple(args.input), constraints=tuple(args.constraint), expected_output=tuple(args.expected_output) or ("agent response",), acceptance_criteria=tuple(args.accept) or ("runtime-completed",), execution_policy=_execution_policy(args), requested_side_effects=tuple(args.side_effect), human_approved=args.human_approved)
+    return RunOrchestrationRequest(objective=args.objective, agent=args.agent, skills=tuple(args.skill), model=args.model, provider=args.provider, tools=tuple(args.tool), scope=args.scope, context=tuple(args.context), inputs=tuple(args.input), constraints=tuple(args.constraint), expected_output=tuple(args.expected_output) or ("agent response",), acceptance_criteria=_single_work_unit_acceptance_criteria(args), execution_policy=_execution_policy(args), requested_side_effects=tuple(args.side_effect), human_approved=args.human_approved)
 
 def _dispatch(args: argparse.Namespace) -> int:
     try:

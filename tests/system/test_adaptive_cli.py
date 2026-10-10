@@ -23,7 +23,15 @@ class FakeGatewayClient:
         return "COMPLETED"
 
     def retrieve_result(self, external_id):
-        return {"status": "ok", "output": "CLI_OK"}
+        return {
+            "status": "ok",
+            "output": (
+                "CLI_OK\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            ),
+        }
 
     def cancel(self, external_id):
         return None
@@ -54,7 +62,7 @@ def test_cli_run_invokes_adaptive_core_and_returns_json(monkeypatch, tmp_path, c
     assert payload["ok"] is True
     assert payload["verdict"] == "ACCEPTED"
     assert payload["work_unit_state"] == "COMPLETED"
-    assert payload["output"] == "CLI_OK"
+    assert payload["output"].startswith("CLI_OK")
     assert "do-not-print-this" not in captured.out
     assert FakeGatewayClient.last_config.token == "do-not-print-this"
     assert FakeGatewayClient.last_result_store.root == tmp_path.resolve() / ".adaptive" / "runs"
@@ -93,6 +101,42 @@ def test_cli_returns_nonzero_when_acceptance_is_not_met(monkeypatch, tmp_path, c
     assert payload["ok"] is False
     assert payload["verdict"] == "RETURNED"
     assert payload["work_unit_state"] == "REVISION_REQUIRED"
+
+
+def test_cli_rejects_single_work_unit_without_semantic_acceptance(tmp_path, capsys) -> None:
+    exit_code = cli.main(
+        [
+            "run",
+            "--objective",
+            "Do not execute without a completion contract.",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().err)
+    assert exit_code == 1
+    assert payload["error_type"] == "ValueError"
+    assert "SINGLE_WORK_UNIT_ACCEPTANCE_REQUIRED" in payload["error"]
+
+
+def test_cli_rejects_runtime_completion_as_acceptance(tmp_path, capsys) -> None:
+    exit_code = cli.main(
+        [
+            "run",
+            "--objective",
+            "Do not confuse transport with outcome.",
+            "--accept",
+            "runtime-completed",
+            "--project-root",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().err)
+    assert exit_code == 1
+    assert payload["error_type"] == "ValueError"
+    assert "INVALID_ACCEPTANCE_CRITERION" in payload["error"]
 
 
 
@@ -151,6 +195,8 @@ def test_cli_dispatch_persists_initial_liveness_without_waiting(
             "dispatch",
             "--objective",
             "Dispatch one bounded task.",
+            "--accept",
+            "bounded task dispatched",
             "--project-root",
             str(tmp_path),
         ]

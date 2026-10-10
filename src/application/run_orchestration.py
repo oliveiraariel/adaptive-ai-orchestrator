@@ -7,6 +7,7 @@ from application.message_schema_registry import resolve_message_schema
 from application.structured_output_contract import StructuredOutputContractError, validate_structured_json
 from application.observability import ObservabilitySink, NullObservabilitySink
 from application.claim_registry import ClaimRegistry
+from application.completion_integrity import parse_worker_completion
 from application.evaluate_result import EvaluateResult, EvaluateResultRequest
 from application.execution_coordinator import (
     DispatchFrontierRequest,
@@ -274,9 +275,23 @@ class RunOrchestration:
                     f"RESULT_SCHEMA_VALIDATION_FAILED: {exc}"
                 ) from exc
 
+        # A completed runtime only establishes that the provider stopped.  It
+        # does not establish that the delegated objective is complete.  The
+        # project orchestration path already applies this distinction; the
+        # bounded ``run`` path must not be a loophole around it.
+        completion = parse_worker_completion(output)
         evidence = []
         if runtime_status is AgentRuntimeStatus.COMPLETED:
             evidence.append("runtime-completed")
+
+        if result_status is ResultPackageStatus.SUCCEEDED:
+            if completion.is_terminal_success:
+                evidence.append("authoritative-worker-complete")
+            else:
+                # Missing or incomplete footers are an explicit incomplete
+                # outcome.  They must be returned for correction/recovery,
+                # never promoted merely because the runtime ended.
+                result_status = ResultPackageStatus.PARTIAL
 
         result_package = ResultPackage(
             task_id=task_id,

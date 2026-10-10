@@ -100,14 +100,17 @@ class EvaluateResult:
         result_text: str,
         evidence: set[str],
     ) -> bool:
-        # Explicit evidence remains authoritative. For ordinary
-        # low-criticality work, the orchestrator may also supply the bounded
-        # "authoritative-worker-complete" sentinel after verifying: runtime
-        # completion, authoritative Result Store transport, and a structured
-        # COMPLETE footer with no unmet criteria. This avoids false-negative
-        # returns caused only by literal wording differences between an
-        # acceptance criterion and semantically equivalent worker evidence.
-        if "authoritative-worker-complete" in evidence:
+        # ``authoritative-worker-complete`` proves transport integrity and a
+        # structured declaration of completeness. It is deliberately *not*
+        # generic product evidence: accepting arbitrary semantic criteria from
+        # that sentinel would turn a stopped worker into a false success.
+        # Retain it only for the legacy runtime-liveness criterion used by
+        # already-persisted project plans. New bounded CLI invocations reject
+        # that criterion and must supply semantic evidence explicitly.
+        if (
+            criterion == "runtime-completed"
+            and "authoritative-worker-complete" in evidence
+        ):
             return True
         return criterion in evidence or criterion in result_text
 

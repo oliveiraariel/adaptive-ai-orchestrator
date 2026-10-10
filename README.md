@@ -375,7 +375,9 @@ adaptive-orchestrator run \
   --accept ADAPTIVE_OK
 ```
 
-This path remains useful for one governed task and preserves the original readiness, claim, execution-policy, delegation, evaluation and finalization seams.
+This path remains useful for one governed task and preserves the original readiness, claim, execution-policy, delegation, evaluation and finalization seams. `--accept` is mandatory and must name literal semantic evidence; `runtime-completed` is telemetry and is rejected as an acceptance criterion. A completed runtime is accepted only after the authoritative Result Store contains a structured `ADAPTIVE_WORK_STATUS: COMPLETE` footer with no unmet criteria. A missing, partial, or blocked footer returns the Work Unit instead of promoting it to success.
+
+Use `orchestrate`, rather than `run`, for project work that needs durable admission, a checkpoint, controller supervision, recovery, replanning, or more than one evidence-gated Work Unit.
 
 ### Multiagent project mode
 
