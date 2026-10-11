@@ -26,7 +26,16 @@ class RecordingObservability:
 
 
 class FakeRuntime:
-    def __init__(self, output: str = "done", usage: dict | None = None) -> None:
+    def __init__(
+        self,
+        output: str = (
+            "done\n"
+            "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+            "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+            "ADAPTIVE_UNMET_CRITERIA: NONE"
+        ),
+        usage: dict | None = None,
+    ) -> None:
         self.output = output
         self.usage = usage
 
@@ -82,8 +91,8 @@ def test_run_orchestration_completes_governed_work_unit() -> None:
     assert result.runtime_status is AgentRuntimeStatus.COMPLETED
     assert result.work_unit_state is WorkUnitState.COMPLETED
     assert result.verdict is EvaluationVerdict.ACCEPTED
-    assert result.output == "done"
-    assert result.evidence == ("runtime-completed",)
+    assert result.output.startswith("done")
+    assert result.evidence == ("runtime-completed", "authoritative-worker-complete")
     assert claims.get(result.work_unit_id) is None
     assert observability.events[-1] == (
         "orchestration_completed",
@@ -93,7 +102,14 @@ def test_run_orchestration_completes_governed_work_unit() -> None:
 
 def test_run_orchestration_evaluates_explicit_output_criterion() -> None:
     result = RunOrchestration(
-        runtime=FakeRuntime(output="EXPECTED_RESULT"),
+        runtime=FakeRuntime(
+            output=(
+                "EXPECTED_RESULT\n"
+                "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: NONE"
+            )
+        ),
         claim_registry=InMemoryClaimRegistry(),
     ).execute(
         RunOrchestrationRequest(
@@ -104,6 +120,47 @@ def test_run_orchestration_evaluates_explicit_output_criterion() -> None:
 
     assert result.verdict is EvaluationVerdict.ACCEPTED
     assert result.work_unit_state is WorkUnitState.COMPLETED
+
+
+def test_run_orchestration_returns_runtime_completion_without_structured_footer() -> None:
+    result = RunOrchestration(
+        runtime=FakeRuntime(output="implementation reported, but completion is unstructured"),
+        claim_registry=InMemoryClaimRegistry(),
+    ).execute(
+        RunOrchestrationRequest(
+            objective="Implement the requested change.",
+            acceptance_criteria=("implementation delivered",),
+        )
+    )
+
+    assert result.runtime_status is AgentRuntimeStatus.COMPLETED
+    assert result.work_unit_state is WorkUnitState.REVISION_REQUIRED
+    assert result.verdict is EvaluationVerdict.RETURNED
+    assert result.evidence == ("runtime-completed",)
+
+
+def test_run_orchestration_returns_explicit_partial_result_even_if_text_mentions_criterion() -> None:
+    result = RunOrchestration(
+        runtime=FakeRuntime(
+            output=(
+                "implementation delivered\n"
+                "ADAPTIVE_WORK_STATUS: PARTIAL\n"
+                "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                "ADAPTIVE_UNMET_CRITERIA: browser acceptance"
+            )
+        ),
+        claim_registry=InMemoryClaimRegistry(),
+    ).execute(
+        RunOrchestrationRequest(
+            objective="Implement the requested change.",
+            acceptance_criteria=("implementation delivered",),
+        )
+    )
+
+    assert result.runtime_status is AgentRuntimeStatus.COMPLETED
+    assert result.work_unit_state is WorkUnitState.REVISION_REQUIRED
+    assert result.verdict is EvaluationVerdict.RETURNED
+    assert result.evidence == ("runtime-completed",)
 
 
 def test_run_orchestration_publishes_usage_on_terminal_event() -> None:

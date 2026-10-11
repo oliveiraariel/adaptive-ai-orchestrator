@@ -3,11 +3,14 @@ from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import replace
+import os
 import time
 from typing import Callable, Sequence
 from uuid import uuid4
 
-from application.agent_runtime import AgentRuntimeResult
+from application.agent_runtime import AgentRuntimeResult, AgentRuntimeStatus
+from application.governed_takeover import GovernedTakeoverStore
+from application.execution_liveness import ExecutionLivenessTimeout
 from application.completion_integrity import parse_worker_completion
 from application.project_orchestration_checkpoint import ProjectOrchestrationCheckpointStore
 from application.observability import NullObservabilitySink, ObservabilitySink
@@ -308,7 +311,38 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         recovery_yield_requested = False
         recovery_yield_reason = ""
         last_productive_activity_at = time.monotonic()
+        takeovers = (
+            GovernedTakeoverStore(project_root=self._checkpoint_store.project_root)
+            if self._checkpoint_store is not None
+            and getattr(self._checkpoint_store, "project_root", None) is not None
+            else None
+        )
 
+        def _maybe_request_auto_owner_takeover(work_unit_id: str) -> None:
+            # AUTONOMOUS project authority permits direct coordinator execution
+            # after strategy exhaustion; explicit owner requests bypass this
+            # heuristic. Human-approval-required projects never auto-escalate.
+            if (
+                takeovers is None
+                or os.environ.get(
+                    "ADAPTIVE_AUTO_DIRECT_TAKEOVER_ON_EXHAUSTION", "1"
+                ).strip().casefold() not in {"1", "true", "yes", "on"}
+                or request.execution_policy.autonomy
+                not in {AutonomyClass.AUTONOMOUS, AutonomyClass.AUTONOMOUS_WITH_REVIEW}
+                or not request.planner_agent
+                or request.planner_agent == request.agent
+                or work_units[work_unit_id].state is not WorkUnitState.RECOVERY_REQUIRED
+                or takeovers.current(orchestration_id, work_unit_id) is not None
+            ):
+                return
+            takeovers.request(
+                orchestration_id=orchestration_id,
+                work_unit_id=work_unit_id,
+                mode="direct",
+                owner_agent=request.planner_agent,
+                actor="adaptive-autonomous-recovery-policy",
+                reason="Bounded worker strategy exhausted; owner continuation is permitted.",
+            )
         def persist(*, terminal: bool = False) -> None:
             self._save_checkpoint(
                 orchestration_id=orchestration_id,
@@ -577,6 +611,158 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     )
                 persist()
             while True:
+                # The controlling scheduler is the only writer of runtime/WU
+                # ownership. A CLI/user writes a durable intent, never changes
+                # active_executions or claims behind the controller's back.
+                if takeovers is not None:
+                    takeover_state = takeovers.load(orchestration_id)
+                    for intent in (
+                        takeover_state.get("requests", ())
+                        if isinstance(takeover_state, dict) else ()
+                    ):
+                        if intent.get("state") not in {"REQUESTED", "QUIESCING"}:
+                            continue
+                        work_unit_id = intent.get("work_unit_id")
+                        if work_unit_id not in work_units:
+                            takeovers.transition(
+                                orchestration_id, intent["id"], state="FAILED",
+                                detail="Work Unit not found in active graph",
+                            )
+                            continue
+                        wu = work_units[work_unit_id]
+                        if intent.get("state") == "REQUESTED":
+                            takeovers.transition(
+                                orchestration_id, intent["id"], state="QUIESCING",
+                                detail="Controller acknowledged the authorized request",
+                            )
+                            observability.emit(
+                                "governed_takeover_requested",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id, mode=intent["mode"],
+                                actor=intent["actor"], status="REQUESTED",
+                            )
+                        if wu.state in {WorkUnitState.COMPLETED, WorkUnitState.CANCELLED}:
+                            takeovers.transition(
+                                orchestration_id, intent["id"], state="SUPERSEDED",
+                                detail="Work Unit already terminal; accepted evidence preserved",
+                            )
+                            continue
+
+                        active_outcome = active_by_id.get(work_unit_id)
+                        if active_outcome is not None:
+                            assert active_outcome.execution is not None
+                            try:
+                                status = self._runtime.get_status(active_outcome.execution)
+                            except Exception as exc:
+                                takeovers.transition(
+                                    orchestration_id, intent["id"],
+                                    state="QUIESCING",
+                                    detail="Runtime status unconfirmed: " + type(exc).__name__,
+                                )
+                                continue
+                            if status is AgentRuntimeStatus.COMPLETED:
+                                # Drain and evaluate an already completed worker
+                                # rather than cancel a valid final publication.
+                                continue
+                            if status not in {
+                                AgentRuntimeStatus.CANCELLED, AgentRuntimeStatus.FAILED,
+                            }:
+                                try:
+                                    self._runtime.cancel(active_outcome.execution)
+                                    status = self._runtime.get_status(active_outcome.execution)
+                                except Exception as exc:
+                                    takeovers.transition(
+                                        orchestration_id, intent["id"],
+                                        state="QUIESCING",
+                                        detail="Abort not confirmed: " + type(exc).__name__,
+                                    )
+                                    continue
+                            if status not in {
+                                AgentRuntimeStatus.CANCELLED, AgentRuntimeStatus.FAILED,
+                            }:
+                                takeovers.transition(
+                                    orchestration_id, intent["id"], state="QUIESCING",
+                                    detail="Waiting for terminal executor status after abort",
+                                )
+                                continue
+                            # Confirmed terminal: remove the old Future from
+                            # authoritative processing before releasing its claim.
+                            # Any late result from that cancelled attempt cannot
+                            # subsequently complete the Work Unit in this controller.
+                            for future, (outcome, generation) in tuple(active.items()):
+                                if outcome.work_unit_id == work_unit_id:
+                                    active.pop(future)
+                                    future.cancel()
+                                    break
+                            active_by_id.pop(work_unit_id, None)
+                            active_started_at.pop(work_unit_id, None)
+                            soft_stalled_ids.discard(work_unit_id)
+                            stall_notified_ids.discard(work_unit_id)
+                            if active_outcome.claim is not None:
+                                self._claims.release(active_outcome.claim)
+                            if wu.state is WorkUnitState.RUNNING:
+                                wu.start_evaluation()
+                                wu.require_revision()
+                            records.append(WorkUnitExecutionRecord(
+                                work_unit_id=work_unit_id,
+                                role=specs[work_unit_id].role,
+                                wave=dispatch_generation,
+                                attempt=attempts[work_unit_id],
+                                status=wu.state.value,
+                                skills=skill_sets[work_unit_id],
+                                execution_id=active_outcome.execution.id,
+                                external_id=active_outcome.execution.external_id,
+                                runtime_status=status.value,
+                                verdict="RETURNED",
+                                reason="governed-takeover:old-executor-terminated",
+                                strategy=strategy_generations[work_unit_id],
+                            ))
+                        elif wu.state is WorkUnitState.RUNNING:
+                            # A stale RUNNING checkpoint is not evidence of
+                            # cancellation. The existing recovery path must
+                            # reconcile the real execution identity first.
+                            takeovers.transition(
+                                orchestration_id, intent["id"], state="QUIESCING",
+                                detail="RUNNING without confirmed retired execution",
+                            )
+                            continue
+
+                        if wu.state is WorkUnitState.BLOCKED:
+                            wu.mark_ready()
+                        elif wu.state is WorkUnitState.RECOVERY_REQUIRED:
+                            wu.resume_after_recovery()
+                        # A human-authorized strategy change is not constrained
+                        # by exhausted previous retry budget; retain the historic
+                        # attempt and strategy records for audit.
+                        attempts[work_unit_id] = 0
+                        strategy_generations[work_unit_id] += 1
+                        revision_feedback[work_unit_id] = (
+                            "GOVERNED TAKEOVER AUTHORIZED by " + str(intent["actor"])
+                            + ": " + str(intent["reason"])
+                            + ". Preserve accepted results and existing workspace. "
+                            + (
+                                "Direct owner execution requested."
+                                if intent["mode"] == "direct"
+                                else "Replacement agent execution requested."
+                            )
+                        )
+                        takeovers.transition(
+                            orchestration_id, intent["id"], state="APPLIED",
+                            detail="Previous execution quiesced; new governed strategy selected",
+                        )
+                        pending_replan = any(
+                            entry.state is WorkUnitState.RECOVERY_REQUIRED
+                            for entry in work_units.values()
+                        )
+                        observability.emit(
+                            "governed_takeover_applied",
+                            orchestration_id=orchestration_id,
+                            work_unit_id=work_unit_id,
+                            mode=intent["mode"], actor=intent["actor"],
+                            status="REVISION_REQUIRED",
+                        )
+                        persist()
+
                 unfinished = self._unfinished(work_units)
                 pause_requested = self._pause_requested(orchestration_id)
                 if pause_requested and not active:
@@ -788,6 +974,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     project_id=request.project_id,
                                     attempt_history=history,
                                     constraints=request.constraints,
+                                    authoritative_decisions=request.context,
                                     agent=(
                                         request.recovery_strategist_agent
                                         or request.planner_agent
@@ -1307,6 +1494,40 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             for work_unit_id in selected_ids
                         )
+                        if takeovers is not None:
+                            governed_assignments: list[WorkAssignment] = []
+                            for assignment in assignments:
+                                takeover = takeovers.current(
+                                    orchestration_id, assignment.work_unit.id.value
+                                )
+                                if (
+                                    takeover is not None
+                                    and takeover.get("state") == "APPLIED"
+                                    and takeover.get("mode") == "direct"
+                                ):
+                                    owner = str(takeover["owner_agent"])
+                                    direct_configuration = replace(
+                                        assignment.configuration, agent=owner,
+                                    )
+                                    governed_assignments.append(replace(
+                                        assignment, configuration=direct_configuration,
+                                        task_package=replace(
+                                            assignment.task_package,
+                                            configuration=direct_configuration,
+                                            context=(
+                                                *assignment.task_package.context,
+                                                "GOVERNED DIRECT OWNER TAKEOVER: execute "
+                                                "the authorized Work Unit yourself. "
+                                                "Do not delegate, call the Adaptive "
+                                                "Bridge or start a nested orchestration. "
+                                                "Inspect existing WIP and preserve "
+                                                "accepted results.",
+                                            ),
+                                        ),
+                                    ))
+                                else:
+                                    governed_assignments.append(assignment)
+                            assignments = tuple(governed_assignments)
                         assignment_by_id = {
                             assignment.work_unit.id.value: assignment
                             for assignment in assignments
@@ -1452,6 +1673,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             pending_replan = (
                                 pending_replan or runtime_recovery_signal
                             )
+                            if runtime_recovery_signal:
+                                _maybe_request_auto_owner_takeover(work_unit_id)
                             last_productive_activity_at = time.monotonic()
                             persist()
                             continue
@@ -1520,7 +1743,31 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 max_attempts=request.max_attempts_per_work_unit,
                                 max_strategies=request.max_strategies_per_work_unit,
                             )
+                        if recovery_signal:
+                            _maybe_request_auto_owner_takeover(work_unit_id)
                         records.append(record)
+                        if takeovers is not None:
+                            takeover = takeovers.current(orchestration_id, work_unit_id)
+                            if takeover is not None and takeover.get("state") == "APPLIED":
+                                if record.verdict == EvaluationVerdict.ACCEPTED.value:
+                                    takeovers.transition(
+                                        orchestration_id, takeover["id"],
+                                        state="COMPLETED",
+                                        detail="Accepted by standard Work Unit evaluator",
+                                    )
+                                    observability.emit(
+                                        "governed_takeover_completed",
+                                        orchestration_id=orchestration_id,
+                                        work_unit_id=work_unit_id,
+                                        mode=takeover["mode"], actor=takeover["actor"],
+                                        status="COMPLETED",
+                                    )
+                                elif work_units[work_unit_id].state is WorkUnitState.BLOCKED:
+                                    takeovers.transition(
+                                        orchestration_id, takeover["id"],
+                                        state="FAILED",
+                                        detail="Owner execution blocked by normal acceptance policy",
+                                    )
                         last_productive_activity_at = time.monotonic()
                         if record.reason == "practical-test-ready":
                             observability.emit(
@@ -1943,6 +2190,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "request": self._request_to_payload(request),
                 "desired_state": "RUNNING",
                 "terminal": False,
+                # New admissions explicitly opt into the guarded global
+                # recovery policy. Historical checkpoints have no such marker
+                # and therefore remain detect-and-hold under global startup
+                # supervision until a targeted guardian or human reviews them.
+                "checkpoint_administration": {
+                    "schema_version": 1,
+                    "global_auto_resume": True,
+                    "reports": [],
+                },
             },
         )
 
@@ -2050,6 +2306,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "graph_migrations",
                 "work_unit_evidence_lineage",
                 "reconciliation_decisions",
+                "checkpoint_administration",
             ):
                 if key in existing_checkpoint:
                     payload[key] = deepcopy(existing_checkpoint[key])
@@ -2894,8 +3151,40 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         max_strategies: int,
     ) -> bool:
         assert outcome.claim is not None
-        self._claims.release(outcome.claim)
         work_unit_id = outcome.work_unit_id
+        # A timeout is only evidence that an observer stopped. Never free a
+        # lease and create a competing writer unless the actual executor is
+        # verified terminal after the abort attempt.
+        if isinstance(error, ExecutionLivenessTimeout):
+            confirmed = False
+            if outcome.execution is not None:
+                try:
+                    actual = self._runtime.get_status(outcome.execution)
+                    confirmed = actual in {
+                        AgentRuntimeStatus.CANCELLED, AgentRuntimeStatus.FAILED,
+                    }
+                except Exception:
+                    confirmed = False
+            if not confirmed:
+                work_unit = work_units[work_unit_id]
+                work_unit.mark_blocked()
+                records.append(WorkUnitExecutionRecord(
+                    work_unit_id=work_unit_id,
+                    role=specs[work_unit_id].role,
+                    wave=generation,
+                    attempt=attempts[work_unit_id],
+                    status=WorkUnitState.BLOCKED.value,
+                    skills=skill_sets[work_unit_id],
+                    execution_id=(outcome.execution.id if outcome.execution else None),
+                    external_id=(
+                        outcome.execution.external_id if outcome.execution else None
+                    ),
+                    verdict=EvaluationVerdict.BLOCKED.value,
+                    reason="executor-termination-unconfirmed:no-unsafe-redispatch",
+                    strategy=strategy_generations[work_unit_id],
+                ))
+                return False
+        self._claims.release(outcome.claim)
         work_unit = work_units[work_unit_id]
         if work_unit.state is WorkUnitState.RUNNING:
             work_unit.start_evaluation()

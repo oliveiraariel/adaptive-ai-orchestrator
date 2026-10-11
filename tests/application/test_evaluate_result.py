@@ -135,7 +135,7 @@ def test_partial_result_is_never_accepted_as_terminal() -> None:
 
 
 
-def test_authoritative_worker_complete_evidence_satisfies_low_risk_criteria() -> None:
+def test_authoritative_worker_complete_evidence_does_not_satisfy_semantic_criteria() -> None:
     result = make_result(
         evidence=(
             "runtime-completed",
@@ -155,9 +155,9 @@ def test_authoritative_worker_complete_evidence_satisfies_low_risk_criteria() ->
         )
     ).evaluation
 
-    assert evaluation.verdict is EvaluationVerdict.ACCEPTED
-    assert evaluation.confidence == 1.0
+    assert evaluation.verdict is EvaluationVerdict.RETURNED
+    assert evaluation.confidence == 0.0
     assert all(
-        finding.startswith("SATISFIED:")
+        finding.startswith("UNSATISFIED:")
         for finding in evaluation.findings
     )

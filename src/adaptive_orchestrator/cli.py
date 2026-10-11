@@ -25,10 +25,16 @@ from application.run_orchestration import (
     RunOrchestrationError,
     RunOrchestrationRequest,
 )
+from application.governed_takeover import GovernedTakeoverStore, GovernedTakeoverError
 from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
+from application.checkpoint_administration import (
+    CheckpointAdministrationError,
+    CheckpointAdministrationAction,
+    CheckpointAdministrator,
+)
 from application.run_project_orchestration import (
     AcceptanceMode,
     ConcurrencyMode,
@@ -52,6 +58,10 @@ from application.reconcile_historical_work_unit import (
     HistoricalWorkUnitReconciliationError,
     ReconcileHistoricalWorkUnit,
     ReconciliationDecision,
+)
+from application.project_continuation import (
+    CreateProjectSuccessor,
+    ProjectContinuationError,
 )
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
@@ -168,6 +178,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Governed override persisted for this resumed orchestration.",
     )
     _add_gateway_arguments(resume_project)
+
+    continue_project = commands.add_parser(
+        "continue-project",
+        help="Create an idempotent successor for a terminal project after a governed clarification.",
+    )
+    continue_project.add_argument("--predecessor-orchestration-id", required=True)
+    continue_project.add_argument("--clarification", required=True)
+    continue_project.add_argument("--actor", default="adaptive-cli")
+    continue_project.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
+    takeover = commands.add_parser(
+        "takeover-work-unit",
+        help="Request a governed owner/direct or replacement takeover of one existing Work Unit.",
+    )
+    takeover.add_argument("--orchestration-id", required=True)
+    takeover.add_argument("--work-unit-id", required=True)
+    takeover.add_argument("--mode", required=True, choices=("direct", "replacement"))
+    takeover.add_argument("--owner-agent", help="OpenClaw coordinator agent ID for direct takeover.")
+    takeover.add_argument("--reason", required=True)
+    takeover.add_argument("--actor", required=True)
+    takeover.add_argument(
+        "--authorize", action="store_true",
+        help="Explicitly authorize ending the current executor and changing ownership.",
+    )
+    takeover.add_argument(
+        "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
+    )
 
     pause_project = commands.add_parser(
         "pause-project",
@@ -541,8 +581,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _project_status(args)
     if args.command == "resume-project":
         return _resume_project(args)
+    if args.command == "continue-project":
+        return _continue_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
+    if args.command == "takeover-work-unit":
+        return _takeover_work_unit(args)
     if args.command == "reconcile-work-unit":
         return _reconcile_work_unit(args)
     if args.command == "migrate-work-graph":
@@ -598,7 +642,7 @@ def _run(args: argparse.Namespace) -> int:
                 inputs=tuple(args.input),
                 constraints=tuple(args.constraint),
                 expected_output=tuple(args.expected_output) or ("agent response",),
-                acceptance_criteria=tuple(args.accept) or ("runtime-completed",),
+                acceptance_criteria=_single_work_unit_acceptance_criteria(args),
                 execution_policy=policy,
                 requested_side_effects=tuple(args.side_effect),
                 human_approved=args.human_approved,
@@ -648,8 +692,29 @@ def _run(args: argparse.Namespace) -> int:
     )
     return 0 if accepted else 3
 
+def _single_work_unit_acceptance_criteria(args: argparse.Namespace) -> tuple[str, ...]:
+    """Require a semantic acceptance contract for one-off work.
+
+    ``runtime-completed`` is telemetry, not an acceptance criterion.  Allowing
+    it as the implicit default was enough to turn a worker's stopped runtime
+    into a false success, bypassing the durable project/recovery path.
+    """
+    criteria = tuple(item.strip() for item in args.accept if item.strip())
+    if not criteria:
+        raise ValueError(
+            "SINGLE_WORK_UNIT_ACCEPTANCE_REQUIRED: pass one or more literal "
+            "--accept criteria, or use orchestrate for project work."
+        )
+    if "runtime-completed" in criteria:
+        raise ValueError(
+            "INVALID_ACCEPTANCE_CRITERION: runtime-completed is runtime "
+            "telemetry, not semantic acceptance evidence."
+        )
+    return criteria
+
+
 def _request_from_args(args: argparse.Namespace) -> RunOrchestrationRequest:
-    return RunOrchestrationRequest(objective=args.objective, agent=args.agent, skills=tuple(args.skill), model=args.model, provider=args.provider, tools=tuple(args.tool), scope=args.scope, context=tuple(args.context), inputs=tuple(args.input), constraints=tuple(args.constraint), expected_output=tuple(args.expected_output) or ("agent response",), acceptance_criteria=tuple(args.accept) or ("runtime-completed",), execution_policy=_execution_policy(args), requested_side_effects=tuple(args.side_effect), human_approved=args.human_approved)
+    return RunOrchestrationRequest(objective=args.objective, agent=args.agent, skills=tuple(args.skill), model=args.model, provider=args.provider, tools=tuple(args.tool), scope=args.scope, context=tuple(args.context), inputs=tuple(args.input), constraints=tuple(args.constraint), expected_output=tuple(args.expected_output) or ("agent response",), acceptance_criteria=_single_work_unit_acceptance_criteria(args), execution_policy=_execution_policy(args), requested_side_effects=tuple(args.side_effect), human_approved=args.human_approved)
 
 def _dispatch(args: argparse.Namespace) -> int:
     try:
@@ -1246,6 +1311,11 @@ def _project_status(args: argparse.Namespace) -> int:
                 f"No project checkpoint exists for orchestration '{orchestration_id}'."
             )
         payload = _project_checkpoint_status_payload(orchestration_id, checkpoint)
+        pending_takeovers = GovernedTakeoverStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        ).load(orchestration_id)
+        if isinstance(pending_takeovers, dict):
+            payload["governed_takeovers"] = pending_takeovers.get("requests", [])
         control = FileOrchestrationControlPlane(
             project_root=Path(args.project_root).expanduser().resolve()
         ).load(orchestration_id)
@@ -1265,6 +1335,41 @@ def _project_status(args: argparse.Namespace) -> int:
     except (
         OSError,
         ProjectOrchestrationError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
+
+
+def _continue_project(args: argparse.Namespace) -> int:
+    """Persist a successor; dispatch remains an explicit subsequent operation."""
+    try:
+        predecessor = _normalize_orchestration_id(args.predecessor_orchestration_id)
+        assert predecessor is not None
+        store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        result = CreateProjectSuccessor(checkpoint_store=store).execute(
+            predecessor_orchestration_id=predecessor,
+            clarification=args.clarification,
+            actor=args.actor,
+        )
+        print(json.dumps({
+            "ok": True,
+            "mode": "continue-project",
+            "predecessor_orchestration_id": result.predecessor_orchestration_id,
+            "orchestration_id": result.successor_orchestration_id,
+            "reused_work_unit_ids": list(result.reused_work_unit_ids),
+            "pending_work_unit_ids": list(result.pending_work_unit_ids),
+            "already_exists": result.already_exists,
+            "next_command": "resume-project --orchestration-id %s --project-root %s" % (
+                result.successor_orchestration_id, Path(args.project_root).expanduser().resolve(),
+            ),
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (
+        OSError,
+        ProjectContinuationError,
         ProjectOrchestrationCheckpointError,
         ValueError,
     ) as exc:
@@ -1606,6 +1711,10 @@ def _supervise_projects(args: argparse.Namespace) -> int:
             project_root=project_root,
             stale_after_seconds=args.stale_after_seconds,
         )
+        administrator = CheckpointAdministrator(
+            project_root=project_root,
+            stale_after_seconds=args.stale_after_seconds,
+        )
     except (OSError, ValueError, ProjectOrchestrationCheckpointError) as exc:
         return _print_error(exc)
 
@@ -1637,6 +1746,46 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 return 0
 
         try:
+            administration = administrator.reconcile(
+                orchestration_id=target_orchestration_id,
+                allow_resume=target_orchestration_id is not None,
+            )
+            observability = JsonlObservabilitySink(
+                canonical_observability_path(),
+                getattr(args, "session_id", None),
+            )
+            for item in administration:
+                observability.emit(
+                    "checkpoint_reconciliation_detected",
+                    orchestration_id=item.orchestration_id,
+                    checkpoint_digest=item.checkpoint_digest,
+                )
+                observability.emit(
+                    "checkpoint_reconciliation_classified",
+                    orchestration_id=item.orchestration_id,
+                    classification=item.classification.value,
+                    action=item.action.value,
+                    reason=item.reason,
+                    checkpoint_digest=item.checkpoint_digest,
+                )
+                if item.persisted:
+                    observability.emit(
+                        "checkpoint_reconciliation_persisted",
+                        orchestration_id=item.orchestration_id,
+                        classification=item.classification.value,
+                        action=item.action.value,
+                        reason=item.reason,
+                        report_id=item.report_id,
+                        checkpoint_digest=item.checkpoint_digest,
+                    )
+                    if item.action is CheckpointAdministrationAction.PAUSE:
+                        observability.emit(
+                            "orchestration_paused",
+                            orchestration_id=item.orchestration_id,
+                            status="PAUSED",
+                            terminal=False,
+                            reason="checkpoint-administration",
+                        )
             directives = supervisor.directives(
                 orchestration_id=target_orchestration_id
             )
@@ -1644,11 +1793,17 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 resume_one,
                 orchestration_id=target_orchestration_id,
                 continue_on_error=bool(args.watch),
+                eligible_orchestration_ids=frozenset(
+                    item.orchestration_id
+                    for item in administration
+                    if item.action is CheckpointAdministrationAction.RESUME
+                ),
             )
         except (
             OSError,
             ProjectOrchestrationError,
             ProjectOrchestrationCheckpointError,
+            CheckpointAdministrationError,
             ValueError,
         ) as exc:
             return _print_error(exc)
@@ -1681,6 +1836,18 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                         }
                         for item in directives
                     ],
+                    "administration": [
+                        {
+                            "orchestration_id": item.orchestration_id,
+                            "classification": item.classification.value,
+                            "action": item.action.value,
+                            "reason": item.reason,
+                            "checkpoint_digest": item.checkpoint_digest,
+                            "report_id": item.report_id,
+                            "persisted": item.persisted,
+                        }
+                        for item in administration
+                    ],
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -1699,6 +1866,59 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 return 0
 
         time.sleep(args.interval_seconds)
+
+
+def _takeover_work_unit(args: argparse.Namespace) -> int:
+    """Request takeover; never forge a terminal worker status from the CLI."""
+    try:
+        if not args.authorize:
+            raise GovernedTakeoverError(
+                "Explicit --authorize is required for governed takeover."
+            )
+        root = Path(args.project_root).expanduser().resolve()
+        checkpoint = FileProjectOrchestrationCheckpointStore(
+            project_root=root
+        ).load(args.orchestration_id)
+        if checkpoint is None:
+            raise GovernedTakeoverError("Orchestration checkpoint not found.")
+        if checkpoint.get("terminal") is True:
+            raise GovernedTakeoverError(
+                "Terminal orchestration requires continue-project; no automatic rewrites."
+            )
+        states = checkpoint.get("work_unit_states")
+        if not isinstance(states, dict) or args.work_unit_id not in states:
+            raise GovernedTakeoverError("Work Unit does not exist in checkpoint.")
+        if states[args.work_unit_id] in {"COMPLETED", "CANCELLED"}:
+            raise GovernedTakeoverError(
+                "Accepted/terminal Work Units cannot be taken over."
+            )
+        if checkpoint.get("desired_state") == "PAUSED":
+            raise GovernedTakeoverError(
+                "Orchestration is paused; resume-project is required to process takeover."
+            )
+        if args.mode == "direct" and not (args.owner_agent or "").strip():
+            raise GovernedTakeoverError(
+                "Direct takeover requires --owner-agent (coordinator OpenClaw agent ID)."
+            )
+        row = GovernedTakeoverStore(project_root=root).request(
+            orchestration_id=args.orchestration_id,
+            work_unit_id=args.work_unit_id,
+            mode=args.mode,
+            actor=args.actor,
+            reason=args.reason,
+            owner_agent=args.owner_agent if args.mode == "direct" else None,
+        )
+        print(json.dumps({
+            "ok": True, "mode": "takeover-work-unit",
+            "orchestration_id": args.orchestration_id,
+            "takeover": row,
+            "note": "Requested, not yet executed. Controller must confirm old executor termination.",
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (
+        OSError, ValueError, ProjectOrchestrationCheckpointError, GovernedTakeoverError
+    ) as exc:
+        return _print_error(exc)
 
 
 def _pause_project(args: argparse.Namespace) -> int:
