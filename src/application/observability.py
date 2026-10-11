@@ -68,6 +68,7 @@ class JsonlObservabilitySink:
         "orchestration_heartbeat", "orchestration_terminalized",
         "orchestration_recovery_yielded", "orchestration_idle_watchdog_triggered",
         "orchestration_completed", "governed_takeover_applied",
+        "governed_takeover_requested",
         "checkpoint_reconciliation_detected", "checkpoint_reconciliation_classified",
         "checkpoint_reconciliation_persisted",
     }
@@ -92,7 +93,7 @@ class JsonlObservabilitySink:
             "recovery_strategy_failed", "work_unit_recovery_retry",
             "work_unit_recovery_suspended", "work_unit_recovery_skipped",
             "work_unit_practical_test_ready", "recovery_human_question_requested",
-            "governed_takeover_applied",
+            "governed_takeover_applied", "governed_takeover_requested",
             "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (
