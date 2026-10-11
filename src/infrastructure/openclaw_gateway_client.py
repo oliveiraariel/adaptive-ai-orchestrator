@@ -734,7 +734,19 @@ class OpenClawGatewayClient(OpenClawClient):
             reason="runtime-current", attempt=run.runtime_attempt, thinking=thinking,
             thinking_reason="runtime-current",
         )
-        fallback = policy.fallback_for(current, failure_reason=reason)
+        historical = run.task_payload.get("adaptive_failover_routes")
+        used = [
+            row for row in (historical if isinstance(historical, list) else [])
+            if isinstance(row, dict) and isinstance(row.get("model"), str)
+        ]
+        used.append({"model": current_model, "auth_profile": auth})
+        excluded = frozenset(
+            (str(row["model"]).strip().casefold(), row.get("auth_profile"))
+            for row in used
+        )
+        fallback = policy.fallback_for(
+            current, failure_reason=reason, excluded_routes=excluded
+        )
         if fallback is None:
             return None
 
@@ -766,7 +778,12 @@ class OpenClawGatewayClient(OpenClawClient):
             "Inspect existing repository changes and durable Result Store evidence "
             "before making edits; preserve completed work and continue idempotently."
         )
-        return {**run.task_payload, "configuration": fc, "context": context}
+        return {
+            **run.task_payload,
+            "configuration": fc,
+            "context": context,
+            "adaptive_failover_routes": used,
+        }
 
 
     def _classify_failover_error(
