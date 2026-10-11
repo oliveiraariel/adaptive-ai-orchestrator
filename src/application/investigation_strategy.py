@@ -26,6 +26,7 @@ class RecoveryStrategyRequest:
     state_summary: str
     attempt_history: tuple[str, ...] = ()
     constraints: tuple[str, ...] = ()
+    authoritative_decisions: tuple[str, ...] = ()
     agent: str = "main"
     recovery_epoch: int = 1
 
@@ -71,6 +72,7 @@ class RuntimeRecoveryStrategist:
                     request.state_summary,
                     *request.attempt_history,
                     *request.constraints,
+                    *request.authoritative_decisions,
                 )
             )
         )
@@ -97,6 +99,7 @@ class RuntimeRecoveryStrategist:
                 ),
                 constraints=(
                     *request.constraints,
+                    *tuple("AUTHORITATIVE DECISION: " + item for item in request.authoritative_decisions),
                     "Do not execute the proposed fix.",
                     "Do not dispatch other workers or invoke Adaptive recursively.",
                     "Do not repeat an exhausted approach unless new evidence materially changes it.",
@@ -245,6 +248,12 @@ class RuntimeRecoveryStrategist:
     @staticmethod
     def _prompt(request: RecoveryStrategyRequest, experience: Sequence[str] | str) -> str:
         learned = experience if isinstance(experience, str) else "\n".join(experience)
+        decisions = (
+            "AUTHORITATIVE DECISIONS:\n"
+            + "\n".join(f"- {item}" for item in request.authoritative_decisions)
+            + "\n\n"
+            if request.authoritative_decisions else ""
+        )
         return (
             "You are Adaptive's Recovery Strategist. A Work Unit has returned, "
             "exhausted one or more strategies, or reached a technical blocked state "
@@ -255,11 +264,15 @@ class RuntimeRecoveryStrategist:
             "from the developer could materially improve the next attempt, use a "
             "grill/grill-me style question: set disposition WAIT_HUMAN, "
             "human_decision_required=true, and populate human_question. Do not ask "
-            "for information the repository/runtime can discover itself.\n\n"
+            "for information the repository/runtime can discover itself. Before "
+            "emitting WAIT_HUMAN, treat the AUTHORITATIVE DECISIONS below as "
+            "approved answers when they resolve the question; preserve their "
+            "wording/provenance in the proposed path.\n\n"
             f"PROJECT OBJECTIVE:\n{request.project_objective}\n\n"
             f"WORK UNIT {request.work_unit_id}:\n{request.work_unit_objective}\n\n"
             f"CURRENT STATE:\n{request.state_summary}\n\n"
-            "PREVIOUS ATTEMPTS / PATHS:\n"
+            + decisions
+            + "PREVIOUS ATTEMPTS / PATHS:\n"
             + ("\n".join(f"- {item}" for item in request.attempt_history) or "- none recorded")
             + "\n\n"
             + (f"RELEVANT VALIDATED/PROVISIONAL ADAPTIVE LEARNING:\n{learned}\n\n" if learned else "")

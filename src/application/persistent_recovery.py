@@ -67,6 +67,7 @@ class PersistentRecoveryCoordinator:
         project_id: str = "",
         attempt_history: Iterable[str],
         constraints: Iterable[str] = (),
+        authoritative_decisions: Iterable[str] = (),
         agent: str = "main",
         failure_class: str = "strategy-exhausted",
     ) -> RecoveryCycleResult:
@@ -105,6 +106,7 @@ class PersistentRecoveryCoordinator:
             state_summary=state_summary,
             attempt_history=tuple(attempt_history),
             constraints=tuple(constraints),
+            authoritative_decisions=tuple(authoritative_decisions),
             agent=agent,
             recovery_epoch=epoch,
         )

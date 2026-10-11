@@ -788,6 +788,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     project_id=request.project_id,
                                     attempt_history=history,
                                     constraints=request.constraints,
+                                    authoritative_decisions=request.context,
                                     agent=(
                                         request.recovery_strategist_agent
                                         or request.planner_agent

@@ -1,4 +1,5 @@
 from application.project_continuation import CreateProjectSuccessor, ProjectContinuationError
+from application.investigation_strategy import RecoveryStrategyRequest, RuntimeRecoveryStrategist
 
 
 class Store:
@@ -47,3 +48,15 @@ def test_nonterminal_predecessor_is_rejected():
         assert "terminal" in str(exc)
     else:
         raise AssertionError("expected terminal guard")
+
+
+def test_recovery_prompt_exposes_authoritative_decision_before_wait_human():
+    request = RecoveryStrategyRequest(
+        project_objective="finish", orchestration_id="o", work_unit_id="w",
+        work_unit_objective="work", state_summary="blocked",
+        authoritative_decisions=("Previsto includes PENDENTE and EFETIVADO.",),
+    )
+    prompt = RuntimeRecoveryStrategist._prompt(request, "")
+    assert "AUTHORITATIVE DECISIONS" in prompt
+    assert "Previsto includes PENDENTE and EFETIVADO." in prompt
+    assert "Before emitting WAIT_HUMAN" in prompt
