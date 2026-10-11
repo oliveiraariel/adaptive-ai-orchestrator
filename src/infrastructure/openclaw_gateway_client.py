@@ -21,6 +21,7 @@ else:
     _CRYPTO_IMPORT_ERROR = None
 
 from application.incident_classifier import IncidentClassifier
+from application.model_quota_continuity import ModelQuotaCooldownStore
 from application.model_routing_policy import ModelRoutingDecision, ModelRoutingPolicy
 from application.provider_health_policy import ProviderHealthPolicy
 from application.remediation_policy import RemediationPolicy
@@ -127,6 +128,7 @@ class OpenClawGatewayClient(OpenClawClient):
         remediation_policy: RemediationPolicy | None = None,
         provider_health_policy: ProviderHealthPolicy | None = None,
         provider_telemetry: ProviderTelemetryStore | None = None,
+        quota_cooldowns: ModelQuotaCooldownStore | None = None,
         result_store: FileResultStore | None = None,
         message_store: FileMessageStore | None = None,
     ) -> None:
@@ -162,6 +164,7 @@ class OpenClawGatewayClient(OpenClawClient):
         self._remediation_policy = remediation_policy or RemediationPolicy()
         self._provider_health = provider_health_policy or ProviderHealthPolicy()
         self._provider_telemetry = provider_telemetry or ProviderTelemetryStore()
+        self._quota_cooldowns = quota_cooldowns or ModelQuotaCooldownStore.from_env()
         self._device_identity = self._load_or_create_device_identity()
         self._result_store = result_store or FileResultStore()
         if message_store is not None:
@@ -296,6 +299,9 @@ class OpenClawGatewayClient(OpenClawClient):
         session_key = f"agent:{agent_id}:orchestrator:{task_id}"
         idempotency_key = f"orchestrator:{task_id}"
         if runtime_attempt > 1:
+            # A failed executor must not retain the conversation/claim of its
+            # replacement. The Work Unit ID stays stable, the session does not.
+            session_key = f"{session_key}:runtime-attempt:{runtime_attempt}"
             idempotency_key = f"{idempotency_key}:runtime-fallback:{runtime_attempt}"
 
         params: dict[str, Any] = {
@@ -436,6 +442,14 @@ class OpenClawGatewayClient(OpenClawClient):
                     incident, cooldown_seconds=remediation.cooldown_seconds
                 )
                 self._record_incident(run, incident, remediation)
+                # Persist only renewable GPT quota windows. Do not interpret
+                # billing, daily/weekly budgets or auth errors as a 5h reset.
+                self._quota_cooldowns.record_quota(
+                    provider, model,
+                    configuration.get("auth_profile")
+                    if isinstance(configuration.get("auth_profile"), str) else None,
+                    category=incident.category, subtype=incident.subtype,
+                )
                 if not remediation.fallback_allowed:
                     raise
                 payload = self._build_failover_payload(run, incident.failover_reason)
@@ -720,7 +734,19 @@ class OpenClawGatewayClient(OpenClawClient):
             reason="runtime-current", attempt=run.runtime_attempt, thinking=thinking,
             thinking_reason="runtime-current",
         )
-        fallback = policy.fallback_for(current, failure_reason=reason)
+        historical = run.task_payload.get("adaptive_failover_routes")
+        used = [
+            row for row in (historical if isinstance(historical, list) else [])
+            if isinstance(row, dict) and isinstance(row.get("model"), str)
+        ]
+        used.append({"model": current_model, "auth_profile": auth})
+        excluded = frozenset(
+            (str(row["model"]).strip().casefold(), row.get("auth_profile"))
+            for row in used
+        )
+        fallback = policy.fallback_for(
+            current, failure_reason=reason, excluded_routes=excluded
+        )
         if fallback is None:
             return None
 
@@ -748,10 +774,16 @@ class OpenClawGatewayClient(OpenClawClient):
         context=list(run.task_payload.get("context") or ())
         context.append(
             "Adaptive automatic operational failover: the previous model failed because "
-            f"of {reason}. Continue in the same worker session. Inspect transcript and "
-            "repository state first; preserve completed work and continue idempotently."
+            f"of {reason}. This is a new executor session for the SAME Work Unit. "
+            "Inspect existing repository changes and durable Result Store evidence "
+            "before making edits; preserve completed work and continue idempotently."
         )
-        return {**run.task_payload, "configuration": fc, "context": context}
+        return {
+            **run.task_payload,
+            "configuration": fc,
+            "context": context,
+            "adaptive_failover_routes": used,
+        }
 
 
     def _classify_failover_error(
