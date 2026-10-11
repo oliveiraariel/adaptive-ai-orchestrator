@@ -43,11 +43,15 @@ def test_takeover_requires_owner_and_rejects_conflicting_live_request(tmp_path):
             actor="owner", reason="Work is stopped",
         )
     _request(store)
-    with pytest.raises(GovernedTakeoverError, match="live takeover"):
-        store.request(
-            orchestration_id="orch-1", work_unit_id="wu-1", mode="replacement",
-            actor="owner", reason="Changed strategy",
-        )
+    replacement = store.request(
+        orchestration_id="orch-1", work_unit_id="wu-1", mode="replacement",
+        actor="owner", reason="Changed strategy",
+    )
+    assert replacement["id"] == "2"
+    assert store.current("orch-1", "wu-1")["mode"] == "replacement"
+    history = store.load("orch-1")["requests"]
+    assert history[0]["state"] == "SUPERSEDED"
+    assert history[0]["history"][-1]["state"] == "SUPERSEDED"
 
 
 def test_cli_requires_authorization_and_preserves_checkpoint(tmp_path, capsys):
