@@ -613,7 +613,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         active_outcome = active_by_id.get(work_unit_id)
                         if active_outcome is not None:
                             assert active_outcome.execution is not None
-                            status = self._runtime.get_status(active_outcome.execution)
+                            try:
+                                status = self._runtime.get_status(active_outcome.execution)
+                            except Exception as exc:
+                                takeovers.transition(
+                                    orchestration_id, intent["id"],
+                                    state="QUIESCING",
+                                    detail="Runtime status unconfirmed: " + type(exc).__name__,
+                                )
+                                continue
                             if status is AgentRuntimeStatus.COMPLETED:
                                 # Drain and evaluate an already completed worker
                                 # rather than cancel a valid final publication.
@@ -694,8 +702,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             "GOVERNED TAKEOVER AUTHORIZED by " + str(intent["actor"])
                             + ": " + str(intent["reason"])
                             + ". Preserve accepted results and existing workspace. "
-                            + "Direct owner execution" if intent["mode"] == "direct"
-                            else "GOVERNED REPLACEMENT requested. Preserve accepted work."
+                            + (
+                                "Direct owner execution requested."
+                                if intent["mode"] == "direct"
+                                else "Replacement agent execution requested."
+                            )
                         )
                         takeovers.transition(
                             orchestration_id, intent["id"], state="APPLIED",
@@ -1452,14 +1463,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     and takeover.get("state") == "APPLIED"
                                     and takeover.get("mode") == "direct"
                                 ):
-                                    from dataclasses import replace as _replace
                                     owner = str(takeover["owner_agent"])
-                                    direct_configuration = _replace(
+                                    direct_configuration = replace(
                                         assignment.configuration, agent=owner,
                                     )
-                                    governed_assignments.append(_replace(
+                                    governed_assignments.append(replace(
                                         assignment, configuration=direct_configuration,
-                                        task_package=_replace(
+                                        task_package=replace(
                                             assignment.task_package,
                                             configuration=direct_configuration,
                                             context=(
