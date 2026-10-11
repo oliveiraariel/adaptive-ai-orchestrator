@@ -50,6 +50,7 @@ class JsonlObservabilitySink:
         "active_execution_count", "soft_stalled_worker_count", "elapsed_seconds",
         "idle_seconds", "recovery_loop_mode", "question", "suggested_skills",
         "classification", "report_id", "checkpoint_digest", "backup_sha256",
+        "actor",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -66,7 +67,8 @@ class JsonlObservabilitySink:
         "recovery_plan_rejected", "recovery_strategy_failed", "model_failover",
         "orchestration_heartbeat", "orchestration_terminalized",
         "orchestration_recovery_yielded", "orchestration_idle_watchdog_triggered",
-        "orchestration_completed",
+        "orchestration_completed", "governed_takeover_applied",
+        "governed_takeover_requested", "governed_takeover_completed",
         "checkpoint_reconciliation_detected", "checkpoint_reconciliation_classified",
         "checkpoint_reconciliation_persisted",
     }
@@ -91,6 +93,8 @@ class JsonlObservabilitySink:
             "recovery_strategy_failed", "work_unit_recovery_retry",
             "work_unit_recovery_suspended", "work_unit_recovery_skipped",
             "work_unit_practical_test_ready", "recovery_human_question_requested",
+            "governed_takeover_applied", "governed_takeover_requested",
+            "governed_takeover_completed",
             "automatic_learning_triggered", "automatic_learning_failed",
         }
         if event_type in work_unit_events and (

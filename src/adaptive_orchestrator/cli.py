@@ -25,6 +25,7 @@ from application.run_orchestration import (
     RunOrchestrationError,
     RunOrchestrationRequest,
 )
+from application.governed_takeover import GovernedTakeoverStore, GovernedTakeoverError
 from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
@@ -188,6 +189,24 @@ def build_parser() -> argparse.ArgumentParser:
     continue_project.add_argument(
         "--project-root",
         default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
+
+    takeover = commands.add_parser(
+        "takeover-work-unit",
+        help="Request a governed owner/direct or replacement takeover of one existing Work Unit.",
+    )
+    takeover.add_argument("--orchestration-id", required=True)
+    takeover.add_argument("--work-unit-id", required=True)
+    takeover.add_argument("--mode", required=True, choices=("direct", "replacement"))
+    takeover.add_argument("--owner-agent", help="OpenClaw coordinator agent ID for direct takeover.")
+    takeover.add_argument("--reason", required=True)
+    takeover.add_argument("--actor", required=True)
+    takeover.add_argument(
+        "--authorize", action="store_true",
+        help="Explicitly authorize ending the current executor and changing ownership.",
+    )
+    takeover.add_argument(
+        "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
     )
 
     pause_project = commands.add_parser(
@@ -566,6 +585,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _continue_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
+    if args.command == "takeover-work-unit":
+        return _takeover_work_unit(args)
     if args.command == "reconcile-work-unit":
         return _reconcile_work_unit(args)
     if args.command == "migrate-work-graph":
@@ -1290,6 +1311,11 @@ def _project_status(args: argparse.Namespace) -> int:
                 f"No project checkpoint exists for orchestration '{orchestration_id}'."
             )
         payload = _project_checkpoint_status_payload(orchestration_id, checkpoint)
+        pending_takeovers = GovernedTakeoverStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        ).load(orchestration_id)
+        if isinstance(pending_takeovers, dict):
+            payload["governed_takeovers"] = pending_takeovers.get("requests", [])
         control = FileOrchestrationControlPlane(
             project_root=Path(args.project_root).expanduser().resolve()
         ).load(orchestration_id)
@@ -1840,6 +1866,59 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 return 0
 
         time.sleep(args.interval_seconds)
+
+
+def _takeover_work_unit(args: argparse.Namespace) -> int:
+    """Request takeover; never forge a terminal worker status from the CLI."""
+    try:
+        if not args.authorize:
+            raise GovernedTakeoverError(
+                "Explicit --authorize is required for governed takeover."
+            )
+        root = Path(args.project_root).expanduser().resolve()
+        checkpoint = FileProjectOrchestrationCheckpointStore(
+            project_root=root
+        ).load(args.orchestration_id)
+        if checkpoint is None:
+            raise GovernedTakeoverError("Orchestration checkpoint not found.")
+        if checkpoint.get("terminal") is True:
+            raise GovernedTakeoverError(
+                "Terminal orchestration requires continue-project; no automatic rewrites."
+            )
+        states = checkpoint.get("work_unit_states")
+        if not isinstance(states, dict) or args.work_unit_id not in states:
+            raise GovernedTakeoverError("Work Unit does not exist in checkpoint.")
+        if states[args.work_unit_id] in {"COMPLETED", "CANCELLED"}:
+            raise GovernedTakeoverError(
+                "Accepted/terminal Work Units cannot be taken over."
+            )
+        if checkpoint.get("desired_state") == "PAUSED":
+            raise GovernedTakeoverError(
+                "Orchestration is paused; resume-project is required to process takeover."
+            )
+        if args.mode == "direct" and not (args.owner_agent or "").strip():
+            raise GovernedTakeoverError(
+                "Direct takeover requires --owner-agent (coordinator OpenClaw agent ID)."
+            )
+        row = GovernedTakeoverStore(project_root=root).request(
+            orchestration_id=args.orchestration_id,
+            work_unit_id=args.work_unit_id,
+            mode=args.mode,
+            actor=args.actor,
+            reason=args.reason,
+            owner_agent=args.owner_agent if args.mode == "direct" else None,
+        )
+        print(json.dumps({
+            "ok": True, "mode": "takeover-work-unit",
+            "orchestration_id": args.orchestration_id,
+            "takeover": row,
+            "note": "Requested, not yet executed. Controller must confirm old executor termination.",
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (
+        OSError, ValueError, ProjectOrchestrationCheckpointError, GovernedTakeoverError
+    ) as exc:
+        return _print_error(exc)
 
 
 def _pause_project(args: argparse.Namespace) -> int:
