@@ -8,7 +8,7 @@ from application.agent_runtime import AgentRuntimeResult, AgentRuntimeStatus, Ex
 from application.continuous_project_orchestration import RunContinuousProjectOrchestration
 from application.governed_takeover import GovernedTakeoverStore
 from application.run_project_orchestration import (
-    ProjectOrchestrationRequest, ProjectRunStatus, RecoveryLoopMode,
+    ProjectOrchestrationRequest, ProjectRunStatus, RecoveryLoopMode, AcceptanceMode,
 )
 from domain.project_execution_plan import PlannedWorkUnit, ProjectExecutionPlan
 from domain.work_unit import WorkUnitKind
@@ -98,9 +98,7 @@ def test_user_takeover_aborts_old_attempt_and_owner_completes_same_wu(tmp_path):
         worker_observation_interval_seconds=1,
         max_concurrency=1, max_waves=3,
         recovery_loop_mode=RecoveryLoopMode.DISABLED,
-        acceptance_mode="STRICT" if False else __import__(
-            "application.run_project_orchestration", fromlist=["AcceptanceMode"]
-        ).AcceptanceMode.STRICT,
+        acceptance_mode=AcceptanceMode.STRICT,
     )
     result = []
     error = []
@@ -133,3 +131,46 @@ def test_user_takeover_aborts_old_attempt_and_owner_completes_same_wu(tmp_path):
     assert takeover.current("orch-1", "wu-1")["state"] == "COMPLETED"
     records = store.load("orch-1")["records"]
     assert any("governed-takeover" in row["reason"] for row in records)
+
+
+def test_policy_can_choose_direct_owner_after_exhausted_worker(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADAPTIVE_AUTO_DIRECT_TAKEOVER_ON_EXHAUSTION", "1")
+
+    class FailingThenOwner(Runtime):
+        def submit(self, task):
+            result = super().submit(task)
+            self.states[result.external_id] = AgentRuntimeStatus.COMPLETED
+            return result
+
+        def retrieve_result(self, execution):
+            if execution.external_id == "external-1":
+                raise RuntimeError("worker exhausted its attempts")
+            return super().retrieve_result(execution)
+
+    runtime = FailingThenOwner()
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    takeover = GovernedTakeoverStore(project_root=tmp_path)
+    runner = RunContinuousProjectOrchestration(
+        runtime=runtime, claim_registry=InMemoryClaimRegistry(),
+        planner=Plan(), skill_profiles=(), checkpoint_store=store,
+    )
+    result = runner.execute(ProjectOrchestrationRequest(
+        objective="Complete the planned review",
+        orchestration_id="orch-policy",
+        agent="delegated-worker",
+        planner_agent="coordinator",
+        max_concurrency=1,
+        max_waves=5,
+        max_attempts_per_work_unit=1,
+        max_strategies_per_work_unit=1,
+        recovery_loop_mode=RecoveryLoopMode.ENABLED,
+        acceptance_mode=AcceptanceMode.STRICT,
+    ))
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert [task.configuration.agent for task in runtime.tasks] == [
+        "delegated-worker", "coordinator"
+    ]
+    assert takeover.current("orch-policy", "wu-1")["actor"] == (
+        "adaptive-autonomous-recovery-policy"
+    )
+    assert takeover.current("orch-policy", "wu-1")["state"] == "COMPLETED"
