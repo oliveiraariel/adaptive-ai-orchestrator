@@ -343,15 +343,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 actor="adaptive-autonomous-recovery-policy",
                 reason="Bounded worker strategy exhausted; owner continuation is permitted.",
             )
-            observability.emit(
-                "governed_takeover_requested",
-                orchestration_id=orchestration_id,
-                work_unit_id=work_unit_id,
-                mode="direct",
-                actor="adaptive-autonomous-recovery-policy",
-                status="REQUESTED",
-            )
-
         def persist(*, terminal: bool = False) -> None:
             self._save_checkpoint(
                 orchestration_id=orchestration_id,
@@ -639,6 +630,17 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             )
                             continue
                         wu = work_units[work_unit_id]
+                        if intent.get("state") == "REQUESTED":
+                            takeovers.transition(
+                                orchestration_id, intent["id"], state="QUIESCING",
+                                detail="Controller acknowledged the authorized request",
+                            )
+                            observability.emit(
+                                "governed_takeover_requested",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=work_unit_id, mode=intent["mode"],
+                                actor=intent["actor"], status="REQUESTED",
+                            )
                         if wu.state in {WorkUnitState.COMPLETED, WorkUnitState.CANCELLED}:
                             takeovers.transition(
                                 orchestration_id, intent["id"], state="SUPERSEDED",
@@ -1752,6 +1754,13 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                         orchestration_id, takeover["id"],
                                         state="COMPLETED",
                                         detail="Accepted by standard Work Unit evaluator",
+                                    )
+                                    observability.emit(
+                                        "governed_takeover_completed",
+                                        orchestration_id=orchestration_id,
+                                        work_unit_id=work_unit_id,
+                                        mode=takeover["mode"], actor=takeover["actor"],
+                                        status="COMPLETED",
                                     )
                                 elif work_units[work_unit_id].state is WorkUnitState.BLOCKED:
                                     takeovers.transition(
