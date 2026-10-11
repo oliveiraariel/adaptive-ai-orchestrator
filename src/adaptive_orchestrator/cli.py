@@ -58,6 +58,10 @@ from application.reconcile_historical_work_unit import (
     ReconcileHistoricalWorkUnit,
     ReconciliationDecision,
 )
+from application.project_continuation import (
+    CreateProjectSuccessor,
+    ProjectContinuationError,
+)
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from infrastructure.claim_registry import InMemoryClaimRegistry
@@ -173,6 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Governed override persisted for this resumed orchestration.",
     )
     _add_gateway_arguments(resume_project)
+
+    continue_project = commands.add_parser(
+        "continue-project",
+        help="Create an idempotent successor for a terminal project after a governed clarification.",
+    )
+    continue_project.add_argument("--predecessor-orchestration-id", required=True)
+    continue_project.add_argument("--clarification", required=True)
+    continue_project.add_argument("--actor", default="adaptive-cli")
+    continue_project.add_argument(
+        "--project-root",
+        default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd(),
+    )
 
     pause_project = commands.add_parser(
         "pause-project",
@@ -546,6 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _project_status(args)
     if args.command == "resume-project":
         return _resume_project(args)
+    if args.command == "continue-project":
+        return _continue_project(args)
     if args.command == "pause-project":
         return _pause_project(args)
     if args.command == "reconcile-work-unit":
@@ -1291,6 +1309,41 @@ def _project_status(args: argparse.Namespace) -> int:
     except (
         OSError,
         ProjectOrchestrationError,
+        ProjectOrchestrationCheckpointError,
+        ValueError,
+    ) as exc:
+        return _print_error(exc)
+
+
+def _continue_project(args: argparse.Namespace) -> int:
+    """Persist a successor; dispatch remains an explicit subsequent operation."""
+    try:
+        predecessor = _normalize_orchestration_id(args.predecessor_orchestration_id)
+        assert predecessor is not None
+        store = FileProjectOrchestrationCheckpointStore(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
+        result = CreateProjectSuccessor(checkpoint_store=store).execute(
+            predecessor_orchestration_id=predecessor,
+            clarification=args.clarification,
+            actor=args.actor,
+        )
+        print(json.dumps({
+            "ok": True,
+            "mode": "continue-project",
+            "predecessor_orchestration_id": result.predecessor_orchestration_id,
+            "orchestration_id": result.successor_orchestration_id,
+            "reused_work_unit_ids": list(result.reused_work_unit_ids),
+            "pending_work_unit_ids": list(result.pending_work_unit_ids),
+            "already_exists": result.already_exists,
+            "next_command": "resume-project --orchestration-id %s --project-root %s" % (
+                result.successor_orchestration_id, Path(args.project_root).expanduser().resolve(),
+            ),
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (
+        OSError,
+        ProjectContinuationError,
         ProjectOrchestrationCheckpointError,
         ValueError,
     ) as exc:

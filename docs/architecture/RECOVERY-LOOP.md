@@ -67,6 +67,18 @@ orchestration_id
 + checkpoint / Result Store
 ```
 
+### Terminal continuation after a governed clarification
+
+A terminal checkpoint is immutable evidence and is never reopened in place.
+When a `PARTIAL` terminal project has unfinished Work Units and a human supplies
+a missing, governed clarification, Adaptive may create an idempotent successor
+linked to that predecessor. The successor records the clarification and actor,
+retains references to accepted predecessor evidence, and materializes only the
+unfinished Work Units and their remaining dependencies. It must not redispatch
+accepted Work Units or create concurrent successors for the same predecessor
+and normalized clarification. The CLI management boundary is
+`continue-project`; dispatch remains the successor's normal targeted resume.
+
 Important distinctions:
 
 - checkpoint = persisted history, not proof of current life;
