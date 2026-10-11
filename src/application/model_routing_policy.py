@@ -266,6 +266,7 @@ class ModelRoutingPolicy:
         decision: ModelRoutingDecision,
         *,
         failure_reason: str,
+        excluded_routes: frozenset[tuple[str, str | None]] = frozenset(),
     ) -> ModelRoutingDecision | None:
         """Return the next bounded cost-safe operational fallback."""
         normalized = decision.model.strip().casefold()
@@ -318,6 +319,8 @@ class ModelRoutingPolicy:
 
         for target, auth_profile in candidates:
             if not target or self.is_disabled(target):
+                continue
+            if (target.strip().casefold(), auth_profile) in excluded_routes:
                 continue
             if (
                 self.quota_cooldowns is not None
