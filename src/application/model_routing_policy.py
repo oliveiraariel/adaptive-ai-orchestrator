@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 
 from domain.task_package import TaskPackage
+from application.model_quota_continuity import ModelQuotaCooldownStore
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class ModelRoutingPolicy:
     laguna_emergency_model: str = "openrouter/poolside/laguna-xs-2.1:free"
     laguna_auth_profile: str | None = None
     kimi_enabled: bool = True
+    quota_cooldowns: ModelQuotaCooldownStore | None = None
     disabled_models: tuple[str, ...] = (
         "moonshot/kimi-k3",
         "openai/gpt-5.6-sol",
@@ -129,9 +131,36 @@ class ModelRoutingPolicy:
                 default=True,
             ),
             disabled_models=disabled_models,
+            quota_cooldowns=ModelQuotaCooldownStore.from_env(),
         )
 
     def select(self, task: TaskPackage) -> ModelRoutingDecision:
+        """Prefer the configured route until a durable GPT quota cooldown."""
+        return self._respect_quota(self._select_unconstrained(task))
+
+    def _respect_quota(self, decision: ModelRoutingDecision) -> ModelRoutingDecision:
+        store = self.quota_cooldowns
+        if (
+            store is None
+            or not self.kimi_enabled
+            or decision.provider != "openai"
+            or self.is_disabled(self.code_specialist_model)
+            or not store.is_cooling(
+                decision.provider, decision.model, decision.auth_profile
+            )
+        ):
+            return decision
+        return self._decision(
+            self.code_specialist_model,
+            tier="quota-continuation",
+            reason="gpt-quota-cooldown",
+            attempt=decision.attempt,
+            thinking=None,
+            thinking_reason="provider-native-code-specialist-reasoning",
+            escalated_from=decision.model,
+        )
+
+    def _select_unconstrained(self, task: TaskPackage) -> ModelRoutingDecision:
         configuration = task.configuration
         assert configuration is not None
         attempt = self._attempt_number(task)
@@ -247,6 +276,17 @@ class ModelRoutingPolicy:
         laguna_xs = self.laguna_emergency_model.strip().casefold()
 
         candidates: list[tuple[str, str | None]] = []
+        # A renewable GPT quota failure prefers Kimi immediately; the cooldown
+        # ledger also prevents the next dispatch from retrying exhausted GPT.
+        if (
+            decision.provider == "openai"
+            and failure_reason in {"rate_limit", "quota"}
+            and self.kimi_enabled
+            and not self.is_disabled(self.code_specialist_model)
+        ):
+            candidates.append(
+                (self.code_specialist_model, self.code_specialist_auth_profile)
+            )
         secondary = self.economy_secondary_auth_profile
         if secondary and secondary == self.economy_auth_profile:
             secondary = None
@@ -276,6 +316,13 @@ class ModelRoutingPolicy:
 
         for target, auth_profile in candidates:
             if not target or self.is_disabled(target):
+                continue
+            if (
+                self.quota_cooldowns is not None
+                and self.quota_cooldowns.is_cooling(
+                    self._provider(target), target, auth_profile
+                )
+            ):
                 continue
             if target.strip().casefold() == normalized and auth_profile == decision.auth_profile:
                 continue
