@@ -281,6 +281,8 @@ class ModelRoutingPolicy:
         if (
             decision.provider == "openai"
             and failure_reason in {"rate_limit", "quota"}
+            and self.quota_cooldowns is not None
+            and self.quota_cooldowns.enabled
             and self.kimi_enabled
             and not self.is_disabled(self.code_specialist_model)
         ):
