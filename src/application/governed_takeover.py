@@ -106,7 +106,12 @@ class GovernedTakeoverStore:
                 ):
                     if (existing["mode"], existing.get("owner_agent")) == (mode, owner_agent):
                         return existing
-                    raise GovernedTakeoverError("Work Unit already has a live takeover.")
+                    existing["state"] = "SUPERSEDED"
+                    existing["history"].append({
+                        "state": "SUPERSEDED",
+                        "detail": "Superseded by newly authorized owner strategy",
+                        "at": self.wall_clock(),
+                    })
             row["sequence"] += 1
             request = {
                 "id": str(row["sequence"]),
