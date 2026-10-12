@@ -85,7 +85,10 @@ class OpenClawAdapter(AgentRuntime):
             "adaptive-auth-product:openai-oauth"
             if (
                 decision.provider == "openai"
-                and decision.model == "openai/gpt-5.6-luna"
+                and (
+                    decision.model == "openai/gpt-5.6-luna"
+                    or decision.tier == "execution-profile"
+                )
             )
             else "adaptive-auth-product:provider-default"
         )
@@ -125,7 +128,10 @@ class OpenClawAdapter(AgentRuntime):
                     "openai-oauth"
                     if (
                         decision.provider == "openai"
-                        and decision.model == "openai/gpt-5.6-luna"
+                        and (
+                            decision.model == "openai/gpt-5.6-luna"
+                            or decision.tier == "execution-profile"
+                        )
                     )
                     else "provider-default"
                 ),
@@ -161,7 +167,10 @@ class OpenClawAdapter(AgentRuntime):
                 "openai-oauth"
                 if (
                     decision.provider == "openai"
-                    and decision.model == "openai/gpt-5.6-luna"
+                    and (
+                        decision.model == "openai/gpt-5.6-luna"
+                        or decision.tier == "execution-profile"
+                    )
                 )
                 else "provider-default"
             ),
