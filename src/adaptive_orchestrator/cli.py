@@ -225,6 +225,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
     )
 
+    fallback_direto = commands.add_parser(
+        "fallback-direto",
+        help="Ask the Adaptive controller to transfer one or all pending Work Units to the coordinator.",
+    )
+    fallback_direto.add_argument("--orchestration-id", required=True)
+    fallback_scope = fallback_direto.add_mutually_exclusive_group(required=True)
+    fallback_scope.add_argument("--work-unit-id")
+    fallback_scope.add_argument("--all-pending", action="store_true")
+    fallback_direto.add_argument("--owner-agent", required=True)
+    fallback_direto.add_argument("--reason", required=True)
+    fallback_direto.add_argument("--actor", required=True)
+    fallback_direto.add_argument("--authorize", action="store_true")
+    fallback_direto.add_argument(
+        "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
+    )
+
     pause_project = commands.add_parser(
         "pause-project",
         help=(
@@ -610,6 +626,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _pause_project(args)
     if args.command == "takeover-work-unit":
         return _takeover_work_unit(args)
+    if args.command == "fallback-direto":
+        return _request_direct_fallback(args)
     if args.command == "reconcile-work-unit":
         return _reconcile_work_unit(args)
     if args.command == "migrate-work-graph":
@@ -1000,6 +1018,14 @@ def _orchestrate(args: argparse.Namespace) -> int:
         # authentication route is unavailable or disabled.
         profile.routing_policy("planner")
         profile.routing_policy("worker")
+        if profile.quality_direct_fallback and (
+            not args.planner_agent or args.planner_agent == args.agent
+        ):
+            raise ExecutionProfileError(
+                "Quality-driven fallback direto requires a distinct "
+                "--planner-agent coordinator (for example --planner-agent adaptive "
+                "--agent sgfp)."
+            )
         if (
             profile.max_concurrency is not None
             and args.max_concurrency not in (4, profile.max_concurrency)
@@ -1969,6 +1995,68 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 return 0
 
         time.sleep(args.interval_seconds)
+
+
+def _request_direct_fallback(args: argparse.Namespace) -> int:
+    """Batch or single Work Unit transfer; no direct writes to WU state."""
+    try:
+        if not args.authorize:
+            raise GovernedTakeoverError("Explicit --authorize is required.")
+        root = Path(args.project_root).expanduser().resolve()
+        checkpoint = FileProjectOrchestrationCheckpointStore(
+            project_root=root
+        ).load(args.orchestration_id)
+        if checkpoint is None:
+            raise GovernedTakeoverError("Orchestration checkpoint not found.")
+        if checkpoint.get("terminal") is True:
+            raise GovernedTakeoverError("Terminal orchestration cannot be taken over.")
+        if checkpoint.get("desired_state") == "PAUSED":
+            raise GovernedTakeoverError(
+                "Orchestration is paused; use resume-project before fallback direto."
+            )
+        states = checkpoint.get("work_unit_states")
+        if not isinstance(states, dict):
+            raise GovernedTakeoverError("Missing Work Unit states.")
+        plan = checkpoint.get("plan")
+        planned = (
+            {str(x.get("id")): x for x in plan.get("work_units", ())
+             if isinstance(x, dict) and x.get("id")}
+            if isinstance(plan, dict) else {}
+        )
+        if args.all_pending:
+            targets = tuple(
+                key for key, value in states.items()
+                if value not in {"COMPLETED", "CANCELLED"}
+                and planned.get(key, {}).get("kind") != "HUMAN_ACTION"
+            )
+        else:
+            targets = (args.work_unit_id,)
+        if not targets:
+            raise GovernedTakeoverError("No eligible pending Work Units.")
+        for key in targets:
+            if key not in states or states[key] in {"COMPLETED", "CANCELLED"}:
+                raise GovernedTakeoverError(f"Work Unit is terminal or unknown: {key}")
+            if planned.get(key, {}).get("kind") == "HUMAN_ACTION":
+                raise GovernedTakeoverError("Cannot take over human-action Work Units.")
+        intents = GovernedTakeoverStore(project_root=root).request_many(
+            orchestration_id=args.orchestration_id,
+            work_unit_ids=targets, mode="direct",
+            owner_agent=args.owner_agent, actor=args.actor, reason=args.reason,
+        )
+        print(json.dumps({
+            "ok": True, "command": "fallback-direto",
+            "orchestration_id": args.orchestration_id,
+            "target_work_unit_ids": list(targets),
+            "request_ids": [row["id"] for row in intents],
+            "status": "REQUESTED",
+            "note": (
+                "Controller will independently verify old executor termination "
+                "and process requests. No immediate takeover is asserted."
+            ),
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, ProjectOrchestrationCheckpointError, GovernedTakeoverError) as exc:
+        return _print_error(exc)
 
 
 def _takeover_work_unit(args: argparse.Namespace) -> int:
