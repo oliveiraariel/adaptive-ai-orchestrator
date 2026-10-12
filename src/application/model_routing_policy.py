@@ -421,7 +421,11 @@ class ModelRoutingPolicy:
             auth_profile=(
                 auth_profile
                 if auth_profile is not None
-                else self._auth_profile_for_model(model)
+                else (
+                    self.economy_auth_profile
+                    if self.pinned_model == model and model.startswith("openai/")
+                    else self._auth_profile_for_model(model)
+                )
             ),
             tier=tier,
             reason=reason,
