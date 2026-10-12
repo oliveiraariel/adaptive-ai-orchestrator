@@ -61,12 +61,16 @@ class OpenClawAdapter(AgentRuntime):
         client: OpenClawClient,
         *,
         model_routing_policy: ModelRoutingPolicy | None = None,
+        owner_agent: str | None = None,
+        owner_model_routing_policy: ModelRoutingPolicy | None = None,
         audit_log: ModelRoutingAuditLog | None = None,
         observability: ObservabilitySink | None = None,
     ) -> None:
         self._client = client
         self._executions: dict[str, ExecutionReference] = {}
         self._routing_policy = model_routing_policy or ModelRoutingPolicy.from_env()
+        self._owner_agent = owner_agent
+        self._owner_policy = owner_model_routing_policy
         self._audit = audit_log or ModelRoutingAuditLog()
         self._observability = observability or NullObservabilitySink()
         self._routing_executions: dict[str, _RoutingExecutionState] = {}
@@ -75,7 +79,14 @@ class OpenClawAdapter(AgentRuntime):
         configuration = task.configuration
         assert configuration is not None
 
-        decision = self._routing_policy.select(task)
+        routing = (
+            self._owner_policy
+            if self._owner_policy is not None
+            and self._owner_agent is not None
+            and configuration.agent == self._owner_agent
+            else self._routing_policy
+        )
+        decision = routing.select(task)
         thinking_constraint = (
             f"adaptive-thinking-level:{decision.thinking}"
             if decision.thinking is not None
@@ -84,9 +95,9 @@ class OpenClawAdapter(AgentRuntime):
         profile_fallback_constraint = (
             (
                 "adaptive-profile-quota-fallback-models:"
-                + (",".join(self._routing_policy.pinned_fallback_models) or "none")
+                + (",".join(routing.pinned_fallback_models) or "none")
             )
-            if self._routing_policy.pinned_fallback_models is not None
+            if routing.pinned_fallback_models is not None
             else None
         )
         auth_constraint = (
