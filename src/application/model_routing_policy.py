@@ -57,6 +57,9 @@ class ModelRoutingPolicy:
     laguna_auth_profile: str | None = None
     kimi_enabled: bool = True
     quota_cooldowns: ModelQuotaCooldownStore | None = None
+    # Execution-scoped profile override, never a process-global setting.
+    pinned_model: str | None = None
+    pinned_thinking: str | None = None
     disabled_models: tuple[str, ...] = (
         "moonshot/kimi-k3",
         "openai/gpt-5.6-sol",
@@ -135,7 +138,19 @@ class ModelRoutingPolicy:
         )
 
     def select(self, task: TaskPackage) -> ModelRoutingDecision:
-        """Prefer the configured route until a durable GPT quota cooldown."""
+        """Honor an explicit run profile without changing default policy."""
+        if self.pinned_model is not None:
+            # Operator-selected profiles are not silently re-routed by the
+            # proactive quota cooldown policy. Runtime failures still follow
+            # the existing governed Gateway failure handling.
+            return self._decision(
+                self.pinned_model,
+                tier="execution-profile",
+                reason="explicit-execution-profile",
+                attempt=self._attempt_number(task),
+                thinking=self.pinned_thinking,
+                thinking_reason="explicit-execution-profile",
+            )
         return self._respect_quota(self._select_unconstrained(task))
 
     def _respect_quota(self, decision: ModelRoutingDecision) -> ModelRoutingDecision:
