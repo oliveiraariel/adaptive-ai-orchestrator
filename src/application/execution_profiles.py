@@ -96,6 +96,12 @@ class ExecutionProfile:
             return policy
         if policy.is_disabled(model):
             raise ExecutionProfileError(f"Profile model is disabled: {model}")
+        if model.startswith("openai/") and not policy.economy_auth_profile:
+            raise ExecutionProfileError(
+                "An OpenAI execution profile requires ADAPTIVE_OPENAI_OAUTH_PROFILE."
+            )
+        if model.startswith("moonshot/") and not policy.kimi_enabled:
+            raise ExecutionProfileError("Moonshot routing is disabled.")
         return replace(
             policy,
             pinned_model=model,
