@@ -92,6 +92,10 @@ from infrastructure.skill_registry_loader import (
 )
 
 from adaptive_orchestrator import __version__
+from application.execution_profiles import (
+    ExecutionProfile, ExecutionProfileError, get_profile,
+    list_profiles, save_profile, delete_profile,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,6 +106,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
 
     commands = parser.add_subparsers(dest="command", required=True)
+
+    profile_cmd = commands.add_parser(
+        "execution-profile", help="List, inspect and manage run-scoped profiles."
+    )
+    profile_actions = profile_cmd.add_subparsers(dest="profile_action", required=True)
+    profile_actions.add_parser("list")
+    show_profile = profile_actions.add_parser("show")
+    show_profile.add_argument("name")
+    save = profile_actions.add_parser("save")
+    save.add_argument("--file", required=True, help="UTF-8 JSON profile snapshot.")
+    delete = profile_actions.add_parser("delete")
+    delete.add_argument("name")
 
     run = commands.add_parser(
         "run",
@@ -206,6 +222,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly authorize ending the current executor and changing ownership.",
     )
     takeover.add_argument(
+        "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
+    )
+
+    switch_profile = commands.add_parser(
+        "switch-execution-profile",
+        help="Explicitly change a paused/quiescent project's execution profile.",
+    )
+    switch_profile.add_argument("--orchestration-id", required=True)
+    switch_profile.add_argument("--execution-profile", required=True)
+    switch_profile.add_argument("--reason", required=True)
+    switch_profile.add_argument("--actor", required=True)
+    switch_profile.add_argument("--authorize", action="store_true")
+    switch_profile.add_argument(
+        "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
+    )
+
+    fallback_direto = commands.add_parser(
+        "fallback-direto",
+        help="Ask the Adaptive controller to transfer one or all pending Work Units to the coordinator.",
+    )
+    fallback_direto.add_argument("--orchestration-id", required=True)
+    fallback_scope = fallback_direto.add_mutually_exclusive_group(required=True)
+    fallback_scope.add_argument("--work-unit-id")
+    fallback_scope.add_argument("--all-pending", action="store_true")
+    fallback_direto.add_argument("--owner-agent", required=True)
+    fallback_direto.add_argument("--reason", required=True)
+    fallback_direto.add_argument("--actor", required=True)
+    fallback_direto.add_argument("--authorize", action="store_true")
+    fallback_direto.add_argument(
         "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
     )
 
@@ -357,6 +402,10 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
+    parser.add_argument(
+        "--execution-profile", default="original",
+        help="Named execution profile (default original, unchanged behavior).",
+    )
     parser.add_argument("--scope", default="")
     parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
@@ -567,6 +616,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.command == "execution-profile":
+        return _manage_execution_profile(args)
+
     if args.command == "doctor":
         return _doctor(args.gateway_url)
     if args.command == "run":
@@ -587,6 +639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _pause_project(args)
     if args.command == "takeover-work-unit":
         return _takeover_work_unit(args)
+    if args.command == "fallback-direto":
+        return _request_direct_fallback(args)
+    if args.command == "switch-execution-profile":
+        return _switch_execution_profile(args)
     if args.command == "reconcile-work-unit":
         return _reconcile_work_unit(args)
     if args.command == "migrate-work-graph":
@@ -945,7 +1001,72 @@ def _start_orchestration_guardian(
     )
 
 
+def _manage_execution_profile(args: argparse.Namespace) -> int:
+    """Configuration changes are explicit and never mutate installed defaults."""
+    try:
+        if args.profile_action == "list":
+            result = {"profiles": sorted(list_profiles()), "default": "original"}
+        elif args.profile_action == "show":
+            result = get_profile(args.name).to_dict()
+        elif args.profile_action == "save":
+            payload = json.loads(
+                Path(args.file).expanduser().read_text(encoding="utf-8")
+            )
+            profile = ExecutionProfile.from_dict(payload)
+            save_profile(profile)
+            result = {"saved": profile.name, "profile": profile.to_dict()}
+        elif args.profile_action == "delete":
+            delete_profile(args.name)
+            result = {"deleted": args.name}
+        else:
+            raise ExecutionProfileError("Unsupported profile operation.")
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, TypeError) as exc:
+        return _print_error(exc)
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
+    try:
+        profile = get_profile(args.execution_profile)
+        # Fail before admission/guardian startup if a requested model or
+        # authentication route is unavailable or disabled.
+        profile.routing_policy("planner")
+        profile.routing_policy("worker")
+        if profile.quality_direct_fallback and (
+            not args.planner_agent or args.planner_agent == args.agent
+        ):
+            raise ExecutionProfileError(
+                "Quality-driven fallback direto requires a distinct "
+                "--planner-agent coordinator (for example --planner-agent adaptive "
+                "--agent sgfp)."
+            )
+        if (
+            profile.max_concurrency is not None
+            and args.max_concurrency not in (4, profile.max_concurrency)
+        ):
+            raise ExecutionProfileError(
+                "Explicit concurrency conflicts with execution profile."
+            )
+        if (
+            profile.concurrency_mode is not None
+            and args.concurrency_mode not in ("AUTO", profile.concurrency_mode)
+        ):
+            raise ExecutionProfileError(
+                "Explicit concurrency mode conflicts with execution profile."
+            )
+    except ExecutionProfileError as exc:
+        return _print_error(exc)
+    profile_concurrency_mode = profile.concurrency_mode or args.concurrency_mode
+    profile_max_concurrency = profile.max_concurrency or args.max_concurrency
+    profile_overflow_slots = (
+        0 if profile_concurrency_mode == "FIXED"
+        else (
+            profile.worker_stall_overflow_slots
+            if profile.worker_stall_overflow_slots is not None
+            else args.worker_stall_overflow_slots
+        )
+    )
     orchestration_id = _normalize_orchestration_id(
         getattr(args, "orchestration_id", None)
     ) or uuid4().hex
@@ -959,9 +1080,15 @@ def _orchestrate(args: argparse.Namespace) -> int:
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
 
-        runtime = _runtime(args)
+        runtime = _runtime(
+            args, execution_profile=profile, profile_role="worker",
+            owner_agent=args.planner_agent,
+        )
         claims = InMemoryClaimRegistry()
-        planner_runtime = _runtime(args, observability=NullObservabilitySink())
+        planner_runtime = _runtime(
+            args, observability=NullObservabilitySink(),
+            execution_profile=profile, profile_role="planner",
+        )
         planner_runner = RunOrchestration(
             runtime=planner_runtime,
             claim_registry=claims,
@@ -985,7 +1112,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 constraints=tuple(args.constraint),
                 agent=args.planner_agent or args.agent,
                 max_work_units=args.max_work_units,
-                max_concurrency=args.max_concurrency,
+                max_concurrency=profile_max_concurrency,
             )
             plan = planner.plan(planning_request)
             observability.emit(
@@ -1053,13 +1180,13 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
-                concurrency_mode=ConcurrencyMode(args.concurrency_mode),
-                max_concurrency=args.max_concurrency,
+                concurrency_mode=ConcurrencyMode(profile_concurrency_mode),
+                max_concurrency=profile_max_concurrency,
                 worker_observation_interval_seconds=(
                     args.worker_observation_interval_seconds
                 ),
                 worker_soft_stall_seconds=args.worker_soft_stall_seconds,
-                worker_stall_overflow_slots=args.worker_stall_overflow_slots,
+                worker_stall_overflow_slots=profile_overflow_slots,
                 max_work_units=args.max_work_units,
                 max_waves=args.max_waves,
                 max_attempts_per_work_unit=args.max_attempts,
@@ -1079,6 +1206,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 execution_policy=_execution_policy(args),
                 human_approved=args.human_approved,
                 plan=plan,
+                execution_profile_snapshot=profile.to_dict(),
             ),
             observability=observability,
         )
@@ -1542,9 +1670,34 @@ def _resume_project(args: argparse.Namespace) -> int:
         )
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
-        runtime = _runtime(args)
+        # A resumed run uses the immutable profile snapshot recorded at
+        # admission, even if the named custom profile was edited or deleted.
+        existing_checkpoint = FileProjectOrchestrationCheckpointStore(
+            project_root=project_root
+        ).load(args.orchestration_id)
+        if existing_checkpoint is None:
+            raise ProjectOrchestrationError("Orchestration checkpoint not found.")
+        saved_request = existing_checkpoint.get("request")
+        snapshot = (
+            saved_request.get("execution_profile_snapshot")
+            if isinstance(saved_request, dict) else None
+        )
+        profile = (
+            ExecutionProfile.from_dict(snapshot)
+            if snapshot is not None else get_profile("original")
+        )
+        runtime = _runtime(
+            args, execution_profile=profile, profile_role="worker",
+            owner_agent=(
+                saved_request.get("planner_agent")
+                if isinstance(saved_request, dict) else None
+            ),
+        )
         claims = InMemoryClaimRegistry()
-        recovery_runtime = _runtime(args, observability=NullObservabilitySink())
+        recovery_runtime = _runtime(
+            args, observability=NullObservabilitySink(),
+            execution_profile=profile, profile_role="planner",
+        )
         recovery_runner = RunOrchestration(
             runtime=recovery_runtime,
             claim_registry=claims,
@@ -1868,6 +2021,151 @@ def _supervise_projects(args: argparse.Namespace) -> int:
         time.sleep(args.interval_seconds)
 
 
+def _switch_execution_profile(args: argparse.Namespace) -> int:
+    """Authorized, durable profile change at a controller-quiescent boundary."""
+    try:
+        if not args.authorize:
+            raise ExecutionProfileError("Explicit --authorize is required.")
+        if not args.reason.strip() or not args.actor.strip():
+            raise ExecutionProfileError("Actor and reason are required.")
+        selected = get_profile(args.execution_profile)
+        selected.routing_policy("planner")
+        selected.routing_policy("worker")
+        root = Path(args.project_root).expanduser().resolve()
+        control = FileOrchestrationControlPlane(project_root=root)
+        checkpoint_store = FileProjectOrchestrationCheckpointStore(
+            project_root=root
+        )
+        with control.mutation_lock(args.orchestration_id):
+            state = checkpoint_store.load(args.orchestration_id)
+            if state is None:
+                raise ExecutionProfileError("Orchestration checkpoint not found.")
+            if state.get("terminal") is True:
+                raise ExecutionProfileError(
+                    "Terminal project requires governed continue-project."
+                )
+            if (
+                state.get("desired_state") != "PAUSED"
+                or state.get("active_executions") != []
+                or not control.is_quiescent(args.orchestration_id)
+            ):
+                raise ExecutionProfileError(
+                    "Pause and quiesce the project with zero live workers before changing profiles."
+                )
+            request = state.get("request")
+            if not isinstance(request, dict):
+                raise ExecutionProfileError("Checkpoint is missing the request.")
+            if selected.quality_direct_fallback and (
+                not request.get("planner_agent")
+                or request.get("planner_agent") == request.get("agent")
+            ):
+                raise ExecutionProfileError(
+                    "Quality fallback direto requires a distinct existing planner-agent."
+                )
+            previous = request.get("execution_profile_snapshot")
+            request["execution_profile_snapshot"] = selected.to_dict()
+            request["concurrency_mode"] = selected.concurrency_mode or "AUTO"
+            request["max_concurrency"] = selected.max_concurrency or 4
+            request["worker_stall_overflow_slots"] = (
+                0 if selected.concurrency_mode == "FIXED"
+                else (
+                    selected.worker_stall_overflow_slots
+                    if selected.worker_stall_overflow_slots is not None else 1
+                )
+            )
+            history = list(state.get("execution_profile_history") or ())
+            history.append({
+                "actor": args.actor, "reason": args.reason[:1000],
+                "from": previous.get("name") if isinstance(previous, dict) else "original",
+                "to": selected.name,
+                "changed_at": time.time(),
+                "controller_quiescent": True,
+            })
+            state["execution_profile_history"] = history
+            checkpoint_store.save(args.orchestration_id, state)
+        print(json.dumps({
+            "ok": True, "command": "switch-execution-profile",
+            "orchestration_id": args.orchestration_id,
+            "profile": selected.to_dict(),
+            "status": "PAUSED", "resumption_required": True,
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, ProjectOrchestrationCheckpointError, OrchestrationControlPlaneError) as exc:
+        return _print_error(exc)
+
+
+def _request_direct_fallback(args: argparse.Namespace) -> int:
+    """Batch or single Work Unit transfer; no direct writes to WU state."""
+    try:
+        if not args.authorize:
+            raise GovernedTakeoverError("Explicit --authorize is required.")
+        root = Path(args.project_root).expanduser().resolve()
+        checkpoint = FileProjectOrchestrationCheckpointStore(
+            project_root=root
+        ).load(args.orchestration_id)
+        if checkpoint is None:
+            raise GovernedTakeoverError("Orchestration checkpoint not found.")
+        if checkpoint.get("terminal") is True:
+            raise GovernedTakeoverError("Terminal orchestration cannot be taken over.")
+        if checkpoint.get("desired_state") == "PAUSED":
+            raise GovernedTakeoverError(
+                "Orchestration is paused; use resume-project before fallback direto."
+            )
+        project_request = checkpoint.get("request")
+        if not isinstance(project_request, dict):
+            raise GovernedTakeoverError("Missing original coordinator identity.")
+        authorized_owner = (
+            project_request.get("planner_agent") or project_request.get("agent")
+        )
+        if args.owner_agent != authorized_owner:
+            raise GovernedTakeoverError(
+                "Fallback direto must use the recorded coordinator agent."
+            )
+        states = checkpoint.get("work_unit_states")
+        if not isinstance(states, dict):
+            raise GovernedTakeoverError("Missing Work Unit states.")
+        plan = checkpoint.get("plan")
+        planned = (
+            {str(x.get("id")): x for x in plan.get("work_units", ())
+             if isinstance(x, dict) and x.get("id")}
+            if isinstance(plan, dict) else {}
+        )
+        if args.all_pending:
+            targets = tuple(
+                key for key, value in states.items()
+                if value not in {"COMPLETED", "CANCELLED"}
+                and planned.get(key, {}).get("kind") != "HUMAN_ACTION"
+            )
+        else:
+            targets = (args.work_unit_id,)
+        if not targets:
+            raise GovernedTakeoverError("No eligible pending Work Units.")
+        for key in targets:
+            if key not in states or states[key] in {"COMPLETED", "CANCELLED"}:
+                raise GovernedTakeoverError(f"Work Unit is terminal or unknown: {key}")
+            if planned.get(key, {}).get("kind") == "HUMAN_ACTION":
+                raise GovernedTakeoverError("Cannot take over human-action Work Units.")
+        intents = GovernedTakeoverStore(project_root=root).request_many(
+            orchestration_id=args.orchestration_id,
+            work_unit_ids=targets, mode="direct",
+            owner_agent=args.owner_agent, actor=args.actor, reason=args.reason,
+        )
+        print(json.dumps({
+            "ok": True, "command": "fallback-direto",
+            "orchestration_id": args.orchestration_id,
+            "target_work_unit_ids": list(targets),
+            "request_ids": [row["id"] for row in intents],
+            "status": "REQUESTED",
+            "note": (
+                "Controller will independently verify old executor termination "
+                "and process requests. No immediate takeover is asserted."
+            ),
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, ProjectOrchestrationCheckpointError, GovernedTakeoverError) as exc:
+        return _print_error(exc)
+
+
 def _takeover_work_unit(args: argparse.Namespace) -> int:
     """Request takeover; never forge a terminal worker status from the CLI."""
     try:
@@ -2049,6 +2347,9 @@ def _runtime(
     args: argparse.Namespace,
     *,
     observability: ObservabilitySink | None = None,
+    execution_profile: ExecutionProfile | None = None,
+    profile_role: str = "worker",
+    owner_agent: str | None = None,
 ) -> OpenClawAdapter:
     runtime_observability = observability or JsonlObservabilitySink(
         canonical_observability_path()
@@ -2068,6 +2369,21 @@ def _runtime(
     return OpenClawAdapter(
         OpenClawGatewayClient(config, result_store=result_store),
         observability=runtime_observability,
+        **(
+            {
+                "model_routing_policy": execution_profile.routing_policy(profile_role),
+                **(
+                    {
+                        "owner_agent": owner_agent,
+                        "owner_model_routing_policy": execution_profile.routing_policy("planner"),
+                    }
+                    if profile_role == "worker" and owner_agent
+                    and execution_profile.name != "original"
+                    else {}
+                ),
+            }
+            if execution_profile is not None else {}
+        ),
     )
 
 

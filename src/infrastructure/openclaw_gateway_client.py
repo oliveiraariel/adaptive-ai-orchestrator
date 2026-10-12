@@ -450,10 +450,27 @@ class OpenClawGatewayClient(OpenClawClient):
                     if isinstance(configuration.get("auth_profile"), str) else None,
                     category=incident.category, subtype=incident.subtype,
                 )
+                profile_constraints = tuple(str(item) for item in (
+                    configuration.get("policy_constraints") or ()
+                ))
+                profile_quota_bound = any(
+                    item.startswith("adaptive-profile-quota-fallback-models:")
+                    for item in profile_constraints
+                )
                 if not remediation.fallback_allowed:
+                    if profile_quota_bound and incident.failover_reason in {"quota", "rate_limit"}:
+                        raise OpenClawGatewayError(
+                            "PROFILE_MODEL_CAPACITY_EXHAUSTED: "
+                            "provider quota reached and automatic failover is not permitted"
+                        ) from exc
                     raise
                 payload = self._build_failover_payload(run, incident.failover_reason)
                 if payload is None:
+                    if profile_quota_bound and incident.failover_reason in {"quota", "rate_limit"}:
+                        raise OpenClawGatewayError(
+                            "PROFILE_MODEL_CAPACITY_EXHAUSTED: "
+                            "primary and configured secondary model routes unavailable"
+                        ) from exc
                     raise
                 next_id = self._submit_task(payload, runtime_attempt=run.runtime_attempt + 1)
                 next_run = self._get_run(next_id)
@@ -729,6 +746,24 @@ class OpenClawGatewayClient(OpenClawClient):
         thinking = configuration.get("thinking")
         thinking = thinking if isinstance(thinking, str) else None
         policy = ModelRoutingPolicy.from_env()
+        constraints = tuple(str(item) for item in (
+            configuration.get("policy_constraints") or ()
+        ))
+        profile_fallbacks = [
+            item.split(":", 1)[1]
+            for item in constraints
+            if item.startswith("adaptive-profile-quota-fallback-models:")
+        ]
+        if len(profile_fallbacks) > 1:
+            raise OpenClawGatewayError("Invalid execution profile failover contract.")
+        if profile_fallbacks:
+            from dataclasses import replace
+            from application.execution_profiles import _MODEL
+            raw = profile_fallbacks[0]
+            names = [] if raw == "none" else raw.split(",")
+            if any(not _MODEL.fullmatch(item) for item in names) or len(set(names)) != len(names):
+                raise OpenClawGatewayError("Invalid execution profile fallback model list.")
+            policy = replace(policy, pinned_fallback_models=tuple(names))
         current = ModelRoutingDecision(
             model=current_model, provider=provider, auth_profile=auth, tier="runtime-current",
             reason="runtime-current", attempt=run.runtime_attempt, thinking=thinking,
@@ -768,7 +803,7 @@ class OpenClawGatewayClient(OpenClawClient):
             f"adaptive-failover-to:{fallback.model}",
             "adaptive-model-tier:fallback",
             (f"adaptive-thinking-level:{fallback.thinking}" if fallback.thinking is not None else "adaptive-thinking-level:provider-native"),
-            ("adaptive-auth-product:openai-oauth" if fallback.provider == "openai" and fallback.model == policy.economy_model else "adaptive-auth-product:provider-default"),
+            ("adaptive-auth-product:openai-oauth" if fallback.provider == "openai" and policy.pinned_fallback_models is not None or (fallback.provider == "openai" and fallback.model == policy.economy_model) else "adaptive-auth-product:provider-default"),
         ]
         fc["policy_constraints"] = constraints
         context=list(run.task_payload.get("context") or ())

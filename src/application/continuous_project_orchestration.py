@@ -310,6 +310,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         last_effective_concurrency_limit: int | None = None
         recovery_yield_requested = False
         recovery_yield_reason = ""
+        quota_halted = False
         last_productive_activity_at = time.monotonic()
         takeovers = (
             GovernedTakeoverStore(project_root=self._checkpoint_store.project_root)
@@ -322,11 +323,16 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             # AUTONOMOUS project authority permits direct coordinator execution
             # after strategy exhaustion; explicit owner requests bypass this
             # heuristic. Human-approval-required projects never auto-escalate.
+            profile_snapshot = request.execution_profile_snapshot
+            if isinstance(profile_snapshot, dict) and profile_snapshot.get("name") != "original":
+                allow_direct = profile_snapshot.get("quality_direct_fallback", False) is True
+            else:
+                allow_direct = os.environ.get(
+                    "ADAPTIVE_AUTO_DIRECT_TAKEOVER_ON_EXHAUSTION", "1"
+                ).strip().casefold() in {"1", "true", "yes", "on"}
             if (
                 takeovers is None
-                or os.environ.get(
-                    "ADAPTIVE_AUTO_DIRECT_TAKEOVER_ON_EXHAUSTION", "1"
-                ).strip().casefold() not in {"1", "true", "yes", "on"}
+                or not allow_direct
                 or request.execution_policy.autonomy
                 not in {AutonomyClass.AUTONOMOUS, AutonomyClass.AUTONOMOUS_WITH_REVIEW}
                 or not request.planner_agent
@@ -369,6 +375,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 active=tuple(active.values()),
                 active_started_at=active_started_at,
                 terminal=terminal,
+                force_pause=quota_halted,
             )
 
         def _reconcile_existing_authoritative_completion(
@@ -764,7 +771,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         persist()
 
                 unfinished = self._unfinished(work_units)
-                pause_requested = self._pause_requested(orchestration_id)
+                pause_requested = self._pause_requested(orchestration_id) or quota_halted
                 if pause_requested and not active:
                     persist(terminal=False)
                     if self._on_quiescent is not None:
@@ -774,7 +781,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         orchestration_id=orchestration_id,
                         status="PAUSED",
                         terminal=False,
-                        reason="developer-requested-pause",
+                        reason=(
+                            "profile-model-capacity-exhausted"
+                            if quota_halted else "developer-requested-pause"
+                        ),
                     )
                     break
 
@@ -1496,16 +1506,29 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         )
                         if takeovers is not None:
                             governed_assignments: list[WorkAssignment] = []
+                            direct_profile = bool(
+                                isinstance(request.execution_profile_snapshot, dict)
+                                and request.execution_profile_snapshot.get("direct_owner_mode")
+                            )
                             for assignment in assignments:
                                 takeover = takeovers.current(
                                     orchestration_id, assignment.work_unit.id.value
                                 )
                                 if (
-                                    takeover is not None
-                                    and takeover.get("state") == "APPLIED"
-                                    and takeover.get("mode") == "direct"
+                                    direct_profile
+                                    or (
+                                        takeover is not None
+                                        and takeover.get("state") == "APPLIED"
+                                        and takeover.get("mode") == "direct"
+                                    )
                                 ):
-                                    owner = str(takeover["owner_agent"])
+                                    owner = (
+                                        str(takeover["owner_agent"])
+                                        if takeover is not None
+                                        and takeover.get("state") == "APPLIED"
+                                        and takeover.get("mode") == "direct"
+                                        else str(request.planner_agent or request.agent)
+                                    )
                                     direct_configuration = replace(
                                         assignment.configuration, agent=owner,
                                     )
@@ -1620,6 +1643,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         try:
                             runtime_result = future.result()
                         except Exception as exc:  # adapter exception families vary
+                            if "PROFILE_MODEL_CAPACITY_EXHAUSTED" in str(exc):
+                                quota_halted = True
                             runtime_recovery_signal = self._handle_runtime_result_error(
                                 outcome=outcome,
                                 error=exc,
@@ -2229,6 +2254,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         active: Sequence[tuple[DispatchOutcome, int]],
         active_started_at: dict[str, float],
         terminal: bool,
+        force_pause: bool = False,
     ) -> None:
         if self._checkpoint_store is None:
             return
@@ -2262,7 +2288,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         payload = {
             "orchestration_id": orchestration_id,
             "phase": "EXECUTION",
-            "desired_state": desired_state,
+            "desired_state": ("PAUSED" if force_pause else desired_state),
             "request": self._request_to_payload(request),
             "plan": self._plan_to_payload(plan),
             "work_unit_states": {
@@ -2307,6 +2333,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "work_unit_evidence_lineage",
                 "reconciliation_decisions",
                 "checkpoint_administration",
+                "execution_profile_history",
             ):
                 if key in existing_checkpoint:
                     payload[key] = deepcopy(existing_checkpoint[key])
@@ -2319,6 +2346,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "objective": request.objective,
             "agent": request.agent,
             "planner_agent": request.planner_agent,
+            "execution_profile_snapshot": request.execution_profile_snapshot,
             "scope": request.scope,
             "project_id": request.project_id,
             "context": list(request.context),
@@ -2431,6 +2459,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 orchestration_id=orchestration_id,
                 agent=cls._require_str(raw, "agent"),
                 planner_agent=planner_agent,
+                execution_profile_snapshot=(
+                    raw.get("execution_profile_snapshot")
+                    if isinstance(raw.get("execution_profile_snapshot"), dict)
+                    else None
+                ),
                 scope=str(raw.get("scope") or ""),
                 project_id=str(raw.get("project_id") or ""),
                 context=tuple(cls._require_string_list(raw, "context")),
@@ -3189,6 +3222,29 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         if work_unit.state is WorkUnitState.RUNNING:
             work_unit.start_evaluation()
             work_unit.require_revision()
+        if "PROFILE_MODEL_CAPACITY_EXHAUSTED" in str(error):
+            # No silent retries on the same depleted model and no direct
+            # coordinator escalation to evade profile quota constraints.
+            work_unit.mark_blocked()
+            records.append(WorkUnitExecutionRecord(
+                work_unit_id=work_unit_id,
+                role=specs[work_unit_id].role,
+                wave=generation,
+                attempt=attempts[work_unit_id],
+                status=WorkUnitState.BLOCKED.value,
+                skills=skill_sets[work_unit_id],
+                execution_id=(outcome.execution.id if outcome.execution else None),
+                external_id=(outcome.execution.external_id if outcome.execution else None),
+                verdict="RETURNED",
+                reason="PROFILE_MODEL_CAPACITY_EXHAUSTED: primary and authorized secondary unavailable",
+                strategy=strategy_generations[work_unit_id],
+            ))
+            revision_feedback[work_unit_id] = (
+                "PROFILE_MODEL_CAPACITY_EXHAUSTED: no permitted language model "
+                "capacity. Resume only after the provider budget is restored, "
+                "with explicit governed authorization."
+            )
+            return False
         reason = f"runtime-result-error:{error}"
         record = WorkUnitExecutionRecord(
             work_unit_id=work_unit_id,
