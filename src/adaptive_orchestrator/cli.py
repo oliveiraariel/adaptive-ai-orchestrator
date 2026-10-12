@@ -996,14 +996,35 @@ def _manage_execution_profile(args: argparse.Namespace) -> int:
 def _orchestrate(args: argparse.Namespace) -> int:
     try:
         profile = get_profile(args.execution_profile)
+        # Fail before admission/guardian startup if a requested model or
+        # authentication route is unavailable or disabled.
+        profile.routing_policy("planner")
+        profile.routing_policy("worker")
+        if (
+            profile.max_concurrency is not None
+            and args.max_concurrency not in (4, profile.max_concurrency)
+        ):
+            raise ExecutionProfileError(
+                "Explicit concurrency conflicts with execution profile."
+            )
+        if (
+            profile.concurrency_mode is not None
+            and args.concurrency_mode not in ("AUTO", profile.concurrency_mode)
+        ):
+            raise ExecutionProfileError(
+                "Explicit concurrency mode conflicts with execution profile."
+            )
     except ExecutionProfileError as exc:
         return _print_error(exc)
     profile_concurrency_mode = profile.concurrency_mode or args.concurrency_mode
     profile_max_concurrency = profile.max_concurrency or args.max_concurrency
     profile_overflow_slots = (
-        profile.worker_stall_overflow_slots
-        if profile.worker_stall_overflow_slots is not None
-        else args.worker_stall_overflow_slots
+        0 if profile_concurrency_mode == "FIXED"
+        else (
+            profile.worker_stall_overflow_slots
+            if profile.worker_stall_overflow_slots is not None
+            else args.worker_stall_overflow_slots
+        )
     )
     orchestration_id = _normalize_orchestration_id(
         getattr(args, "orchestration_id", None)
