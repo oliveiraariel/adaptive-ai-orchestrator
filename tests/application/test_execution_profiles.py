@@ -294,6 +294,7 @@ def test_fallback_direto_batch_intent_does_not_touch_completed_work(tmp_path, ca
     store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
     store.save("one", {
         "terminal": False, "desired_state": "RUNNING",
+        "request": {"agent": "sgfp", "planner_agent": "adaptive"},
         "work_unit_states": {
             "done": "COMPLETED", "now": "RUNNING",
             "later": "READY", "manual": "BLOCKED",
