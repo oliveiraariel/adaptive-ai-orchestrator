@@ -1,121 +1,195 @@
-# Execution profiles (opt-in, run scoped)
+# Perfis de execução do Adaptive (opt-in)
 
-The command `adaptive-orchestrator execution-profile` lists, inspects and manages
-named execution profiles. **No profile is activated globally.** Existing
-`orchestrate` and `resume-project` behavior is unchanged unless a profile is
-selected at admission.
+A configuração instalada mantém-se inalterada quando o operador omite
+`--execution-profile`. Cada perfil controla **separadamente** o modelo de
+planejamento e o modelo executor, o nível de thinking, a política de fallback
+de LLM por cota e o número de executores. A configuração é registrada no
+checkpoint para retomada, sem alterar as variáveis globais.
 
-## Built-in profiles
+## Nomes e regras
 
-| Name | Planner | Worker | Concurrency | Takeover |
-| --- | --- | --- | --- | --- |
-| `original` | Existing routing policy | Existing routing policy | Existing CLI defaults | Existing manual process |
-| `economy-serial` | `openai/gpt-5.6-luna` / medium | `openai/gpt-5.6-luna` / low | FIXED / 1 / no overflow | Manual only |
-| `quality-parallel` | `moonshot/kimi-k2.7-code` / provider-native | Same | AUTO / up to 8 normal worker slots | Manual only |
-| `governed-direct` | Existing policy | Existing policy | FIXED / 1 / no overflow | **Only upon separate authorization** |
+| Perfil solicitado | ID para CLI | Coordenador/planejador | Executor | Falta de cota | Falha na solução |
+|---|---|---|---|---|---|
+| Original | `original` | Configuração anterior | Configuração anterior | Política anterior | Política anterior |
+| GPT-Terra-Medium-Low | `gpt-terra-medium-low` | `openai/gpt-5.6-terra`, medium | `openai/gpt-5.6-terra`, low | Somente Kimi K2.7; se ambos esgotarem, pausa | Fallback direto governado após esgotamento de estratégias |
+| GPT-Luna-Medium-Low | `gpt-luna-medium-low` | `openai/gpt-5.6-luna`, medium | `openai/gpt-5.6-luna`, low; **1 por vez** | Nenhuma troca de LLM; pausa para retomada | Fallback direto governado após esgotamento de estratégias |
+| GPT-Fallback-Direto | `gpt-fallback-direto` | `openai/gpt-5.6-terra`, medium | **O próprio agente coordenador**, Terra medium, sem subdelegação | Nenhuma troca de LLM; pausa | Sem novo fallback recursivo |
+| Kimi-K3-K2.7 | `kimi-k3-k27` | `moonshot/kimi-k3` (thinking nativo do provedor) | `moonshot/kimi-k2.7-code` (thinking nativo) | Somente GPT Terra low; se ambos esgotarem, pausa | Fallback direto governado após esgotamento de estratégias |
 
-Kimi requires an available, funded account. Any model-based profile requires
-the underlying model and auth profile to be configured. An OpenAI Luna
-profile uses the configured `ADAPTIVE_OPENAI_OAUTH_PROFILE`; it must not
-silently use a paid API-key account. Provider-level operational fallbacks
-remain subject to existing Adaptive policy, and may change the actual model
-if there is a runtime failure. This feature does **not** bypass quotas.
+Os três perfis não seriais usam concorrência `AUTO`, teto normal de
+8 workers e reserva padrão de um slot em condição de *soft stall*. Esse teto
+não determina quantos workers devem ser usados: o scheduler decide a fronteira
+útil, respeitando dependências e conflitos de escrita.
 
-Choosing `governed-direct` does not execute the owner directly. For a
-nonterminal Work Unit, the operator must still separately authorize a governed
-`takeover-work-unit --mode direct --owner-agent <agent> --authorize` request.
-The controller verifies the old executor has stopped before ownership transfer.
+**Não existe promoção automática de modelos após uma falha semântica.**
+Troca automática de LLM é autorizada somente para incidentes classificados
+como `quota` ou `rate_limit` com uma rota secundária explícita.
+A cadeia de cada perfil é fechada: **sem fallback implícito para Laguna,
+Kimi ou outro modelo fora da lista**.
 
-## Examples
+Se o modelo secundário também ficar sem limite, a Work Unit é registrada como
+`BLOCKED/RETURNED` com motivo
+`PROFILE_MODEL_CAPACITY_EXHAUSTED`; o projeto solicita pausa durável,
+não despacha novas WUs e pode ser retomado de maneira governada após restaurar
+o limite. Outros workers já em atividade podem terminar antes da quiescência.
+O estado `PAUSED` não significa que a cota tenha se renovado.
+
+## "Fallback direto" e "takeover direto"
+
+- **Fallback direto**: termo apresentado ao usuário para o coordenador assumir
+  a Work Unit com suas próprias skills, sem chamar novamente a Bridge.
+- **Takeover governado, modo `direct`**: termo interno para a transferência
+  protegida da Work Unit, preservando o histórico e impedindo dois escritores.
+- Perfil `gpt-fallback-direto`: execução *desde o início* por sessões do agente
+  coordenador, sem despachar a outro agente. O coordenador continua sujeito ao
+  contrato de Work Units, claims, avaliação e Result Store.
+- A passagem por falta de qualidade só é solicitada quando o orçamento de
+  estratégias de resolução se esgota; para os perfis que a permitem, é
+  necessário informar um coordenador distinto com `--planner-agent`.
+  Projetos com autonomia que exige revisão/aprovação seguem essas garantias.
+- **Falta de tokens não deve iniciar fallback direto para contornar a cota.**
+
+A operação em curso pode demorar até o runtime confirmar que o executor
+anterior foi encerrado. Uma solicitação de takeover é uma intenção,
+**não** prova de cancelamento nem de execução já concluída.
+
+## Comandos
 
 ```bash
 adaptive-orchestrator execution-profile list
-adaptive-orchestrator execution-profile show economy-serial
+adaptive-orchestrator execution-profile show gpt-terra-medium-low
+adaptive-orchestrator execution-profile show gpt-luna-medium-low
 
+# Iniciar nova orquestração governada:
 adaptive-orchestrator orchestrate \
-  --project-root "/path/to/project" \
-  --objective "Execute the approved tasks" \
-  --execution-profile economy-serial \
-  --allow-side-effect filesystem.write
+  --project-root "/caminho/projeto" \
+  --agent sgfp --planner-agent adaptive \
+  --execution-profile gpt-luna-medium-low \
+  --allow-side-effect filesystem.write \
+  --objective "Executar o plano aprovado"
 ```
 
-The existing OpenClaw Bridge forwards `--execution-profile` to the
-`orchestrate` CLI when invoked with `--multi-agent` or
-`--durable-single-worker`. A durable single-worker invocation should use
-the `economy-serial` profile or another matching one-worker profile:
+A Bridge existente pode encaminhar `--execution-profile` ao comando
+`orchestrate` quando usa `--multi-agent` ou
+`--durable-single-worker`. Para perfis seriais, opte por
+`--durable-single-worker`; para perfis paralelos, use
+`--multi-agent` e deixe o scheduler controlar o número útil de WUs.
+
+### Fallback direto para uma Work Unit
 
 ```bash
-python3 /path/to/adaptive-orchestrator-bridge/scripts/invoke.py \
-  --durable-single-worker \
-  --agent main \
-  --project-root "/path/to/project" \
-  --execution-profile economy-serial \
-  --allow-side-effect filesystem.write \
-  --objective "Execute the approved project work"
+adaptive-orchestrator fallback-direto \
+  --orchestration-id ID \
+  --project-root "/caminho/projeto" \
+  --work-unit-id WU-ID \
+  --owner-agent adaptive \
+  --actor usuario \
+  --reason "Assumir esta tarefa diretamente" \
+  --authorize
 ```
 
-Use `--execution-profile original` (or omit it) to restore the existing
-behavior for a **new** run. A running project keeps its admission profile.
+### Fallback direto para todas as tarefas pendentes
 
-## Custom profiles
+```bash
+adaptive-orchestrator fallback-direto \
+  --orchestration-id ID \
+  --project-root "/caminho/projeto" \
+  --all-pending \
+  --owner-agent adaptive \
+  --actor usuario \
+  --reason "Assumir tarefas pendentes diretamente" \
+  --authorize
+```
 
-Create a UTF-8 JSON file containing all these fields:
+Os comandos não alteram tarefas `COMPLETED`/`CANCELLED`, nem tarefas
+`HUMAN_ACTION`. Criam intenções duráveis e idempotentes. O controller
+faz a transição após confirmar a situação do executor anterior.
+Para a opção `--all-pending`, todas as WUs já **planejadas e elegíveis**
+são incluídas; tarefas que só forem criadas em replanning posterior não
+são automaticamente incluídas na lista anterior.
+
+### Trocar de perfil durante um projeto
+
+Para trocar de modelo, thinking, ou modo do **projeto** existente, primeiro
+solicite `pause-project` e confirme estado `PAUSED`, zero workers ativos e
+control-plane `QUIESCENT`. Depois:
+
+```bash
+adaptive-orchestrator switch-execution-profile \
+  --orchestration-id ID \
+  --project-root "/caminho/projeto" \
+  --execution-profile gpt-luna-medium-low \
+  --actor usuario \
+  --reason "Alterar orçamento de execução" \
+  --authorize
+
+adaptive-orchestrator resume-project \
+  --orchestration-id ID --project-root "/caminho/projeto"
+```
+
+Essa alteração é explícita, mantém o ID e histórico da orquestração,
+registra autor/motivo/perfil anterior e vale somente após a retomada.
+Alterações em um perfil salvo não modificam silenciosamente o snapshot
+de uma orquestração ativa. Projetos terminados exigem
+`continue-project`, não mutação de checkpoint histórico.
+
+## Perfis personalizados
+
+Crie um arquivo JSON com os campos abaixo (exemplo):
 
 ```json
 {
-  "name": "custom-serial",
-  "planner_model": "openai/gpt-5.6-luna",
+  "name": "meu-perfil",
+  "planner_model": "openai/gpt-5.6-terra",
   "planner_thinking": "medium",
-  "worker_model": "openai/gpt-5.6-luna",
+  "planner_fallback_models": ["moonshot/kimi-k2.7-code"],
+  "worker_model": "openai/gpt-5.6-terra",
   "worker_thinking": "low",
+  "worker_fallback_models": ["moonshot/kimi-k2.7-code"],
+  "quality_direct_fallback": true,
+  "direct_owner_mode": false,
   "concurrency_mode": "FIXED",
-  "max_concurrency": 1,
+  "max_concurrency": 2,
   "worker_stall_overflow_slots": 0,
   "direct_takeover": "manual"
 }
 ```
 
 ```bash
-adaptive-orchestrator execution-profile save --file ./custom-serial.json
-adaptive-orchestrator execution-profile show custom-serial
-adaptive-orchestrator orchestrate --execution-profile custom-serial \
-  --project-root "/path/to/project" --objective "Approved task"
-adaptive-orchestrator execution-profile delete custom-serial
+adaptive-orchestrator execution-profile save --file meu-perfil.json
+adaptive-orchestrator execution-profile show meu-perfil
+adaptive-orchestrator execution-profile delete meu-perfil
 ```
 
-Profiles are saved atomically to
-`~/.config/adaptive-ai-orchestrator/execution-profiles.json`
-(or the explicit `ADAPTIVE_EXECUTION_PROFILES_FILE`). The registry contains
-model names and execution budgets **only**; no credentials or permission grants.
-Built-ins cannot be overwritten or deleted.
+Os perfis antigos `economy-serial`, `quality-parallel` e
+`governed-direct` continuam reconhecidos como compatibilidade dos primeiros
+testes, mas para as novas regras use os quatro identificadores acima.
+O registro customizado usa arquivo restrito `0600` e gravação atômica em
+`~/.config/adaptive-ai-orchestrator/execution-profiles.json` (caminho
+opcional `ADAPTIVE_EXECUTION_PROFILES_FILE`).
 
-## Durability and safety
+## Autorizações, riscos e implantação
 
-At admission the full validated profile snapshot is stored in the project's
-durable checkpoint (`request.execution_profile_snapshot`), along with its
-effective concurrency limits. `resume-project`, including supervisor-driven
-resumes, uses that snapshot. Renaming or deleting a custom profile therefore
-cannot silently change an existing run.
+- É obrigatório configurar autenticação real via OpenClaw. Perfis GPT exigem
+  `ADAPTIVE_OPENAI_OAUTH_PROFILE`. Os perfis Kimi exigem um provedor
+  Moonshot disponível e com crédito válido.
+- A seleção explícita do perfil `kimi-k3-k27` libera **apenas nesse runtime**
+  o Kimi K3, que é excluído da rota automática original. Isso é uma seleção
+  manual de modelo que pode incorrer em cobrança; o custo real depende do provedor.
+- Nenhum perfil concede escrita, commit, push, merge, deploy, credenciais,
+  ampliação de orçamento ou permissão de takeover não solicitada.
+- Modelos e identificadores mencionados precisam existir no catálogo real do
+  OpenClaw. Testes de CI não validam disponibilidade real nem limite de tokens.
+- O Control Room poderá exibir o perfil selecionado em uma evolução separada.
+- A CLI usa IDs de perfil em minúsculas e sem espaços, mas os nomes de exibição
+  podem usar as formas GPT-Terra-Medium-Low etc.
+- Nenhuma mudança de perfis entra em operação sem integração/instalação
+  expressamente autorizada.
 
-Each role receives an independent model routing policy object. The profile
-does not modify global environment variables or change other concurrent runs.
+## Contratos de teste
 
-A profile does not authorize file edits, publication, deployments, destructive
-operations, spending limits, provider credentials, or direct ownership
-takeovers. Those remain governed by existing explicit authorization.
-
-`quality-parallel` is a ceiling, not an instruction to run eight workers
-regardless of dependencies or workspace conflicts. `AUTO` may allow an
-additional bounded soft-stall worker slot under existing policy. For a hard
-single-worker guarantee choose a FIXED profile.
-
-## Limitations
-
-- This feature creates CLI-level presets, not a new graphical settings panel.
-- Natural-language requests in the OpenClaw chat must be translated into the
-  supported `--execution-profile` argument by the caller/Bridge invocation.
-- Existing historical checkpoints without a saved profile continue using
-  the original configuration.
-- Installation into a running OpenClaw/Adaptive environment is a separate
-  rollout requiring local inspection and authorization.
-- There is no automatic fallback to direct owner execution.
+São exigidos testes de resolução das quatro políticas, proibição de fallback
+não autorizado, histórico das trocas, isolamento de checkpoints, pausa em
+exaustão de cota, takeover individual e coletivo, planner/worker com thinking
+diferente e demonstração de que `original` continua compatível.
+Um teste integrado OpenClaw com cotas reais depende de implantação futura.
