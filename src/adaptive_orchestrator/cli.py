@@ -1080,7 +1080,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
 
-        runtime = _runtime(args, execution_profile=profile, profile_role="worker")
+        runtime = _runtime(
+            args, execution_profile=profile, profile_role="worker",
+            owner_agent=args.planner_agent,
+        )
         claims = InMemoryClaimRegistry()
         planner_runtime = _runtime(
             args, observability=NullObservabilitySink(),
@@ -1683,7 +1686,13 @@ def _resume_project(args: argparse.Namespace) -> int:
             ExecutionProfile.from_dict(snapshot)
             if snapshot is not None else get_profile("original")
         )
-        runtime = _runtime(args, execution_profile=profile, profile_role="worker")
+        runtime = _runtime(
+            args, execution_profile=profile, profile_role="worker",
+            owner_agent=(
+                saved_request.get("planner_agent")
+                if isinstance(saved_request, dict) else None
+            ),
+        )
         claims = InMemoryClaimRegistry()
         recovery_runtime = _runtime(
             args, observability=NullObservabilitySink(),
@@ -2330,6 +2339,7 @@ def _runtime(
     observability: ObservabilitySink | None = None,
     execution_profile: ExecutionProfile | None = None,
     profile_role: str = "worker",
+    owner_agent: str | None = None,
 ) -> OpenClawAdapter:
     runtime_observability = observability or JsonlObservabilitySink(
         canonical_observability_path()
@@ -2350,7 +2360,18 @@ def _runtime(
         OpenClawGatewayClient(config, result_store=result_store),
         observability=runtime_observability,
         **(
-            {"model_routing_policy": execution_profile.routing_policy(profile_role)}
+            {
+                "model_routing_policy": execution_profile.routing_policy(profile_role),
+                **(
+                    {
+                        "owner_agent": owner_agent,
+                        "owner_model_routing_policy": execution_profile.routing_policy("planner"),
+                    }
+                    if profile_role == "worker" and owner_agent
+                    and execution_profile.name != "original"
+                    else {}
+                ),
+            }
             if execution_profile is not None else {}
         ),
     )
