@@ -2111,6 +2111,16 @@ def _request_direct_fallback(args: argparse.Namespace) -> int:
             raise GovernedTakeoverError(
                 "Orchestration is paused; use resume-project before fallback direto."
             )
+        project_request = checkpoint.get("request")
+        if not isinstance(project_request, dict):
+            raise GovernedTakeoverError("Missing original coordinator identity.")
+        authorized_owner = (
+            project_request.get("planner_agent") or project_request.get("agent")
+        )
+        if args.owner_agent != authorized_owner:
+            raise GovernedTakeoverError(
+                "Fallback direto must use the recorded coordinator agent."
+            )
         states = checkpoint.get("work_unit_states")
         if not isinstance(states, dict):
             raise GovernedTakeoverError("Missing Work Unit states.")
