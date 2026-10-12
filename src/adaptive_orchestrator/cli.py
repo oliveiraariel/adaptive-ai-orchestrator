@@ -92,6 +92,10 @@ from infrastructure.skill_registry_loader import (
 )
 
 from adaptive_orchestrator import __version__
+from application.execution_profiles import (
+    ExecutionProfile, ExecutionProfileError, get_profile,
+    list_profiles, save_profile, delete_profile,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,6 +106,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=__version__)
 
     commands = parser.add_subparsers(dest="command", required=True)
+
+    profile_cmd = commands.add_parser(
+        "execution-profile", help="List, inspect and manage run-scoped profiles."
+    )
+    profile_actions = profile_cmd.add_subparsers(dest="profile_action", required=True)
+    profile_actions.add_parser("list")
+    show_profile = profile_actions.add_parser("show")
+    show_profile.add_argument("name")
+    save = profile_actions.add_parser("save")
+    save.add_argument("--file", required=True, help="UTF-8 JSON profile snapshot.")
+    delete = profile_actions.add_parser("delete")
+    delete.add_argument("name")
 
     run = commands.add_parser(
         "run",
@@ -357,6 +373,10 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
+    parser.add_argument(
+        "--execution-profile", default="original",
+        help="Named execution profile (default original, unchanged behavior).",
+    )
     parser.add_argument("--scope", default="")
     parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
@@ -566,6 +586,9 @@ def _add_gateway_arguments(parser: argparse.ArgumentParser) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "execution-profile":
+        return _manage_execution_profile(args)
 
     if args.command == "doctor":
         return _doctor(args.gateway_url)
@@ -945,7 +968,43 @@ def _start_orchestration_guardian(
     )
 
 
+def _manage_execution_profile(args: argparse.Namespace) -> int:
+    """Configuration changes are explicit and never mutate installed defaults."""
+    try:
+        if args.profile_action == "list":
+            result = {"profiles": sorted(list_profiles()), "default": "original"}
+        elif args.profile_action == "show":
+            result = get_profile(args.name).to_dict()
+        elif args.profile_action == "save":
+            payload = json.loads(
+                Path(args.file).expanduser().read_text(encoding="utf-8")
+            )
+            profile = ExecutionProfile.from_dict(payload)
+            save_profile(profile)
+            result = {"saved": profile.name, "profile": profile.to_dict()}
+        elif args.profile_action == "delete":
+            delete_profile(args.name)
+            result = {"deleted": args.name}
+        else:
+            raise ExecutionProfileError("Unsupported profile operation.")
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, TypeError) as exc:
+        return _print_error(exc)
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
+    try:
+        profile = get_profile(args.execution_profile)
+    except ExecutionProfileError as exc:
+        return _print_error(exc)
+    profile_concurrency_mode = profile.concurrency_mode or args.concurrency_mode
+    profile_max_concurrency = profile.max_concurrency or args.max_concurrency
+    profile_overflow_slots = (
+        profile.worker_stall_overflow_slots
+        if profile.worker_stall_overflow_slots is not None
+        else args.worker_stall_overflow_slots
+    )
     orchestration_id = _normalize_orchestration_id(
         getattr(args, "orchestration_id", None)
     ) or uuid4().hex
@@ -959,9 +1018,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
 
-        runtime = _runtime(args)
+        runtime = _runtime(args, execution_profile=profile, profile_role="worker")
         claims = InMemoryClaimRegistry()
-        planner_runtime = _runtime(args, observability=NullObservabilitySink())
+        planner_runtime = _runtime(
+            args, observability=NullObservabilitySink(),
+            execution_profile=profile, profile_role="planner",
+        )
         planner_runner = RunOrchestration(
             runtime=planner_runtime,
             claim_registry=claims,
@@ -985,7 +1047,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 constraints=tuple(args.constraint),
                 agent=args.planner_agent or args.agent,
                 max_work_units=args.max_work_units,
-                max_concurrency=args.max_concurrency,
+                max_concurrency=profile_max_concurrency,
             )
             plan = planner.plan(planning_request)
             observability.emit(
@@ -1053,13 +1115,13 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 ),
                 context=tuple(args.context),
                 constraints=tuple(args.constraint),
-                concurrency_mode=ConcurrencyMode(args.concurrency_mode),
-                max_concurrency=args.max_concurrency,
+                concurrency_mode=ConcurrencyMode(profile_concurrency_mode),
+                max_concurrency=profile_max_concurrency,
                 worker_observation_interval_seconds=(
                     args.worker_observation_interval_seconds
                 ),
                 worker_soft_stall_seconds=args.worker_soft_stall_seconds,
-                worker_stall_overflow_slots=args.worker_stall_overflow_slots,
+                worker_stall_overflow_slots=profile_overflow_slots,
                 max_work_units=args.max_work_units,
                 max_waves=args.max_waves,
                 max_attempts_per_work_unit=args.max_attempts,
@@ -1079,6 +1141,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 execution_policy=_execution_policy(args),
                 human_approved=args.human_approved,
                 plan=plan,
+                execution_profile_snapshot=profile.to_dict(),
             ),
             observability=observability,
         )
@@ -2049,6 +2112,8 @@ def _runtime(
     args: argparse.Namespace,
     *,
     observability: ObservabilitySink | None = None,
+    execution_profile: ExecutionProfile | None = None,
+    profile_role: str = "worker",
 ) -> OpenClawAdapter:
     runtime_observability = observability or JsonlObservabilitySink(
         canonical_observability_path()
@@ -2068,6 +2133,10 @@ def _runtime(
     return OpenClawAdapter(
         OpenClawGatewayClient(config, result_store=result_store),
         observability=runtime_observability,
+        **(
+            {"model_routing_policy": execution_profile.routing_policy(profile_role)}
+            if execution_profile is not None else {}
+        ),
     )
 
 
