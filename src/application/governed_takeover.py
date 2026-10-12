@@ -128,6 +128,55 @@ class GovernedTakeoverStore:
             self._save(orchestration_id, row)
             return request
 
+    def request_many(
+        self, *, orchestration_id: str, work_unit_ids: tuple[str, ...],
+        mode: str, actor: str, reason: str, owner_agent: str | None = None,
+    ) -> list[dict]:
+        """Atomically stage governed intents; execution remains controller-owned."""
+        if not work_unit_ids or len(set(work_unit_ids)) != len(work_unit_ids):
+            raise GovernedTakeoverError("Batch needs distinct pending Work Units.")
+        if mode not in self.MODES or not actor.strip() or not reason.strip():
+            raise GovernedTakeoverError("Invalid takeover request.")
+        if mode == "direct" and not (owner_agent or "").strip():
+            raise GovernedTakeoverError("A coordinator agent is required.")
+        if any(not isinstance(key, str) or not key.strip() for key in work_unit_ids):
+            raise GovernedTakeoverError("Invalid Work Unit identifier.")
+        with self._lock(orchestration_id):
+            row = self.load(orchestration_id) or {
+                "version": self.VERSION, "orchestration_id": orchestration_id,
+                "sequence": 0, "requests": [],
+            }
+            staged: list[dict] = []
+            for work_unit_id in work_unit_ids:
+                existing_current = next((
+                    item for item in reversed(row["requests"])
+                    if item.get("work_unit_id") == work_unit_id
+                    and item.get("state") in {"REQUESTED", "QUIESCING", "APPLIED"}
+                ), None)
+                if existing_current is not None and (
+                    existing_current["mode"], existing_current.get("owner_agent")
+                ) == (mode, owner_agent):
+                    staged.append(existing_current)
+                    continue
+                if existing_current is not None:
+                    existing_current["state"] = "SUPERSEDED"
+                    existing_current["history"].append({
+                        "state": "SUPERSEDED",
+                        "detail": "Replaced by operator-authorized batch",
+                        "at": self.wall_clock(),
+                    })
+                row["sequence"] += 1
+                entry = {
+                    "id": str(row["sequence"]), "work_unit_id": work_unit_id,
+                    "mode": mode, "actor": actor, "reason": reason[:1000],
+                    "owner_agent": owner_agent, "state": "REQUESTED",
+                    "requested_at": self.wall_clock(), "history": [],
+                }
+                row["requests"].append(entry)
+                staged.append(entry)
+            self._save(orchestration_id, row)
+            return staged
+
     def current(self, orchestration_id: str, work_unit_id: str) -> dict | None:
         row = self.load(orchestration_id)
         if row is None:
