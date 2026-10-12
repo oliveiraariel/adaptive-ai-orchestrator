@@ -60,6 +60,7 @@ class ModelRoutingPolicy:
     # Execution-scoped profile override, never a process-global setting.
     pinned_model: str | None = None
     pinned_thinking: str | None = None
+    pinned_fallback_models: tuple[str, ...] | None = None
     disabled_models: tuple[str, ...] = (
         "moonshot/kimi-k3",
         "openai/gpt-5.6-sol",
@@ -284,6 +285,50 @@ class ModelRoutingPolicy:
         excluded_routes: frozenset[tuple[str, str | None]] = frozenset(),
     ) -> ModelRoutingDecision | None:
         """Return the next bounded cost-safe operational fallback."""
+        if self.pinned_fallback_models is not None:
+            # An explicitly chosen execution profile has its OWN allowlist,
+            # independent of the environment's normal Luna/Laguna fallbacks.
+            # Quality/authorization failures never trigger a model swap.
+            if failure_reason not in {"rate_limit", "quota"}:
+                return None
+            for target in self.pinned_fallback_models:
+                if self.is_disabled(target):
+                    continue
+                auth = (
+                    self.economy_auth_profile
+                    if target.startswith("openai/")
+                    else self._auth_profile_for_model(target)
+                )
+                if target.startswith("openai/") and not auth:
+                    continue
+                if (
+                    target.casefold(), auth
+                ) in excluded_routes or (
+                    target.casefold() == decision.model.casefold()
+                    and auth == decision.auth_profile
+                ):
+                    continue
+                if (
+                    self.quota_cooldowns is not None
+                    and self.quota_cooldowns.is_cooling(
+                        self._provider(target), target, auth
+                    )
+                ):
+                    continue
+                return ModelRoutingDecision(
+                    model=target, provider=self._provider(target),
+                    auth_profile=auth, tier="profile-quota-fallback",
+                    reason=f"execution-profile-quota-fallback-after-{failure_reason}",
+                    attempt=decision.attempt,
+                    thinking=(
+                        None if self._uses_provider_native_thinking(target)
+                        or target.startswith("moonshot/")
+                        else "low"
+                    ),
+                    thinking_reason="execution-profile-quota-fallback",
+                    escalated_from=decision.model,
+                )
+            return None
         normalized = decision.model.strip().casefold()
         economy = self.economy_model.strip().casefold()
         strong = self.strong_model.strip().casefold()
@@ -467,12 +512,9 @@ class ModelRoutingPolicy:
 
     def _auth_profile_for_model(self, model: str) -> str | None:
         normalized = model.strip().casefold()
-        if normalized == self.economy_model.strip().casefold():
+        if model.strip().casefold().startswith("openai/"):
             return self.economy_auth_profile
-        if normalized in {
-            self.strong_model.strip().casefold(),
-            self.code_specialist_model.strip().casefold(),
-        }:
+        if normalized.startswith("moonshot/"):
             return self.code_specialist_auth_profile
         if normalized in {
             self.laguna_model.strip().casefold(),
