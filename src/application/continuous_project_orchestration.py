@@ -2319,6 +2319,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "objective": request.objective,
             "agent": request.agent,
             "planner_agent": request.planner_agent,
+            "execution_profile_snapshot": request.execution_profile_snapshot,
             "scope": request.scope,
             "project_id": request.project_id,
             "context": list(request.context),
@@ -2431,6 +2432,11 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 orchestration_id=orchestration_id,
                 agent=cls._require_str(raw, "agent"),
                 planner_agent=planner_agent,
+                execution_profile_snapshot=(
+                    raw.get("execution_profile_snapshot")
+                    if isinstance(raw.get("execution_profile_snapshot"), dict)
+                    else None
+                ),
                 scope=str(raw.get("scope") or ""),
                 project_id=str(raw.get("project_id") or ""),
                 context=tuple(cls._require_string_list(raw, "context")),
