@@ -1605,9 +1605,28 @@ def _resume_project(args: argparse.Namespace) -> int:
         )
         assert registry_path is not None
         profiles = load_skill_profiles(registry_path)
-        runtime = _runtime(args)
+        # A resumed run uses the immutable profile snapshot recorded at
+        # admission, even if the named custom profile was edited or deleted.
+        existing_checkpoint = FileProjectOrchestrationCheckpointStore(
+            project_root=project_root
+        ).load(args.orchestration_id)
+        if existing_checkpoint is None:
+            raise ProjectOrchestrationError("Orchestration checkpoint not found.")
+        saved_request = existing_checkpoint.get("request")
+        snapshot = (
+            saved_request.get("execution_profile_snapshot")
+            if isinstance(saved_request, dict) else None
+        )
+        profile = (
+            ExecutionProfile.from_dict(snapshot)
+            if snapshot is not None else get_profile("original")
+        )
+        runtime = _runtime(args, execution_profile=profile, profile_role="worker")
         claims = InMemoryClaimRegistry()
-        recovery_runtime = _runtime(args, observability=NullObservabilitySink())
+        recovery_runtime = _runtime(
+            args, observability=NullObservabilitySink(),
+            execution_profile=profile, profile_role="planner",
+        )
         recovery_runner = RunOrchestration(
             runtime=recovery_runtime,
             claim_registry=claims,
