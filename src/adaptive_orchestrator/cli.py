@@ -225,6 +225,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
     )
 
+    switch_profile = commands.add_parser(
+        "switch-execution-profile",
+        help="Explicitly change a paused/quiescent project's execution profile.",
+    )
+    switch_profile.add_argument("--orchestration-id", required=True)
+    switch_profile.add_argument("--execution-profile", required=True)
+    switch_profile.add_argument("--reason", required=True)
+    switch_profile.add_argument("--actor", required=True)
+    switch_profile.add_argument("--authorize", action="store_true")
+    switch_profile.add_argument(
+        "--project-root", default=os.environ.get("ADAPTIVE_PROJECT_ROOT") or os.getcwd()
+    )
+
     fallback_direto = commands.add_parser(
         "fallback-direto",
         help="Ask the Adaptive controller to transfer one or all pending Work Units to the coordinator.",
@@ -628,6 +641,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _takeover_work_unit(args)
     if args.command == "fallback-direto":
         return _request_direct_fallback(args)
+    if args.command == "switch-execution-profile":
+        return _switch_execution_profile(args)
     if args.command == "reconcile-work-unit":
         return _reconcile_work_unit(args)
     if args.command == "migrate-work-graph":
@@ -1995,6 +2010,79 @@ def _supervise_projects(args: argparse.Namespace) -> int:
                 return 0
 
         time.sleep(args.interval_seconds)
+
+
+def _switch_execution_profile(args: argparse.Namespace) -> int:
+    """Authorized, durable profile change at a controller-quiescent boundary."""
+    try:
+        if not args.authorize:
+            raise ExecutionProfileError("Explicit --authorize is required.")
+        if not args.reason.strip() or not args.actor.strip():
+            raise ExecutionProfileError("Actor and reason are required.")
+        selected = get_profile(args.execution_profile)
+        selected.routing_policy("planner")
+        selected.routing_policy("worker")
+        root = Path(args.project_root).expanduser().resolve()
+        control = FileOrchestrationControlPlane(project_root=root)
+        checkpoint_store = FileProjectOrchestrationCheckpointStore(
+            project_root=root
+        )
+        with control.mutation_lock(args.orchestration_id):
+            state = checkpoint_store.load(args.orchestration_id)
+            if state is None:
+                raise ExecutionProfileError("Orchestration checkpoint not found.")
+            if state.get("terminal") is True:
+                raise ExecutionProfileError(
+                    "Terminal project requires governed continue-project."
+                )
+            if (
+                state.get("desired_state") != "PAUSED"
+                or state.get("active_executions") != []
+                or not control.is_quiescent(args.orchestration_id)
+            ):
+                raise ExecutionProfileError(
+                    "Pause and quiesce the project with zero live workers before changing profiles."
+                )
+            request = state.get("request")
+            if not isinstance(request, dict):
+                raise ExecutionProfileError("Checkpoint is missing the request.")
+            if selected.quality_direct_fallback and (
+                not request.get("planner_agent")
+                or request.get("planner_agent") == request.get("agent")
+            ):
+                raise ExecutionProfileError(
+                    "Quality fallback direto requires a distinct existing planner-agent."
+                )
+            previous = request.get("execution_profile_snapshot")
+            request["execution_profile_snapshot"] = selected.to_dict()
+            request["concurrency_mode"] = selected.concurrency_mode or "AUTO"
+            request["max_concurrency"] = selected.max_concurrency or 4
+            request["worker_stall_overflow_slots"] = (
+                0 if selected.concurrency_mode == "FIXED"
+                else (
+                    selected.worker_stall_overflow_slots
+                    if selected.worker_stall_overflow_slots is not None else 1
+                )
+            )
+            history = list(state.get("execution_profile_history") or ())
+            history.append({
+                "actor": args.actor, "reason": args.reason[:1000],
+                "from": previous.get("name") if isinstance(previous, dict) else "original",
+                "to": selected.name,
+                "changed_at": time.time(),
+                "controller_quiescent": True,
+            })
+            state["execution_profile_history"] = history
+            checkpoint_store.save(args.orchestration_id, state)
+        print(json.dumps({
+            "ok": True, "command": "switch-execution-profile",
+            "orchestration_id": args.orchestration_id,
+            "profile": selected.to_dict(),
+            "status": "PAUSED", "resumption_required": True,
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, ProjectOrchestrationCheckpointError, OrchestrationControlPlaneError) as exc:
+        return _print_error(exc)
 
 
 def _request_direct_fallback(args: argparse.Namespace) -> int:
