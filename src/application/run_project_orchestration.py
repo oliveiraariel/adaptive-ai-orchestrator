@@ -140,6 +140,7 @@ class ProjectOrchestrationRequest:
     execution_policy: ExecutionPolicy = field(default_factory=ExecutionPolicy)
     human_approved: bool = False
     plan: ProjectExecutionPlan | None = None
+    execution_profile_snapshot: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.objective.strip():
