@@ -354,3 +354,74 @@ def test_switch_profile_requires_quiescence_and_persists_audit(monkeypatch, tmp_
     assert result["request"]["concurrency_mode"] == "FIXED"
     assert result["request"]["execution_profile_snapshot"]["name"] == "gpt-luna-medium-low"
     assert len(result["execution_profile_history"]) == 1
+
+
+def test_coordinator_owner_direct_session_uses_planner_thinking(monkeypatch, tmp_path):
+    from domain.resource_configuration import ResourceConfiguration
+    from domain.task_package import TaskPackage
+    from infrastructure.openclaw_adapter import OpenClawAdapter
+    from infrastructure.model_routing_audit import ModelRoutingAuditLog
+
+    monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-test")
+    profile = get_profile("gpt-terra-medium-low")
+
+    class Client:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, payload):
+            self.submitted.append(payload)
+            return "fake-run"
+
+    client = Client()
+    runtime = OpenClawAdapter(
+        client, model_routing_policy=profile.routing_policy("worker"),
+        owner_agent="adaptive",
+        owner_model_routing_policy=profile.routing_policy("planner"),
+        audit_log=ModelRoutingAuditLog(tmp_path / "routing.jsonl"),
+    )
+    for agent in ("sgfp", "adaptive"):
+        runtime.submit(TaskPackage(
+            task_id=f"task:{agent}", work_unit_id=f"wu:{agent}",
+            objective="Correct an authorized coding task",
+            configuration=ResourceConfiguration(agent=agent, runtime="openclaw"),
+            expected_output=("report",), acceptance_criteria=("tests pass",),
+        ))
+    worker = client.submitted[0]["configuration"]
+    direct = client.submitted[1]["configuration"]
+    assert worker["model"] == direct["model"] == "openai/gpt-5.6-terra"
+    assert worker["thinking"] == "low"
+    assert direct["thinking"] == "medium"
+    assert "adaptive-profile-quota-fallback-models:moonshot/kimi-k2.7-code" in (
+        direct["policy_constraints"]
+    )
+
+
+def test_capacity_error_returns_wu_without_unbounded_retry():
+    from types import SimpleNamespace
+    from domain.work_unit import WorkUnit, WorkUnitId, WorkUnitState
+    from application.continuous_project_orchestration import RunContinuousProjectOrchestration
+
+    released = []
+    controller = object.__new__(RunContinuousProjectOrchestration)
+    controller._claims = SimpleNamespace(release=lambda claim: released.append(claim))
+    work = WorkUnit(
+        id=WorkUnitId("wu1"), objective="example", state=WorkUnitState.RUNNING,
+    )
+    records = []
+    feedback = {}
+    outcome = SimpleNamespace(claim="claim", work_unit_id="wu1", execution=None)
+    pending = controller._handle_runtime_result_error(
+        outcome=outcome,
+        error=RuntimeError("PROFILE_MODEL_CAPACITY_EXHAUSTED"),
+        generation=1, specs={"wu1": SimpleNamespace(role="executor")},
+        work_units={"wu1": work}, skill_sets={"wu1": ()},
+        attempts={"wu1": 1}, strategy_generations={"wu1": 1},
+        records=records, revision_feedback=feedback,
+        max_attempts=2, max_strategies=2,
+    )
+    assert pending is False
+    assert work.state is WorkUnitState.BLOCKED
+    assert records[0].status == "BLOCKED"
+    assert "PROFILE_MODEL_CAPACITY_EXHAUSTED" in records[0].reason
+    assert released == ["claim"]
