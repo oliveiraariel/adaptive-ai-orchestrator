@@ -2333,6 +2333,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 "work_unit_evidence_lineage",
                 "reconciliation_decisions",
                 "checkpoint_administration",
+                "execution_profile_history",
             ):
                 if key in existing_checkpoint:
                     payload[key] = deepcopy(existing_checkpoint[key])
