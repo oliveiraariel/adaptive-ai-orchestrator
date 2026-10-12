@@ -23,11 +23,16 @@ class ExecutionProfileError(ValueError):
 _NAME = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _MODEL = re.compile(r"^[A-Za-z0-9_.:-]+/[A-Za-z0-9_.:/-]+$")
 _THINKING = frozenset({"low", "medium", "high", "xhigh"})
-_FIELDS = frozenset({
+_BASE_FIELDS = frozenset({
     "name", "planner_model", "planner_thinking", "worker_model",
     "worker_thinking", "concurrency_mode", "max_concurrency",
     "worker_stall_overflow_slots", "direct_takeover",
 })
+_EXTRA_FIELDS = frozenset({
+    "planner_fallback_models", "worker_fallback_models",
+    "quality_direct_fallback", "direct_owner_mode",
+})
+_FIELDS = _BASE_FIELDS | _EXTRA_FIELDS
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,10 @@ class ExecutionProfile:
     max_concurrency: int | None = None
     worker_stall_overflow_slots: int | None = None
     direct_takeover: str = "manual"
+    planner_fallback_models: tuple[str, ...] = ()
+    worker_fallback_models: tuple[str, ...] = ()
+    quality_direct_fallback: bool = False
+    direct_owner_mode: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _NAME.fullmatch(self.name):
@@ -58,6 +67,29 @@ class ExecutionProfile:
                 raise ExecutionProfileError(
                     f"{role} thinking requires an explicit {role} model."
                 )
+        for role in ("planner", "worker"):
+            fallbacks = getattr(self, f"{role}_fallback_models")
+            if not isinstance(fallbacks, (list, tuple)) or any(
+                not isinstance(value, str) or not _MODEL.fullmatch(value)
+                for value in fallbacks
+            ):
+                raise ExecutionProfileError(f"Invalid {role} fallback models.")
+            if len(set(fallbacks)) != len(fallbacks):
+                raise ExecutionProfileError(f"Duplicate {role} fallback models.")
+            if getattr(self, f"{role}_model") in fallbacks:
+                raise ExecutionProfileError("Primary model cannot also be its fallback.")
+        if type(self.quality_direct_fallback) is not bool or type(self.direct_owner_mode) is not bool:
+            raise ExecutionProfileError("Fallback and direct execution flags must be boolean.")
+        if self.direct_owner_mode and self.quality_direct_fallback:
+            raise ExecutionProfileError("Direct-owner mode cannot recursively fall back to itself.")
+        if self.direct_owner_mode and (
+            self.planner_model != self.worker_model
+            or self.planner_thinking != self.worker_thinking
+            or self.planner_fallback_models or self.worker_fallback_models
+        ):
+            raise ExecutionProfileError(
+                "Direct-owner execution must retain the coordinator model, thinking and no LLM swap."
+            )
         if self.concurrency_mode not in (None, "AUTO", "FIXED"):
             raise ExecutionProfileError("Concurrency mode must be AUTO or FIXED.")
         if self.max_concurrency is not None and (
@@ -82,9 +114,13 @@ class ExecutionProfile:
 
     @classmethod
     def from_dict(cls, data: dict) -> "ExecutionProfile":
-        if not isinstance(data, dict) or set(data) != _FIELDS:
-            raise ExecutionProfileError("Profile must contain exactly the declared fields.")
-        return cls(**data)
+        if not isinstance(data, dict) or not _BASE_FIELDS.issubset(data) or not set(data).issubset(_FIELDS):
+            raise ExecutionProfileError("Profile is missing required fields or has unknown fields.")
+        normalized = dict(data)
+        for field in ("planner_fallback_models", "worker_fallback_models"):
+            if field in normalized and isinstance(normalized[field], list):
+                normalized[field] = tuple(normalized[field])
+        return cls(**normalized)
 
     def routing_policy(self, role: str) -> ModelRoutingPolicy:
         """Return a per-runtime policy. Never mutate process-wide environment."""
@@ -94,23 +130,79 @@ class ExecutionProfile:
         model = getattr(self, f"{role}_model")
         if model is None:
             return policy
-        if policy.is_disabled(model):
+        # Selecting the explicitly named K3 preset is a manual opt-in to a
+        # premium model. Remove this single model from the automatic exclusion
+        # list in this role's isolated policy object; never alter environment.
+        manual_k3 = model == "moonshot/kimi-k3" and self.name in (
+            "kimi-k3-k27", "kimi-k3-k2-7"
+        )
+        if policy.is_disabled(model) and not manual_k3:
             raise ExecutionProfileError(f"Profile model is disabled: {model}")
+        if manual_k3:
+            policy = replace(policy, disabled_models=tuple(
+                entry for entry in policy.disabled_models if entry.casefold() != model.casefold()
+            ))
         if model.startswith("openai/") and not policy.economy_auth_profile:
             raise ExecutionProfileError(
                 "An OpenAI execution profile requires ADAPTIVE_OPENAI_OAUTH_PROFILE."
             )
         if model.startswith("moonshot/") and not policy.kimi_enabled:
             raise ExecutionProfileError("Moonshot routing is disabled.")
+        fallbacks = tuple(getattr(self, f"{role}_fallback_models"))
+        for fallback in fallbacks:
+            if policy.is_disabled(fallback):
+                raise ExecutionProfileError(f"Fallback model is disabled: {fallback}")
+            if fallback.startswith("openai/") and not policy.economy_auth_profile:
+                raise ExecutionProfileError(
+                    "OpenAI fallback requires ADAPTIVE_OPENAI_OAUTH_PROFILE."
+                )
         return replace(
             policy,
             pinned_model=model,
             pinned_thinking=getattr(self, f"{role}_thinking"),
+            pinned_fallback_models=fallbacks,
         )
 
 
 BUILTIN_PROFILES = {
     "original": ExecutionProfile(name="original"),
+    "gpt-terra-medium-low": ExecutionProfile(
+        name="gpt-terra-medium-low",
+        planner_model="openai/gpt-5.6-terra", planner_thinking="medium",
+        worker_model="openai/gpt-5.6-terra", worker_thinking="low",
+        planner_fallback_models=("moonshot/kimi-k2.7-code",),
+        worker_fallback_models=("moonshot/kimi-k2.7-code",),
+        quality_direct_fallback=True,
+        concurrency_mode="AUTO", max_concurrency=8,
+        worker_stall_overflow_slots=1,
+    ),
+    "gpt-luna-medium-low": ExecutionProfile(
+        name="gpt-luna-medium-low",
+        planner_model="openai/gpt-5.6-luna", planner_thinking="medium",
+        worker_model="openai/gpt-5.6-luna", worker_thinking="low",
+        quality_direct_fallback=True,
+        concurrency_mode="FIXED", max_concurrency=1,
+        worker_stall_overflow_slots=0,
+    ),
+    "gpt-fallback-direto": ExecutionProfile(
+        name="gpt-fallback-direto",
+        planner_model="openai/gpt-5.6-terra", planner_thinking="medium",
+        worker_model="openai/gpt-5.6-terra", worker_thinking="medium",
+        direct_owner_mode=True,
+        concurrency_mode="FIXED", max_concurrency=1,
+        worker_stall_overflow_slots=0,
+    ),
+    "kimi-k3-k27": ExecutionProfile(
+        name="kimi-k3-k27",
+        planner_model="moonshot/kimi-k3",
+        worker_model="moonshot/kimi-k2.7-code",
+        planner_fallback_models=("openai/gpt-5.6-terra",),
+        worker_fallback_models=("openai/gpt-5.6-terra",),
+        quality_direct_fallback=True,
+        concurrency_mode="AUTO", max_concurrency=8,
+        worker_stall_overflow_slots=1,
+    ),
+    # Compatible aliases for snapshots prepared before the user refined policy.
     "economy-serial": ExecutionProfile(
         name="economy-serial",
         planner_model="openai/gpt-5.6-luna", planner_thinking="medium",
