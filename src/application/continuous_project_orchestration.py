@@ -310,6 +310,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         last_effective_concurrency_limit: int | None = None
         recovery_yield_requested = False
         recovery_yield_reason = ""
+        quota_halted = False
         last_productive_activity_at = time.monotonic()
         takeovers = (
             GovernedTakeoverStore(project_root=self._checkpoint_store.project_root)
@@ -374,6 +375,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 active=tuple(active.values()),
                 active_started_at=active_started_at,
                 terminal=terminal,
+                force_pause=quota_halted,
             )
 
         def _reconcile_existing_authoritative_completion(
@@ -769,7 +771,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         persist()
 
                 unfinished = self._unfinished(work_units)
-                pause_requested = self._pause_requested(orchestration_id)
+                pause_requested = self._pause_requested(orchestration_id) or quota_halted
                 if pause_requested and not active:
                     persist(terminal=False)
                     if self._on_quiescent is not None:
@@ -779,7 +781,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         orchestration_id=orchestration_id,
                         status="PAUSED",
                         terminal=False,
-                        reason="developer-requested-pause",
+                        reason=(
+                            "profile-model-capacity-exhausted"
+                            if quota_halted else "developer-requested-pause"
+                        ),
                     )
                     break
 
@@ -1638,6 +1643,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                         try:
                             runtime_result = future.result()
                         except Exception as exc:  # adapter exception families vary
+                            if "PROFILE_MODEL_CAPACITY_EXHAUSTED" in str(exc):
+                                quota_halted = True
                             runtime_recovery_signal = self._handle_runtime_result_error(
                                 outcome=outcome,
                                 error=exc,
@@ -2247,6 +2254,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         active: Sequence[tuple[DispatchOutcome, int]],
         active_started_at: dict[str, float],
         terminal: bool,
+        force_pause: bool = False,
     ) -> None:
         if self._checkpoint_store is None:
             return
@@ -2280,7 +2288,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         payload = {
             "orchestration_id": orchestration_id,
             "phase": "EXECUTION",
-            "desired_state": desired_state,
+            "desired_state": ("PAUSED" if force_pause else desired_state),
             "request": self._request_to_payload(request),
             "plan": self._plan_to_payload(plan),
             "work_unit_states": {
