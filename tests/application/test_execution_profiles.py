@@ -124,3 +124,47 @@ def test_cli_profile_dispatch_flag_and_management_parser():
     assert parser.parse_args([
         "execution-profile", "save", "--file", "/tmp/profiles.json"
     ]).profile_action == "save"
+
+
+def test_profile_applies_at_actual_model_selection_boundary(monkeypatch):
+    """Pinned roles must beat even a planner-provided explicit worker model."""
+    from domain.resource_configuration import ResourceConfiguration
+    from domain.task_package import TaskPackage
+
+    monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-test")
+    p = get_profile("economy-serial")
+    task = TaskPackage(
+        task_id="task-profile", work_unit_id="wu-profile",
+        objective="Review critical transaction correctness.",
+        configuration=ResourceConfiguration(
+            agent="sgfp", runtime="openclaw",
+            model="moonshot/kimi-k2.7-code",
+        ),
+        expected_output=("result",),
+        acceptance_criteria=("runtime-completed",),
+    )
+    planner = p.routing_policy("planner").select(task)
+    worker = p.routing_policy("worker").select(task)
+    assert planner.model == worker.model == "openai/gpt-5.6-luna"
+    assert planner.thinking == "medium"
+    assert worker.thinking == "low"
+    assert planner.auth_profile == worker.auth_profile == "openai:oauth-test"
+    assert planner.reason == worker.reason == "explicit-execution-profile"
+
+
+def test_profiles_do_not_change_process_policy_or_other_runs(monkeypatch):
+    monkeypatch.setenv("ADAPTIVE_OPENAI_OAUTH_PROFILE", "openai:oauth-test")
+    p = get_profile("economy-serial")
+    worker = p.routing_policy("worker")
+    original = get_profile("original").routing_policy("worker")
+    assert worker.pinned_model == "openai/gpt-5.6-luna"
+    assert original.pinned_model is None
+    assert original.pinned_thinking is None
+
+
+def test_bad_profile_snapshot_fails_closed():
+    from application.execution_profiles import ExecutionProfile
+    with pytest.raises(ExecutionProfileError):
+        ExecutionProfile.from_dict({
+            **get_profile("original").to_dict(), "direct_takeover": "automatic"
+        })
