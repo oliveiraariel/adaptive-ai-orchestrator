@@ -81,6 +81,14 @@ class OpenClawAdapter(AgentRuntime):
             if decision.thinking is not None
             else "adaptive-thinking-level:provider-native"
         )
+        profile_fallback_constraint = (
+            (
+                "adaptive-profile-quota-fallback-models:"
+                + (",".join(self._routing_policy.pinned_fallback_models) or "none")
+            )
+            if self._routing_policy.pinned_fallback_models is not None
+            else None
+        )
         auth_constraint = (
             "adaptive-auth-product:openai-oauth"
             if (
@@ -105,6 +113,7 @@ class OpenClawAdapter(AgentRuntime):
                 thinking_constraint,
                 f"adaptive-thinking-routing-reason:{decision.thinking_reason}",
                 auth_constraint,
+                *([profile_fallback_constraint] if profile_fallback_constraint else []),
             ),
         )
 
