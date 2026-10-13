@@ -1008,22 +1008,31 @@ class RunProjectOrchestration:
         # complete result, with authoritative transport, zero unmet criteria,
         # no blocker, and an auditable local verification outcome. A reported
         # failed local check never qualifies for this release.
-        if (
-            local_delivery_acceptance
-            and runtime_status is AgentRuntimeStatus.COMPLETED
-            and result_authoritative
-            and bool(result_ref)
-            and completion.structured
-            and completion.is_terminal_success
-            and completion.blocker_type.value == "NONE"
-            and "ADAPTIVE_BLOCKER_TYPE: NONE" in output
-            and "ADAPTIVE_UNMET_CRITERIA: NONE" in output
-            and not incident_requires_replan
-            and self._local_delivery_verification_reported(output)
-        ):
-            if verdict is not EvaluationVerdict.ACCEPTED:
-                verdict = EvaluationVerdict.ACCEPTED
-                reason = "local-delivery-complete"
+        if local_delivery_acceptance:
+            local_evidence_ok = (
+                runtime_status is AgentRuntimeStatus.COMPLETED
+                and result_authoritative
+                and bool(result_ref)
+                and completion.structured
+                and completion.is_terminal_success
+                and completion.blocker_type.value == "NONE"
+                and "ADAPTIVE_BLOCKER_TYPE: NONE" in output
+                and "ADAPTIVE_UNMET_CRITERIA: NONE" in output
+                and not incident_requires_replan
+                and self._local_delivery_verification_reported(output)
+            )
+            if local_evidence_ok:
+                if verdict is not EvaluationVerdict.ACCEPTED:
+                    verdict = EvaluationVerdict.ACCEPTED
+                    reason = "local-delivery-complete"
+            elif verdict in {
+                EvaluationVerdict.ACCEPTED,
+                EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
+            }:
+                # A legacy literal/runtime-completed criterion cannot bypass
+                # the explicit LOCAL_DELIVERY evidence gate, even for UI work.
+                verdict = EvaluationVerdict.RETURNED
+                reason = "local-delivery-evidence-required"
 
         # PRACTICAL_TEST is deliberately a delivery-mode acceptance, not a claim
         # that every visual/subtle criterion was objectively proven. For ordinary
