@@ -1608,12 +1608,12 @@ def _local_delivery_output(
     unmet: str = "NONE",
 ) -> str:
     return (
-        "Local files updated and verified. WordPress and remote REST: NOT_RUN.\\n"
-        f"ADAPTIVE_LOCAL_VERIFICATION: {verification}\\n"
-        f"ADAPTIVE_LOCAL_VERIFICATION_DETAILS: {details}\\n"
-        f"ADAPTIVE_WORK_STATUS: {work_status}\\n"
-        f"ADAPTIVE_BLOCKER_TYPE: {blocker}\\n"
-        f"ADAPTIVE_UNMET_CRITERIA: {unmet}\\n"
+        "Local files updated and verified. WordPress and remote REST: NOT_RUN.\n"
+        f"ADAPTIVE_LOCAL_VERIFICATION: {verification}\n"
+        f"ADAPTIVE_LOCAL_VERIFICATION_DETAILS: {details}\n"
+        f"ADAPTIVE_WORK_STATUS: {work_status}\n"
+        f"ADAPTIVE_BLOCKER_TYPE: {blocker}\n"
+        f"ADAPTIVE_UNMET_CRITERIA: {unmet}\n"
     )
 
 
@@ -1657,7 +1657,7 @@ def test_local_delivery_accepts_verified_critical_backend_and_unlocks_next() -> 
         "local-delivery-complete",
     ]
     assert [task.work_unit_id for task in runtime.tasks] == ["T02", "T03"]
-    task_constraints = "\\n".join(runtime.tasks[0].constraints)
+    task_constraints = "\n".join(runtime.tasks[0].constraints)
     assert "ADAPTIVE_LOCAL_VERIFICATION" in task_constraints
     assert "WordPress" in task_constraints
     assert planner.replan_calls == 0
@@ -1722,14 +1722,14 @@ def test_local_delivery_rejects_partial_and_real_blocker() -> None:
 def test_local_delivery_requires_attestation_and_transport_evidence() -> None:
     for output, ref in (
         (_local_delivery_output().replace(
-            "ADAPTIVE_LOCAL_VERIFICATION: PASS\\n", ""
+            "ADAPTIVE_LOCAL_VERIFICATION: PASS\n", ""
         ), "/tmp/sgfp/T02/manifest.json"),
         (_local_delivery_output(
             details="ok",
         ), "/tmp/sgfp/T02/manifest.json"),
         (_local_delivery_output(), None),
         (_local_delivery_output().replace(
-            "ADAPTIVE_BLOCKER_TYPE: NONE\\n", ""
+            "ADAPTIVE_BLOCKER_TYPE: NONE\n", ""
         ), "/tmp/sgfp/T02/manifest.json"),
     ):
         plan = ProjectExecutionPlan(
