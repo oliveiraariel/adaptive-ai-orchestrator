@@ -1121,7 +1121,10 @@ class RunProjectOrchestration:
         request: ProjectOrchestrationRequest,
         spec: PlannedWorkUnit,
     ) -> bool:
-        if request.acceptance_mode is AcceptanceMode.STRICT:
+        if request.acceptance_mode in {
+            AcceptanceMode.STRICT,
+            AcceptanceMode.LOCAL_DELIVERY,
+        }:
             return False
         if request.acceptance_mode is AcceptanceMode.PRACTICAL_TEST:
             return spec.criticality == 0
