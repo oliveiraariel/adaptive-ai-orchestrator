@@ -104,6 +104,7 @@ class AcceptanceMode(str, Enum):
     AUTO = "AUTO"
     STRICT = "STRICT"
     PRACTICAL_TEST = "PRACTICAL_TEST"
+    LOCAL_DELIVERY = "LOCAL_DELIVERY"
 
 
 @dataclass(frozen=True)
@@ -882,6 +883,7 @@ class RunProjectOrchestration:
         enforce_attempt_circuit_breaker: bool = True,
         pragmatic_low_criticality_acceptance: bool = False,
         practical_test_acceptance: bool = False,
+        local_delivery_acceptance: bool = False,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -983,6 +985,29 @@ class RunProjectOrchestration:
         elif verdict is EvaluationVerdict.ACCEPTED:
             reason = "accepted"
 
+        # LOCAL_DELIVERY is an explicit, opt-in acceptance policy for
+        # checkpointed project tasks. It does not claim remote/WordPress tests
+        # passed or independently verify semantics: the worker must report a
+        # complete result, with authoritative transport, zero unmet criteria,
+        # no blocker, and an auditable local verification outcome. A reported
+        # failed local check never qualifies for this release.
+        if (
+            local_delivery_acceptance
+            and runtime_status is AgentRuntimeStatus.COMPLETED
+            and result_authoritative
+            and bool(result_ref)
+            and completion.structured
+            and completion.is_terminal_success
+            and completion.blocker_type.value == "NONE"
+            and "ADAPTIVE_BLOCKER_TYPE: NONE" in output
+            and "ADAPTIVE_UNMET_CRITERIA: NONE" in output
+            and not incident_requires_replan
+            and self._local_delivery_verification_reported(output)
+        ):
+            if verdict is not EvaluationVerdict.ACCEPTED:
+                verdict = EvaluationVerdict.ACCEPTED
+                reason = "local-delivery-complete"
+
         # PRACTICAL_TEST is deliberately a delivery-mode acceptance, not a claim
         # that every visual/subtle criterion was objectively proven. For ordinary
         # low-criticality frontend/UI work, a transport-verified runtime completion
@@ -1053,6 +1078,26 @@ class RunProjectOrchestration:
                 or (accepted and self.REPLAN_MARKER in output)
             ),
         )
+
+    @staticmethod
+    def _local_delivery_verification_reported(output: str) -> bool:
+        """Require an explicit, non-failing local verification report.
+
+        PASS covers locally executed checks; NOT_RUN is permitted only with a
+        stated reason. WordPress/remote checks can separately be NOT_RUN even
+        when local checks passed. A missing/FAIL signal cannot release work.
+        """
+        fields: dict[str, str] = {}
+        for line in output.splitlines():
+            key, separator, value = line.strip().partition(":")
+            if separator and key in {
+                "ADAPTIVE_LOCAL_VERIFICATION",
+                "ADAPTIVE_LOCAL_VERIFICATION_DETAILS",
+            }:
+                fields[key] = value.strip()
+        status = fields.get("ADAPTIVE_LOCAL_VERIFICATION", "").upper()
+        details = fields.get("ADAPTIVE_LOCAL_VERIFICATION_DETAILS", "")
+        return status in {"PASS", "NOT_RUN"} and len(details) >= 12
 
     @staticmethod
     def _practical_test_acceptance_enabled(
