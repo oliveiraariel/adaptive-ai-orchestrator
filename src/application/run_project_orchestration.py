@@ -815,6 +815,23 @@ class RunProjectOrchestration:
             self._incident_signal_constraint(),
             "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY|PLANNING ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
+        if request.acceptance_mode is AcceptanceMode.LOCAL_DELIVERY:
+            constraints = (
+                *constraints,
+                "Local delivery is an explicit operator-selected mode. Complete the "
+                "delegated implementation and run available local checks. Report "
+                "WordPress, external REST, remote MySQL and browser checks as "
+                "NOT_RUN in the narrative when unavailable; they are not a gate.",
+                "Immediately BEFORE the final three ADAPTIVE_WORK_STATUS lines, "
+                "emit these two machine-readable lines: "
+                "ADAPTIVE_LOCAL_VERIFICATION: PASS|NOT_RUN|FAIL ; "
+                "ADAPTIVE_LOCAL_VERIFICATION_DETAILS: concise evidence or "
+                "a concrete reason checks could not run (at least 12 characters). "
+                "Use PASS only if all applicable local checks actually run and pass; "
+                "use FAIL if any executed local check failed; use NOT_RUN only "
+                "when local checks were unavailable or inapplicable. "
+                "Never claim remote tests passed if they were not run.",
+            )
         if spec.write_paths:
             constraints = (
                 *constraints,
