@@ -1807,7 +1807,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 wave=record.wave,
                                 status=record.status,
                                 verdict=record.verdict,
-                                local_verification_reported=True,
                             )
                         if record.reason == "practical-test-ready":
                             observability.emit(
