@@ -1759,3 +1759,21 @@ def test_strict_mode_still_rejects_unmatched_semantic_criteria() -> None:
         recovery_loop_mode=RecoveryLoopMode.DISABLED,
     )
     assert "T02" not in result.completed_work_unit_ids
+
+def test_local_delivery_frontend_cannot_fall_back_to_practical_acceptance() -> None:
+    plan = ProjectExecutionPlan(
+        summary="explicit mode isolation",
+        work_units=(wu("T05", role="frontend"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={"T05": _local_delivery_output(
+            verification="FAIL",
+            details="Locally executed CSS regression tests failed",
+        )},
+        result_refs={"T05": "/tmp/sgfp/T05/manifest.json"},
+    )
+    result, _ = run(
+        plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+    )
+    assert "T05" not in result.completed_work_unit_ids
