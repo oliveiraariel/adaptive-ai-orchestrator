@@ -104,6 +104,7 @@ class AcceptanceMode(str, Enum):
     AUTO = "AUTO"
     STRICT = "STRICT"
     PRACTICAL_TEST = "PRACTICAL_TEST"
+    LOCAL_DELIVERY = "LOCAL_DELIVERY"
 
 
 @dataclass(frozen=True)
@@ -814,6 +815,23 @@ class RunProjectOrchestration:
             self._incident_signal_constraint(),
             "At the very end of the response emit exactly these three machine-readable lines: ADAPTIVE_WORK_STATUS: COMPLETE|PARTIAL|BLOCKED ; ADAPTIVE_BLOCKER_TYPE: NONE|HUMAN_DECISION|AUTHORITY|ENVIRONMENT|RUNTIME|EXTERNAL_DEPENDENCY|PLANNING ; ADAPTIVE_UNMET_CRITERIA: NONE|criterion one; criterion two. Use COMPLETE only when the delegated acceptance surface is actually finished.",
         )
+        if request.acceptance_mode is AcceptanceMode.LOCAL_DELIVERY:
+            constraints = (
+                *constraints,
+                "Local delivery is an explicit operator-selected mode. Complete the "
+                "delegated implementation and run available local checks. Report "
+                "WordPress, external REST, remote MySQL and browser checks as "
+                "NOT_RUN in the narrative when unavailable; they are not a gate.",
+                "Immediately BEFORE the final three ADAPTIVE_WORK_STATUS lines, "
+                "emit these two machine-readable lines: "
+                "ADAPTIVE_LOCAL_VERIFICATION: PASS|NOT_RUN|FAIL ; "
+                "ADAPTIVE_LOCAL_VERIFICATION_DETAILS: concise evidence or "
+                "a concrete reason checks could not run (at least 12 characters). "
+                "Use PASS only if all applicable local checks actually run and pass; "
+                "use FAIL if any executed local check failed; use NOT_RUN only "
+                "when local checks were unavailable or inapplicable. "
+                "Never claim remote tests passed if they were not run.",
+            )
         if spec.write_paths:
             constraints = (
                 *constraints,
@@ -882,6 +900,7 @@ class RunProjectOrchestration:
         enforce_attempt_circuit_breaker: bool = True,
         pragmatic_low_criticality_acceptance: bool = False,
         practical_test_acceptance: bool = False,
+        local_delivery_acceptance: bool = False,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -983,6 +1002,38 @@ class RunProjectOrchestration:
         elif verdict is EvaluationVerdict.ACCEPTED:
             reason = "accepted"
 
+        # LOCAL_DELIVERY is an explicit, opt-in acceptance policy for
+        # checkpointed project tasks. It does not claim remote/WordPress tests
+        # passed or independently verify semantics: the worker must report a
+        # complete result, with authoritative transport, zero unmet criteria,
+        # no blocker, and an auditable local verification outcome. A reported
+        # failed local check never qualifies for this release.
+        if local_delivery_acceptance:
+            local_evidence_ok = (
+                runtime_status is AgentRuntimeStatus.COMPLETED
+                and result_authoritative
+                and bool(result_ref)
+                and completion.structured
+                and completion.is_terminal_success
+                and completion.blocker_type.value == "NONE"
+                and "ADAPTIVE_BLOCKER_TYPE: NONE" in output
+                and "ADAPTIVE_UNMET_CRITERIA: NONE" in output
+                and not incident_requires_replan
+                and self._local_delivery_verification_reported(output)
+            )
+            if local_evidence_ok:
+                if verdict is not EvaluationVerdict.ACCEPTED:
+                    verdict = EvaluationVerdict.ACCEPTED
+                    reason = "local-delivery-complete"
+            elif verdict in {
+                EvaluationVerdict.ACCEPTED,
+                EvaluationVerdict.ACCEPTED_WITH_CONDITIONS,
+            }:
+                # A legacy literal/runtime-completed criterion cannot bypass
+                # the explicit LOCAL_DELIVERY evidence gate, even for UI work.
+                verdict = EvaluationVerdict.RETURNED
+                reason = "local-delivery-evidence-required"
+
         # PRACTICAL_TEST is deliberately a delivery-mode acceptance, not a claim
         # that every visual/subtle criterion was objectively proven. For ordinary
         # low-criticality frontend/UI work, a transport-verified runtime completion
@@ -1055,11 +1106,34 @@ class RunProjectOrchestration:
         )
 
     @staticmethod
+    def _local_delivery_verification_reported(output: str) -> bool:
+        """Require an explicit, non-failing local verification report.
+
+        PASS covers locally executed checks; NOT_RUN is permitted only with a
+        stated reason. WordPress/remote checks can separately be NOT_RUN even
+        when local checks passed. A missing/FAIL signal cannot release work.
+        """
+        fields: dict[str, str] = {}
+        for line in output.splitlines():
+            key, separator, value = line.strip().partition(":")
+            if separator and key in {
+                "ADAPTIVE_LOCAL_VERIFICATION",
+                "ADAPTIVE_LOCAL_VERIFICATION_DETAILS",
+            }:
+                fields[key] = value.strip()
+        status = fields.get("ADAPTIVE_LOCAL_VERIFICATION", "").upper()
+        details = fields.get("ADAPTIVE_LOCAL_VERIFICATION_DETAILS", "")
+        return status in {"PASS", "NOT_RUN"} and len(details) >= 12
+
+    @staticmethod
     def _practical_test_acceptance_enabled(
         request: ProjectOrchestrationRequest,
         spec: PlannedWorkUnit,
     ) -> bool:
-        if request.acceptance_mode is AcceptanceMode.STRICT:
+        if request.acceptance_mode in {
+            AcceptanceMode.STRICT,
+            AcceptanceMode.LOCAL_DELIVERY,
+        }:
             return False
         if request.acceptance_mode is AcceptanceMode.PRACTICAL_TEST:
             return spec.criticality == 0

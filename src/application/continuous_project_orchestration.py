@@ -1725,6 +1725,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     request, specs[work_unit_id]
                                 )
                             ),
+                            local_delivery_acceptance=(
+                                request.acceptance_mode
+                                is AcceptanceMode.LOCAL_DELIVERY
+                            ),
                         )
                         if (
                             request.recovery_loop_mode
@@ -1794,6 +1798,16 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                         detail="Owner execution blocked by normal acceptance policy",
                                     )
                         last_productive_activity_at = time.monotonic()
+                        if record.reason == "local-delivery-complete":
+                            observability.emit(
+                                "work_unit_local_delivery_accepted",
+                                orchestration_id=orchestration_id,
+                                work_unit_id=record.work_unit_id,
+                                execution_id=record.execution_id,
+                                wave=record.wave,
+                                status=record.status,
+                                verdict=record.verdict,
+                            )
                         if record.reason == "practical-test-ready":
                             observability.emit(
                                 "work_unit_practical_test_ready",

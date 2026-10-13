@@ -191,7 +191,11 @@ def build_parser() -> argparse.ArgumentParser:
     resume_project.add_argument(
         "--acceptance-mode",
         choices=[item.value for item in AcceptanceMode],
-        help="Governed override persisted for this resumed orchestration.",
+        help=(
+            "Governed override persisted for this resumed orchestration; "
+            "LOCAL_DELIVERY accepts only authoritative COMPLETE with local "
+            "verification PASS/NOT_RUN evidence and zero blockers."
+        ),
     )
     _add_gateway_arguments(resume_project)
 
@@ -492,7 +496,9 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
             "AUTO releases ordinary low-criticality frontend/UI work for practical "
             "testing when runtime/result integrity is sound; STRICT requires normal "
             "criterion acceptance; PRACTICAL_TEST applies the practical gate to all "
-            "low-criticality work."
+            "low-criticality work; LOCAL_DELIVERY requires authoritative "
+            "COMPLETE and explicit local verification with no blockers, while "
+            "permitting unavailable external checks to be reported NOT_RUN."
         ),
     )
     parser.add_argument(

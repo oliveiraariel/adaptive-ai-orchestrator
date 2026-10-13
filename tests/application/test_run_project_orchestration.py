@@ -1597,3 +1597,183 @@ def test_large_project_defaults_support_forty_plus_work_units() -> None:
 
     assert request.max_work_units == 64
     assert planning.max_work_units == 64
+
+
+def _local_delivery_output(
+    *,
+    verification: str = "PASS",
+    details: str = "PHPUnit 190 tests, 609 assertions passed locally",
+    work_status: str = "COMPLETE",
+    blocker: str = "NONE",
+    unmet: str = "NONE",
+) -> str:
+    return (
+        "Local files updated and verified. WordPress and remote REST: NOT_RUN.\n"
+        f"ADAPTIVE_LOCAL_VERIFICATION: {verification}\n"
+        f"ADAPTIVE_LOCAL_VERIFICATION_DETAILS: {details}\n"
+        f"ADAPTIVE_WORK_STATUS: {work_status}\n"
+        f"ADAPTIVE_BLOCKER_TYPE: {blocker}\n"
+        f"ADAPTIVE_UNMET_CRITERIA: {unmet}\n"
+    )
+
+
+def _critical_local_unit(unit_id: str) -> PlannedWorkUnit:
+    return replace(
+        wu(unit_id, role="implementador"),
+        criticality=2,
+        acceptance_criteria=(
+            "Full semantic backend implementation and tests completed, "
+            "external WordPress checks reported but not required.",
+        ),
+    )
+
+
+def test_local_delivery_accepts_verified_critical_backend_and_unlocks_next() -> None:
+    plan = ProjectExecutionPlan(
+        summary="SGFP recurrence implementation",
+        work_units=(_critical_local_unit("T02"), _critical_local_unit("T03")),
+        dependencies=(PlannedDependency("T02", "T03"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={
+            "T02": _local_delivery_output(),
+            "T03": _local_delivery_output(
+                details="Local REST contract tests pass; remote REST NOT_RUN",
+            ),
+        },
+        result_refs={
+            "T02": "/tmp/sgfp/T02/manifest.json",
+            "T03": "/tmp/sgfp/T03/manifest.json",
+        },
+    )
+    result, planner = run(
+        plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY,
+        max_concurrency=1, concurrency_mode=ConcurrencyMode.FIXED,
+    )
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert result.completed_work_unit_ids == ("T02", "T03")
+    assert [record.reason for record in result.records] == [
+        "local-delivery-complete",
+        "local-delivery-complete",
+    ]
+    assert [task.work_unit_id for task in runtime.tasks] == ["T02", "T03"]
+    task_constraints = "\n".join(runtime.tasks[0].constraints)
+    assert "ADAPTIVE_LOCAL_VERIFICATION" in task_constraints
+    assert "WordPress" in task_constraints
+    assert planner.replan_calls == 0
+
+
+def test_local_delivery_accepts_explicitly_unavailable_local_checks_with_reason() -> None:
+    unit = _critical_local_unit("inspection")
+    plan = ProjectExecutionPlan(summary="local inspection", work_units=(unit,))
+    runtime = ConcurrentRuntime(
+        outputs={"inspection": _local_delivery_output(
+            verification="NOT_RUN",
+            details="No runnable local harness for this documentation-only inspection",
+        )},
+        result_refs={"inspection": "/tmp/sgfp/inspection/manifest.json"},
+    )
+    result, _ = run(plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY)
+    assert result.status is ProjectRunStatus.COMPLETED
+    assert result.records[0].reason == "local-delivery-complete"
+
+
+def test_local_delivery_never_accepts_local_test_failures() -> None:
+    plan = ProjectExecutionPlan(
+        summary="failed verification", work_units=(_critical_local_unit("T02"),)
+    )
+    runtime = ConcurrentRuntime(
+        outputs={"T02": _local_delivery_output(
+            verification="FAIL", details="PHPUnit regression assertions failed",
+        )},
+        result_refs={"T02": "/tmp/sgfp/T02/manifest.json"},
+    )
+    result, planner = run(
+        plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+    )
+    assert "T02" in result.blocked_work_unit_ids
+    assert all(record.verdict != "ACCEPTED" for record in result.records)
+    assert planner.replan_calls == 0
+
+
+def test_local_delivery_rejects_partial_and_real_blocker() -> None:
+    for status, blocker, unmet in (
+        ("PARTIAL", "NONE", "pending local implementation"),
+        ("BLOCKED", "ENVIRONMENT", "missing local database"),
+    ):
+        plan = ProjectExecutionPlan(
+            summary="unfinished verification", work_units=(_critical_local_unit("T02"),)
+        )
+        runtime = ConcurrentRuntime(
+            outputs={"T02": _local_delivery_output(
+                work_status=status, blocker=blocker, unmet=unmet,
+            )},
+            result_refs={"T02": "/tmp/sgfp/T02/manifest.json"},
+        )
+        result, _ = run(
+            plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY,
+            recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        )
+        assert result.status is not ProjectRunStatus.COMPLETED
+        assert "T02" not in result.completed_work_unit_ids
+
+
+def test_local_delivery_requires_attestation_and_transport_evidence() -> None:
+    for output, ref in (
+        (_local_delivery_output().replace(
+            "ADAPTIVE_LOCAL_VERIFICATION: PASS\n", ""
+        ), "/tmp/sgfp/T02/manifest.json"),
+        (_local_delivery_output(
+            details="ok",
+        ), "/tmp/sgfp/T02/manifest.json"),
+        (_local_delivery_output(), None),
+        (_local_delivery_output().replace(
+            "ADAPTIVE_BLOCKER_TYPE: NONE\n", ""
+        ), "/tmp/sgfp/T02/manifest.json"),
+    ):
+        plan = ProjectExecutionPlan(
+            summary="evidence gate", work_units=(_critical_local_unit("T02"),)
+        )
+        runtime = ConcurrentRuntime(
+            outputs={"T02": output},
+            result_refs={"T02": ref} if ref else {},
+        )
+        result, _ = run(
+            plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY,
+            recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        )
+        assert "T02" not in result.completed_work_unit_ids
+
+
+def test_strict_mode_still_rejects_unmatched_semantic_criteria() -> None:
+    plan = ProjectExecutionPlan(
+        summary="strict must remain strict", work_units=(_critical_local_unit("T02"),)
+    )
+    runtime = ConcurrentRuntime(
+        outputs={"T02": _local_delivery_output()},
+        result_refs={"T02": "/tmp/sgfp/T02/manifest.json"},
+    )
+    result, _ = run(
+        plan, runtime, acceptance_mode=AcceptanceMode.STRICT,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+    )
+    assert "T02" not in result.completed_work_unit_ids
+
+def test_local_delivery_frontend_cannot_fall_back_to_practical_acceptance() -> None:
+    plan = ProjectExecutionPlan(
+        summary="explicit mode isolation",
+        work_units=(wu("T05", role="frontend"),),
+    )
+    runtime = ConcurrentRuntime(
+        outputs={"T05": _local_delivery_output(
+            verification="FAIL",
+            details="Locally executed CSS regression tests failed",
+        )},
+        result_refs={"T05": "/tmp/sgfp/T05/manifest.json"},
+    )
+    result, _ = run(
+        plan, runtime, acceptance_mode=AcceptanceMode.LOCAL_DELIVERY,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+    )
+    assert "T05" not in result.completed_work_unit_ids
