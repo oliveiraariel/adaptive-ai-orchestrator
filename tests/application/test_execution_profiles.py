@@ -10,6 +10,8 @@ from adaptive_orchestrator.cli import build_parser
 from application.execution_profiles import (
     BUILTIN_PROFILES, ExecutionProfile, ExecutionProfileError,
     custom_profiles, delete_profile, get_profile, list_profiles, save_profile,
+    load_selection_policy, set_default_execution_profile, select_new_project_profile,
+    ExecutionProfileSelectionPolicy,
 )
 from application.run_project_orchestration import ProjectOrchestrationRequest
 from application.continuous_project_orchestration import RunContinuousProjectOrchestration
@@ -425,3 +427,101 @@ def test_capacity_error_returns_wu_without_unbounded_retry():
     assert records[0].status == "BLOCKED"
     assert "PROFILE_MODEL_CAPACITY_EXHAUSTED" in records[0].reason
     assert released == ["claim"]
+
+
+def test_default_policy_is_backward_compatible_until_operator_sets_it(tmp_path):
+    file = tmp_path / "selection.json"
+    assert load_selection_policy(file) == ExecutionProfileSelectionPolicy()
+    assert select_new_project_profile(None, policy_path=file).name == "original"
+    # Explicit run-scoped profiles keep working on installations that have not
+    # opted in to an operator-locked default.
+    assert select_new_project_profile("gpt-terra-medium-low", policy_path=file).name == "gpt-terra-medium-low"
+
+
+def test_authorized_default_luna_applies_to_new_projects_only(tmp_path):
+    file = tmp_path / "selection.json"
+    with pytest.raises(ExecutionProfileError, match="authorization"):
+        set_default_execution_profile(
+            "gpt-luna-medium-low", authorized=False, actor="operator",
+            reason="Prefer serial GPT Luna", path=file,
+        )
+    assert not file.exists()
+    chosen = set_default_execution_profile(
+        "gpt-luna-medium-low", authorized=True, actor="operator",
+        reason="Prefer serial GPT Luna", path=file,
+    )
+    assert chosen.default_profile == "gpt-luna-medium-low"
+    assert chosen.require_authorized_override
+    assert (file.stat().st_mode & 0o777) == 0o600
+    assert load_selection_policy(file) == chosen
+    profile = select_new_project_profile(None, policy_path=file)
+    assert profile.name == "gpt-luna-medium-low"
+    assert profile.planner_thinking == "medium"
+    assert profile.worker_thinking == "low"
+    assert profile.concurrency_mode == "FIXED"
+    assert profile.max_concurrency == 1
+    assert profile.worker_stall_overflow_slots == 0
+    assert profile.planner_fallback_models == ()
+    assert profile.worker_fallback_models == ()
+    assert get_profile("original").name == "original"
+
+
+def test_nondefault_profile_requires_explicit_operator_attestation(tmp_path):
+    file = tmp_path / "selection.json"
+    set_default_execution_profile(
+        "gpt-luna-medium-low", authorized=True, actor="operator",
+        reason="Prefer serial GPT Luna", path=file,
+    )
+    for kwargs in [
+        {},
+        {"override_authorized": True},
+        {"override_authorized": True, "override_actor": "operator"},
+        {"override_authorized": True, "override_reason": "Human requested other profile"},
+    ]:
+        with pytest.raises(ExecutionProfileError, match="human authorization"):
+            select_new_project_profile(
+                "gpt-terra-medium-low", policy_path=file, **kwargs
+            )
+    alternate = select_new_project_profile(
+        "gpt-terra-medium-low", policy_path=file,
+        override_authorized=True, override_actor="operator",
+        override_reason="Human explicitly requested alternate profile",
+    )
+    assert alternate.name == "gpt-terra-medium-low"
+    assert load_selection_policy(file).default_profile == "gpt-luna-medium-low"
+    assert select_new_project_profile(None, policy_path=file).name == "gpt-luna-medium-low"
+
+
+def test_corrupt_default_policy_fails_closed_without_dispatched_project(tmp_path):
+    file = tmp_path / "selection.json"
+    for raw in [
+        "{not json",
+        '{"version":2,"default_profile":"original","require_authorized_override":true,"actor":"user","reason":"yes"}',
+        '{"version":1,"default_profile":"original","require_authorized_override":false,"actor":"user","reason":"yes"}',
+        '{"version":1,"default_profile":"unknown-profile","require_authorized_override":true,"actor":"user","reason":"yes"}',
+    ]:
+        file.write_text(raw)
+        with pytest.raises(ExecutionProfileError):
+            select_new_project_profile(None, policy_path=file)
+
+
+def test_cli_default_policy_management_and_override_flags():
+    parser = build_parser()
+    no_profile = parser.parse_args(["orchestrate", "--objective", "Implement feature"])
+    assert no_profile.execution_profile is None
+    assert not no_profile.authorize_profile_override
+    alternate = parser.parse_args([
+        "orchestrate", "--objective", "Implement feature",
+        "--execution-profile", "gpt-terra-medium-low",
+        "--authorize-profile-override", "--profile-override-actor", "user",
+        "--profile-override-reason", "human requested parallel profile",
+    ])
+    assert alternate.execution_profile == "gpt-terra-medium-low"
+    assert alternate.authorize_profile_override
+    assert parser.parse_args(["execution-profile", "default"]).profile_action == "default"
+    configured = parser.parse_args([
+        "execution-profile", "set-default", "gpt-luna-medium-low",
+        "--actor", "user", "--reason", "Prefer Luna", "--authorize",
+    ])
+    assert configured.profile_action == "set-default"
+    assert configured.authorize
