@@ -95,6 +95,7 @@ from adaptive_orchestrator import __version__
 from application.execution_profiles import (
     ExecutionProfile, ExecutionProfileError, get_profile,
     list_profiles, save_profile, delete_profile,
+    load_selection_policy, set_default_execution_profile, select_new_project_profile,
 )
 
 
@@ -112,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     profile_actions = profile_cmd.add_subparsers(dest="profile_action", required=True)
     profile_actions.add_parser("list")
+    profile_actions.add_parser("default")
+    set_default_profile = profile_actions.add_parser("set-default")
+    set_default_profile.add_argument("name")
+    set_default_profile.add_argument("--authorize", action="store_true")
+    set_default_profile.add_argument("--actor", required=True)
+    set_default_profile.add_argument("--reason", required=True)
     show_profile = profile_actions.add_parser("show")
     show_profile.add_argument("name")
     save = profile_actions.add_parser("save")
@@ -407,9 +414,15 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent", default="main")
     parser.add_argument("--planner-agent")
     parser.add_argument(
-        "--execution-profile", default="original",
-        help="Named execution profile (default original, unchanged behavior).",
+        "--execution-profile", default=None,
+        help="Named execution profile (default from operator policy; original if unconfigured).",
     )
+    parser.add_argument(
+        "--authorize-profile-override", action="store_true",
+        help="Attest that a human explicitly approved a nondefault execution profile.",
+    )
+    parser.add_argument("--profile-override-actor")
+    parser.add_argument("--profile-override-reason")
     parser.add_argument("--scope", default="")
     parser.add_argument("--project-id", default=os.environ.get("ADAPTIVE_PROJECT_ID"))
     parser.add_argument("--context", action="append", default=[])
@@ -1011,7 +1024,24 @@ def _manage_execution_profile(args: argparse.Namespace) -> int:
     """Configuration changes are explicit and never mutate installed defaults."""
     try:
         if args.profile_action == "list":
-            result = {"profiles": sorted(list_profiles()), "default": "original"}
+            result = {"profiles": sorted(list_profiles()), "default": load_selection_policy().default_profile}
+        elif args.profile_action == "default":
+            policy = load_selection_policy()
+            result = {
+                "default": policy.default_profile,
+                "require_authorized_override": policy.require_authorized_override,
+                "actor": policy.actor, "reason": policy.reason,
+            }
+        elif args.profile_action == "set-default":
+            policy = set_default_execution_profile(
+                args.name, authorized=args.authorize, actor=args.actor,
+                reason=args.reason,
+            )
+            result = {
+                "default": policy.default_profile,
+                "require_authorized_override": policy.require_authorized_override,
+                "actor": policy.actor, "reason": policy.reason,
+            }
         elif args.profile_action == "show":
             result = get_profile(args.name).to_dict()
         elif args.profile_action == "save":
@@ -1034,7 +1064,12 @@ def _manage_execution_profile(args: argparse.Namespace) -> int:
 
 def _orchestrate(args: argparse.Namespace) -> int:
     try:
-        profile = get_profile(args.execution_profile)
+        profile = select_new_project_profile(
+            args.execution_profile,
+            override_authorized=args.authorize_profile_override,
+            override_actor=args.profile_override_actor,
+            override_reason=args.profile_override_reason,
+        )
         # Fail before admission/guardian startup if a requested model or
         # authentication route is unavailable or disabled.
         profile.routing_policy("planner")
@@ -1129,6 +1164,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             print(json.dumps({
                 "ok": True,
                 "mode": "plan-only",
+                "execution_profile": profile.name,
                 "orchestration_id": orchestration_id,
                 "plan_summary": plan.summary,
                 "work_unit_count": len(plan.work_units),
@@ -1261,6 +1297,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             {
                 "ok": completed,
                 "orchestration_id": result.orchestration_id,
+                "execution_profile": profile.name,
                 "status": result.status.value,
                 "plan_summary": result.plan_summary,
                 "work_unit_count": result.work_unit_count,
