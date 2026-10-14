@@ -339,6 +339,8 @@ def load_selection_policy(path: Path | None = None) -> ExecutionProfileSelection
         or type(data["version"]) is not int
         or data["version"] != _POLICY_VERSION
         or type(data["require_authorized_override"]) is not bool
+        or not isinstance(data["default_profile"], str)
+        or not _NAME.fullmatch(data["default_profile"])
         or data["require_authorized_override"] is not True
         or not isinstance(data["actor"], str)
         or not data["actor"].strip()
