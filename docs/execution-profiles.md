@@ -1,7 +1,10 @@
 # Perfis de execução do Adaptive (opt-in)
 
-A configuração instalada mantém-se inalterada quando o operador omite
-`--execution-profile`. Cada perfil controla **separadamente** o modelo de
+Sem uma preferência de operador configurada, o perfil de novas orquestrações
+continua sendo `original`, preservando instalações existentes. Uma preferência
+persistente pode definir outro perfil **como padrão de novas orquestrações**
+sem modificar o conteúdo dos perfis e sem alterar projetos em andamento.
+Cada perfil controla **separadamente** o modelo de
 planejamento e o modelo executor, o nível de thinking, a política de fallback
 de LLM por cota e o número de executores. A configuração é registrada no
 checkpoint para retomada, sem alterar as variáveis globais.
@@ -33,6 +36,59 @@ Se o modelo secundário também ficar sem limite, a Work Unit é registrada como
 não despacha novas WUs e pode ser retomado de maneira governada após restaurar
 o limite. Outros workers já em atividade podem terminar antes da quiescência.
 O estado `PAUSED` não significa que a cota tenha se renovado.
+
+## Política de perfil padrão com autorização humana
+
+A seleção automática pode ser configurada **uma vez** por operador, sem
+repetir o nome do perfil em todos os prompts. A configuração fica em
+`~/.config/adaptive-ai-orchestrator/execution-profile-selection.json`
+(ou `ADAPTIVE_EXECUTION_PROFILE_SELECTION_FILE`) e é escrita com permissão
+`0600`. Sem esse arquivo, o padrão continua `original`.
+
+```bash
+# Consultar o padrão real, sem alterar nada:
+adaptive-orchestrator execution-profile default
+
+# Configuração única, explicitamente autorizada pelo operador:
+adaptive-orchestrator execution-profile set-default gpt-luna-medium-low \
+  --authorize --actor user --reason "Usar Luna medium/low nas novas orquestrações"
+
+# Confirmar:
+adaptive-orchestrator execution-profile default
+adaptive-orchestrator execution-profile list
+```
+
+Após a ativação, `adaptive-orchestrator orchestrate` (inclusive via Bridge)
+**sem** `--execution-profile` aplica automaticamente
+`gpt-luna-medium-low`: coordenador Luna medium, executor Luna low,
+`FIXED=1`, sem overflow e sem fallback de troca de LLM.
+A escolha efetiva é persistida no snapshot do checkpoint. Em `plan-only`
+e no resultado da nova orquestração também aparece `execution_profile`.
+
+A seleção de **outro** perfil para uma nova orquestração passa a exigir
+autorização explícita e motivo atribuído a um operador:
+
+```bash
+adaptive-orchestrator orchestrate \
+  --project-root "/caminho/projeto" \
+  --agent sgfp --planner-agent adaptive \
+  --objective "Objetivo autorizado" \
+  --execution-profile gpt-terra-medium-low \
+  --authorize-profile-override \
+  --profile-override-actor user \
+  --profile-override-reason "O usuário pediu explicitamente outro perfil"
+```
+
+Essas flags são uma **declaração auditável de autorização**, não uma
+identificação criptográfica da pessoa. O agente OpenClaw/Bridge só deve
+encaminhá-las quando houver pedido humano real, e nunca para contornar
+limites de cota ou erros semânticos. Sem autorização, o Adaptive recusa o
+despacho **antes** de admitir a nova orquestração.
+
+A política não altera definições dos perfis existentes, nem snapshots de
+orquestrações já admitidas. `resume-project` continua com o perfil persistido;
+`switch-execution-profile` mantém sua própria autorização governada.
+Modificar novamente o padrão exige novo `set-default ... --authorize`.
 
 ## "Fallback direto" e "takeover direto"
 
