@@ -1,8 +1,9 @@
 """Named, immutable-at-dispatch execution profiles for Adaptive projects.
 
-Profiles are opt-in.  The original policy is used when no profile is selected.
-Only routing hints and scheduler budgets are stored here: never credentials,
-permission elevations, side-effect grants or automatic owner takeovers.
+Named profiles never mutate their definitions when selected. Operator policy
+may choose a durable default for NEW projects; an explicit per-run override is
+authorized separately. Existing project snapshots remain authoritative.
+Never store credentials, side-effect grants, or automatic owner takeovers.
 """
 from __future__ import annotations
 
@@ -302,3 +303,113 @@ def delete_profile(name: str, path: Path | None = None) -> None:
         raise ExecutionProfileError(f"Unknown execution profile: {name}")
     del profiles[name]
     _write_registry(profiles, target)
+
+# Per-operator policy is intentionally separate from the immutable built-in
+# definitions and custom-profile registry. Unconfigured installations retain
+# the historical "original" default without changing any existing project.
+_POLICY_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ExecutionProfileSelectionPolicy:
+    default_profile: str = "original"
+    require_authorized_override: bool = False
+    actor: str = "legacy"
+    reason: str = "Unconfigured installation preserves original routing"
+
+
+def selection_policy_path() -> Path:
+    raw = os.environ.get("ADAPTIVE_EXECUTION_PROFILE_SELECTION_FILE")
+    return Path(raw).expanduser() if raw else (
+        Path.home() / ".config/adaptive-ai-orchestrator/execution-profile-selection.json"
+    )
+
+
+def load_selection_policy(path: Path | None = None) -> ExecutionProfileSelectionPolicy:
+    target = path if path is not None else selection_policy_path()
+    if not target.exists():
+        return ExecutionProfileSelectionPolicy()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ExecutionProfileError("Cannot read execution profile selection policy.") from exc
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"version", "default_profile", "require_authorized_override", "actor", "reason"}
+        or type(data["version"]) is not int
+        or data["version"] != _POLICY_VERSION
+        or type(data["require_authorized_override"]) is not bool
+        or data["require_authorized_override"] is not True
+        or not isinstance(data["actor"], str)
+        or not data["actor"].strip()
+        or not isinstance(data["reason"], str)
+        or not data["reason"].strip()
+    ):
+        raise ExecutionProfileError("Invalid execution profile selection policy.")
+    profile = get_profile(data["default_profile"])
+    return ExecutionProfileSelectionPolicy(
+        default_profile=profile.name,
+        require_authorized_override=True,
+        actor=data["actor"],
+        reason=data["reason"],
+    )
+
+
+def set_default_execution_profile(
+    name: str, *, authorized: bool, actor: str, reason: str,
+    path: Path | None = None,
+) -> ExecutionProfileSelectionPolicy:
+    """Operator-attested durable default; never mutate a profile's definition."""
+    if not authorized or not isinstance(actor, str) or not actor.strip() or not isinstance(reason, str) or not reason.strip():
+        raise ExecutionProfileError("Setting a default profile requires explicit operator authorization, actor and reason.")
+    profile = get_profile(name)
+    target = path if path is not None else selection_policy_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": _POLICY_VERSION,
+        "default_profile": profile.name,
+        "require_authorized_override": True,
+        "actor": actor.strip(),
+        "reason": reason.strip(),
+    }
+    fd, temporary = tempfile.mkstemp(prefix=".execution-profile-selection-", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            os.fchmod(output.fileno(), 0o600)
+            json.dump(payload, output, ensure_ascii=False, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return load_selection_policy(target)
+
+
+def select_new_project_profile(
+    requested: str | None, *,
+    override_authorized: bool = False,
+    override_actor: str | None = None,
+    override_reason: str | None = None,
+    policy_path: Path | None = None,
+) -> ExecutionProfile:
+    """A locked default applies unless an operator explicitly authorizes a change.
+
+    Flags attest authorization; CLI cannot cryptographically identify a human.
+    A trusted OpenClaw bridge must obtain the actual human instruction before
+    forwarding an override. Existing project resume never calls this function.
+    """
+    policy = load_selection_policy(policy_path)
+    chosen = requested or policy.default_profile
+    if chosen != policy.default_profile and policy.require_authorized_override:
+        if not (
+            override_authorized
+            and isinstance(override_actor, str) and override_actor.strip()
+            and isinstance(override_reason, str) and override_reason.strip()
+        ):
+            raise ExecutionProfileError(
+                "An alternate execution profile requires explicit human authorization: "
+                "--authorize-profile-override, --profile-override-actor and --profile-override-reason."
+            )
+    return get_profile(chosen)
