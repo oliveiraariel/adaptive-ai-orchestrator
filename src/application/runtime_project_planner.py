@@ -74,6 +74,13 @@ class RuntimeProjectPlanner:
     conflict checks before any worker is dispatched.
     """
 
+    _READ_ONLY_EFFECT_ALIASES = frozenset(
+        {
+            "filesystem.read",
+            "process.execute_read_only",
+        }
+    )
+
     def __init__(
         self,
         *,
@@ -590,6 +597,20 @@ class RuntimeProjectPlanner:
         objective = cls._required_string(entry, "objective")
         role = str(entry.get("role", "worker")).strip() or "worker"
         scope = str(entry.get("scope", ""))
+        requested_side_effects = cls._string_tuple(entry, "requested_side_effects")
+        write_paths = cls._string_tuple(entry, "write_paths")
+
+        # Read-only capabilities are not side effects.  Some planning providers
+        # describe them in the requested_side_effects field despite the planner
+        # contract requiring [] for units without a write scope.  Normalize only
+        # these known read-only aliases; preserve every actual/unknown effect so
+        # the normal policy gate can still deny it.
+        if (
+            not write_paths
+            and requested_side_effects
+            and set(requested_side_effects).issubset(cls._READ_ONLY_EFFECT_ALIASES)
+        ):
+            requested_side_effects = ()
 
         return PlannedWorkUnit(
             id=work_unit_id,
@@ -607,10 +628,8 @@ class RuntimeProjectPlanner:
             acceptance_criteria=cls._string_tuple(
                 entry, "acceptance_criteria", default=("runtime-completed",)
             ),
-            requested_side_effects=cls._string_tuple(
-                entry, "requested_side_effects"
-            ),
-            write_paths=cls._string_tuple(entry, "write_paths"),
+            requested_side_effects=requested_side_effects,
+            write_paths=write_paths,
             priority=cls._non_negative_int(entry, "priority", default=0),
             criticality=cls._non_negative_int(entry, "criticality", default=0),
             parallel_safe=cls._bool(entry, "parallel_safe", default=True),

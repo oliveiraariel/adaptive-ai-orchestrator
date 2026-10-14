@@ -52,6 +52,38 @@ def test_parse_accepts_strict_json_and_preserves_parallel_metadata() -> None:
     assert all(item.parallel_safe for item in plan.work_units)
 
 
+def test_parse_normalizes_read_only_effect_aliases_to_no_side_effects() -> None:
+    item = work_unit("research")
+    item["requested_side_effects"] = [
+        "filesystem.read",
+        "process.execute_read_only",
+    ]
+
+    plan = RuntimeProjectPlanner.parse(payload([item]), max_work_units=2)
+
+    assert plan.work_units[0].requested_side_effects == ()
+
+
+def test_parse_preserves_authorized_filesystem_write_for_scoped_writer() -> None:
+    item = work_unit("writer")
+    item["requested_side_effects"] = ["filesystem.write"]
+    item["write_paths"] = ["src/application"]
+
+    plan = RuntimeProjectPlanner.parse(payload([item]), max_work_units=2)
+
+    assert plan.work_units[0].requested_side_effects == ("filesystem.write",)
+    assert plan.work_units[0].write_paths == ("src/application",)
+
+
+def test_parse_preserves_unknown_effect_for_policy_to_deny() -> None:
+    item = work_unit("unsafe")
+    item["requested_side_effects"] = ["production.deploy"]
+
+    plan = RuntimeProjectPlanner.parse(payload([item]), max_work_units=2)
+
+    assert plan.work_units[0].requested_side_effects == ("production.deploy",)
+
+
 def test_parse_rejects_json_code_fence_from_runtime() -> None:
     text = "```json\n" + payload([work_unit("a")]) + "\n```"
 

@@ -59,6 +59,23 @@ def test_unapproved_side_effect_or_denied_tool_is_denied() -> None:
     )
 
 
+def test_filesystem_write_requires_explicit_policy_allowance() -> None:
+    assert (
+        ExecutionPolicy().decide(
+            human_approved=True,
+            requested_side_effects=("filesystem.write",),
+        )
+        is PolicyDecision.DENY
+    )
+    assert (
+        ExecutionPolicy(allowed_side_effects=("filesystem.write",)).decide(
+            human_approved=True,
+            requested_side_effects=("filesystem.write",),
+        )
+        is PolicyDecision.ALLOW
+    )
+
+
 def test_autonomous_with_review_declares_independent_review_requirement() -> None:
     policy = ExecutionPolicy(autonomy=AutonomyClass.AUTONOMOUS_WITH_REVIEW)
 
