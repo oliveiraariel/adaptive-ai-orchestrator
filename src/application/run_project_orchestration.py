@@ -1031,11 +1031,16 @@ class RunProjectOrchestration:
                 verdict = EvaluationVerdict.RETURNED
                 reason = "worker-partial"
             elif completion.status is WorkerCompletionStatus.COMPLETE:
-                reason = (
-                    "accepted"
-                    if verdict is EvaluationVerdict.ACCEPTED
-                    else "evaluation-returned"
-                )
+                # Preserve a verified release-gate rejection instead of
+                # replacing the actionable error with "evaluation-returned".
+                if requires_release_delivery and not delivery_check.valid:
+                    reason = f"release-delivery-required:{delivery_check.reason}"
+                else:
+                    reason = (
+                        "accepted"
+                        if verdict is EvaluationVerdict.ACCEPTED
+                        else "evaluation-returned"
+                    )
         elif verdict is EvaluationVerdict.ACCEPTED:
             reason = "accepted"
 

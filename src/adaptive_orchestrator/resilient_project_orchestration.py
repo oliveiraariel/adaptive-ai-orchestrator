@@ -488,6 +488,23 @@ class RunResilientProjectOrchestration(CoreContinuousProjectOrchestration):
             observability=observability,
         )
 
+    def execute_reserved(
+        self,
+        request: ProjectOrchestrationRequest,
+        *,
+        observability: ObservabilitySink | None = None,
+    ) -> ProjectOrchestrationResult:
+        """Use the same heartbeat, timeout and closure path as fresh execute."""
+        if not request.orchestration_id:
+            raise ValueError("Reserved execution requires orchestration identity.")
+        return self._run_resilient(
+            orchestration_id=request.orchestration_id,
+            operation=lambda sink: super(
+                RunResilientProjectOrchestration, self
+            ).execute_reserved(request, observability=sink),
+            observability=observability,
+        )
+
     def resume(
         self,
         orchestration_id: str,
