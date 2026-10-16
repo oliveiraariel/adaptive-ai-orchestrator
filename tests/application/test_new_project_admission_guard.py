@@ -98,3 +98,23 @@ def test_invalid_execution_state_fails_closed(tmp_path):
 
     with pytest.raises(PriorProjectNotQuiescentError, match="invalid-active-executions"):
         govern_prior_projects(project_root=tmp_path, incoming_orchestration_id="new")
+
+def test_pre_admission_checkpoint_requests_pause_without_claiming_planner_is_idle(tmp_path):
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    admitted = {"phase": "ADMITTED", "desired_state": "RUNNING",
+                "terminal": False, "request": {"objective": "example"}}
+    store.save("old", admitted)
+
+    with pytest.raises(PriorProjectNotQuiescentError, match="admitted-planner-not-yet-quiescent"):
+        govern_prior_projects(project_root=tmp_path, incoming_orchestration_id="new")
+
+    assert store.load("old")["desired_state"] == "PAUSED"
+    assert FileOrchestrationControlPlane(project_root=tmp_path).load("old") is None
+
+
+def test_inconsistent_terminal_with_active_worker_blocks_new_admission(tmp_path):
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    store.save("old", _state(terminal=True, active=[{"work_unit_id": "T01"}]))
+
+    with pytest.raises(PriorProjectNotQuiescentError, match="terminal-with-active-executions"):
+        govern_prior_projects(project_root=tmp_path, incoming_orchestration_id="new")
