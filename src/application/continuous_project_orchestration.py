@@ -94,6 +94,35 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
     ) -> ProjectOrchestrationResult:
         return self._execute(request, observability=observability, checkpoint=None)
 
+    def execute_reserved(
+        self,
+        request: ProjectOrchestrationRequest,
+        *,
+        observability: ObservabilitySink | None = None,
+    ) -> ProjectOrchestrationResult:
+        """Begin a pre-admitted project without clearing cooperative PAUSED intent.
+
+        The CLI persists the reservation while holding the project admission
+        lock. This method does not overwrite that snapshot or implicitly
+        reactivate the controller (unlike an explicit resume-project action).
+        """
+        if self._checkpoint_store is None or not request.orchestration_id:
+            raise ProjectOrchestrationError(
+                "Reserved execution requires a checkpoint store and orchestration id."
+            )
+        checkpoint = self._checkpoint_store.load(request.orchestration_id)
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("phase") != "ADMITTED"
+            or checkpoint.get("terminal") is True
+            or "plan" in checkpoint
+            or checkpoint.get("request") != self._request_to_payload(request)
+        ):
+            raise ProjectOrchestrationError(
+                "Durable admission reservation is missing or mismatches the request."
+            )
+        return self._execute(request, observability=observability, checkpoint=checkpoint)
+
     def resume(
         self,
         orchestration_id: str,
