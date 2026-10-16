@@ -30,6 +30,7 @@ from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
+from application.new_project_admission_guard import govern_prior_projects, PriorProjectNotQuiescentError
 from application.checkpoint_administration import (
     CheckpointAdministrationError,
     CheckpointAdministrationAction,
@@ -1245,6 +1246,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 "Fresh orchestrate refused an existing orchestration id; "
                 "use resume-project for the durable project instead."
             )
+        govern_prior_projects(
+            project_root=Path(args.project_root),
+            incoming_orchestration_id=orchestration_id,
+        )
         _start_orchestration_guardian(
             args,
             orchestration_id=orchestration_id,
@@ -1325,6 +1330,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         ResultStoreError,
         ProjectOrchestrationCheckpointError,
         OrchestrationControlPlaneError,
+        PriorProjectNotQuiescentError,
         ValueError,
     ) as exc:
         observability.emit(
