@@ -9,7 +9,11 @@ It never fabricates a successful terminal result.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
+import fcntl
+import os
 
 from application.checkpoint_administration import CheckpointAdministrator
 from infrastructure.orchestration_control_plane import (
@@ -19,6 +23,38 @@ from infrastructure.orchestration_control_plane import (
 from infrastructure.project_orchestration_checkpoint import (
     FileProjectOrchestrationCheckpointStore,
 )
+
+
+class ProjectAdmissionBusyError(RuntimeError):
+    """Another admission is deciding ownership of this project."""
+
+
+@contextmanager
+def project_admission_lock(project_root: Path) -> Iterator[None]:
+    """Serialize checkpoint scanning plus durable admission reservation.
+
+    A kernel flock, unlike O_EXCL lock files, is released automatically if the
+    process exits unexpectedly. The lock does not remain held while workers
+    execute.
+    """
+    root = project_root.expanduser().resolve() / ".adaptive"
+    root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        root / "new-project-admission.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ProjectAdmissionBusyError(
+                "Another new-project admission is already holding the checkout lock."
+            ) from exc
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 class PriorProjectNotQuiescentError(RuntimeError):
@@ -51,15 +87,27 @@ def govern_prior_projects(*, project_root: Path, incoming_orchestration_id: str)
             active = checkpoint.get("active_executions")
             if not isinstance(active, list):
                 if checkpoint.get("phase") == "ADMITTED" and checkpoint.get("terminal") is not True:
-                    # No dispatch inventory exists yet. The planner may still
-                    # be running: request pause, but never assume quiescence.
+                    # No dispatch inventory exists yet: require an acknowledged
+                    # quiescence fence, not just missing heartbeat/worker data.
                     if checkpoint.get("desired_state") != "PAUSED":
                         checkpoint["desired_state"] = "PAUSED"
                         checkpoints.save(prior_id, checkpoint)
                         held.append(prior_id)
-                    blocked.append(f"{prior_id}:admitted-planner-not-yet-quiescent")
+                    if not control.is_quiescent(prior_id):
+                        blocked.append(f"{prior_id}:admitted-planner-not-yet-quiescent")
                 else:
                     blocked.append(f"{prior_id}:invalid-active-executions")
+                continue
+            if checkpoint.get("phase") == "ADMITTED" and checkpoint.get("terminal") is not True:
+                # A partially planned admission cannot be considered idle even
+                # with an empty active_execution array. Its planner may still
+                # be working. Only the controller's quiescence ACK releases it.
+                if checkpoint.get("desired_state") != "PAUSED":
+                    checkpoint["desired_state"] = "PAUSED"
+                    checkpoints.save(prior_id, checkpoint)
+                    held.append(prior_id)
+                if active or not control.is_quiescent(prior_id):
+                    blocked.append(f"{prior_id}:admitted-planner-not-yet-quiescent")
                 continue
             if checkpoint.get("terminal") is True:
                 if active:
