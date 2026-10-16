@@ -50,7 +50,7 @@ class JsonlObservabilitySink:
         "active_execution_count", "soft_stalled_worker_count", "elapsed_seconds",
         "idle_seconds", "recovery_loop_mode", "question", "suggested_skills",
         "classification", "report_id", "checkpoint_digest", "backup_sha256",
-        "actor",
+        "actor", "release_valid", "release_reason", "release_required",
     }
     _event_types = {
         "orchestration_admitted", "orchestration_started", "work_unit_created", "work_unit_ready",
@@ -59,6 +59,7 @@ class JsonlObservabilitySink:
         "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
         "worker_soft_stall_observed", "orchestration_concurrency_adjusted",
         "worker_recovered", "work_unit_reconciled", "work_unit_reconciliation_rejected",
+        "work_unit_returned_audit",
         "recovery_strategy_analyzed",
         "work_unit_recovery_retry", "work_unit_recovery_suspended",
         "work_unit_recovery_skipped", "work_unit_practical_test_ready",
@@ -92,6 +93,7 @@ class JsonlObservabilitySink:
             "worker_heartbeat", "worker_observer_pulse", "worker_liveness_timeout",
             "worker_soft_stall_observed",
             "worker_recovered", "work_unit_reconciled", "work_unit_reconciliation_rejected",
+        "work_unit_returned_audit",
             "recovery_strategy_analyzed",
             "recovery_strategy_failed", "work_unit_recovery_retry",
             "work_unit_recovery_suspended", "work_unit_recovery_skipped",
