@@ -1943,6 +1943,21 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     release_reason=audit.reason,
                                 )
                                 if audit.valid:
+                                    if record.result_authoritative and record.result_ref:
+                                        # Surface an independently verified artifact
+                                        # to project-status even while acceptance is
+                                        # RETURNED. The verdict stays unchanged:
+                                        # metadata is not permission to publish.
+                                        record = replace(
+                                            record,
+                                            release_manifest_path=audit.manifest_path,
+                                            release_artifact_path=audit.artifact_path,
+                                            release_report_path=audit.report_path,
+                                            release_version=audit.version,
+                                            release_size_bytes=audit.size_bytes,
+                                            release_sha256=audit.sha256,
+                                        )
+                                        records[-1] = record
                                     feedback = (
                                         "AUTHORITATIVE READ-ONLY AUDIT: existing release "
                                         "manifest/ZIP/report are valid. Reuse the "
