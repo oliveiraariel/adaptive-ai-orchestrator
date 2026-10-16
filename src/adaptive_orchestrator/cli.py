@@ -1352,6 +1352,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
                         "output": record.output,
                         "result_ref": record.result_ref,
                         "result_authoritative": record.result_authoritative,
+                        "release_manifest_path": record.release_manifest_path,
+                        "release_artifact_path": record.release_artifact_path,
+                        "release_report_path": record.release_report_path,
+                        "release_version": record.release_version,
                         "reason": record.reason,
                         "strategy": record.strategy,
                     }
@@ -1413,6 +1417,7 @@ def _project_checkpoint_status_payload(
         status = ProjectRunStatus.BLOCKED.value
 
     active = checkpoint.get("active_executions")
+    records = checkpoint.get("records")
     graph_migrations = checkpoint.get("graph_migrations")
     migration_ids = (
         [
@@ -1434,6 +1439,19 @@ def _project_checkpoint_status_payload(
             and isinstance(item.get("work_unit_id"), str)
         }
     ) if isinstance(reconciliation_decisions, list) else []
+    release_deliveries = [
+        {
+            "work_unit_id": item.get("work_unit_id"),
+            "manifest_path": item.get("release_manifest_path"),
+            "artifact_path": item.get("release_artifact_path"),
+            "report_path": item.get("release_report_path"),
+            "version": item.get("release_version"),
+            "validated": item.get("verdict") == "ACCEPTED"
+            and bool(item.get("release_manifest_path")),
+        }
+        for item in (records if isinstance(records, list) else [])
+        if isinstance(item, dict) and item.get("release_manifest_path")
+    ]
     payload = {
         "ok": True,
         "mode": "project-status",
@@ -1458,6 +1476,8 @@ def _project_checkpoint_status_payload(
     if isinstance(reconciliation_decisions, list):
         payload["practical_test_ready_work_unit_ids"] = practical_test_ready
         payload["reconciliation_decision_count"] = len(reconciliation_decisions)
+    if release_deliveries:
+        payload["release_deliveries"] = release_deliveries
     # Keep the legacy project-status surface byte-for-byte compatible for
     # checkpoints that predate Work Graph migration metadata.
     if migration_ids or isinstance(evidence_lineage, dict):
