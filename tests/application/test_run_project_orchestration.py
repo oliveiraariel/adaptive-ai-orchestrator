@@ -218,6 +218,7 @@ def run(
     max_waves: int = 24,
     recovery_loop_mode: RecoveryLoopMode = RecoveryLoopMode.ENABLED,
     acceptance_mode: AcceptanceMode = AcceptanceMode.STRICT,
+    observability=None,
 ):
     actual_planner = planner or StaticPlanner(plan)
     result = RunContinuousProjectOrchestration(
@@ -243,7 +244,8 @@ def run(
             recovery_loop_mode=recovery_loop_mode,
             acceptance_mode=acceptance_mode,
             plan=plan,
-        )
+        ),
+        observability=observability,
     )
     return result, actual_planner
 
@@ -1899,3 +1901,28 @@ def test_returned_release_preserves_actionable_manifest_gate_reason() -> None:
         for record in result.records
         if record.work_unit_id == "T04"
     )
+
+def test_returned_release_audit_emits_precise_read_only_gate_evidence() -> None:
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event_type, **fields):
+            self.events.append((event_type, fields))
+
+    sink = Sink()
+    release = replace(wu("T04", role="release"), release_delivery=True)
+    plan = ProjectExecutionPlan(summary="release audit", work_units=(release,))
+    runtime = ConcurrentRuntime(outputs={"T04": "ADAPTIVE_WORKER_STATUS: COMPLETE\n"})
+
+    result, _ = run(
+        plan, runtime, observability=sink,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        max_attempts=1,
+    )
+    audits = [fields for event, fields in sink.events
+              if event == "work_unit_returned_audit"]
+    assert "T04" not in result.completed_work_unit_ids
+    assert len(audits) == 1
+    assert audits[0]["release_valid"] is False
+    assert audits[0]["release_reason"] == "release-manifest-canonicality-required"
