@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -453,6 +454,21 @@ def _validate_agent_id(value: object, field: str) -> str:
     return value
 
 
+def _openclaw_agents_timeout() -> float:
+    raw = os.environ.get("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "15")
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ExecutionProfileError(
+            "ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT must be a finite positive number."
+        ) from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ExecutionProfileError(
+            "ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT must be a finite positive number."
+        )
+    return min(value, 60.0)
+
+
 def eligible_openclaw_agents(path: Path | None = None) -> frozenset[str]:
     target = path or openclaw_config_path()
     command = shlex.split(
@@ -465,9 +481,13 @@ def eligible_openclaw_agents(path: Path | None = None) -> frozenset[str]:
     try:
         completed = subprocess.run(
             command, check=False, capture_output=True, text=True,
-            env=environment, timeout=float(os.environ.get("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "5")),
+            env=environment, timeout=_openclaw_agents_timeout(),
         )
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise ExecutionProfileError(
+            f"OpenClaw agent-list interface timed out after {_openclaw_agents_timeout():g} seconds."
+        ) from exc
+    except OSError as exc:
         raise ExecutionProfileError(
             "Cannot validate agent identities through OpenClaw's authoritative agent-list interface."
         ) from exc

@@ -555,6 +555,43 @@ def test_openclaw_json5_and_openclaw_config_path_are_delegated_to_authoritative_
     assert calls[0][1]["env"]["OPENCLAW_CONFIG_PATH"] == str(config)
 
 
+def test_openclaw_agent_query_timeout_is_configurable_and_finite(tmp_path, monkeypatch):
+    config = tmp_path / "openclaw.json5"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        return type("Completed", (), {
+            "returncode": 0, "stdout": json.dumps({"agents": [{"id": "main"}]}),
+        })()
+
+    monkeypatch.setenv("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "22")
+    monkeypatch.setattr(execution_profiles_module.subprocess, "run", run)
+    assert execution_profiles_module.eligible_openclaw_agents(config) == {"main"}
+    assert calls == [22.0]
+
+    monkeypatch.setenv("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "999")
+    execution_profiles_module.eligible_openclaw_agents(config)
+    assert calls[-1] == 60.0
+
+
+def test_openclaw_agent_query_rejects_invalid_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "inf")
+    with pytest.raises(ExecutionProfileError, match="finite positive"):
+        execution_profiles_module.eligible_openclaw_agents(tmp_path / "openclaw.json5")
+
+
+def test_openclaw_agent_query_reports_timeout(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "18")
+
+    def timeout(*args, **kwargs):
+        raise execution_profiles_module.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(execution_profiles_module.subprocess, "run", timeout)
+    with pytest.raises(ExecutionProfileError, match="timed out after 18 seconds"):
+        execution_profiles_module.eligible_openclaw_agents(tmp_path / "openclaw.json5")
+
+
 def test_explicit_roles_do_not_require_persistent_defaults(tmp_path, monkeypatch):
     config = tmp_path / "openclaw.json5"
     _write_openclaw_agents(config, "adaptive", "main")
