@@ -53,6 +53,9 @@ def govern_prior_projects(*, project_root: Path, incoming_orchestration_id: str)
                 blocked.append(f"{prior_id}:invalid-active-executions")
                 continue
             if checkpoint.get("terminal") is True:
+                if active:
+                    blocked.append(f"{prior_id}:terminal-with-active-executions")
+                    continue
                 # Historical terminal checkpoints remain immutable. Repair only
                 # a missing terminal control-plane fence where safe.
                 if not active and not control.is_quiescent(prior_id):
