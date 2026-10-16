@@ -154,3 +154,23 @@ def test_governed_quiescence_fence_allows_admin_operation_despite_active_heartbe
 
     assert quiescent is True
     assert reason == "controller-state:QUIESCENT-control-plane"
+
+
+def test_terminal_control_plane_release_is_idempotent_without_active_workers(tmp_path) -> None:
+    control = FileOrchestrationControlPlane(project_root=tmp_path)
+    checkpoint = {"terminal": True, "desired_state": "RUNNING", "active_executions": []}
+
+    first = control.mark_terminal(
+        orchestration_id="orch-terminal",
+        checkpoint=checkpoint,
+        reason="test-terminal",
+    )
+    second = control.mark_terminal(
+        orchestration_id="orch-terminal",
+        checkpoint=checkpoint,
+        reason="test-terminal-repeat",
+    )
+
+    assert first["state"] == "QUIESCENT"
+    assert first["mutation_authority_released"] is True
+    assert second == first

@@ -75,6 +75,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         *args,
         checkpoint_store: ProjectOrchestrationCheckpointStore | None = None,
         on_quiescent: Callable[[str], None] | None = None,
+        on_terminalized: Callable[[str], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -83,6 +84,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         # filesystem control-plane implementation is infrastructure owned by
         # the CLI, not a dependency of the application scheduler.
         self._on_quiescent = on_quiescent
+        self._on_terminalized = on_terminalized
 
     def execute(
         self,
@@ -179,8 +181,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             work_units=plan.work_units, constraints=request.constraints
         )
         if (
-            (checkpoint is None or admission_only)
-            and release_delivery_required(
+            release_delivery_required(
                 objective=request.objective,
                 scope=request.scope,
                 context=request.context,
@@ -189,7 +190,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             and not release_unit_ids
         ):
             raise ProjectOrchestrationError(
-                "Release objective requires a dedicated delivery Work Unit."
+                "Release objective requires a dedicated delivery Work Unit; "
+                "checkpoint plan is missing the release obligation."
             )
         work_units = {
             spec.id: self._instantiate_work_unit(spec) for spec in plan.work_units
@@ -2246,6 +2248,15 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                 and not persistent_recovery_pending
             )
         )
+        if (
+            result.status is not ProjectRunStatus.PAUSED
+            and not persistent_recovery_pending
+            and self._on_terminalized is not None
+        ):
+            # The terminal checkpoint is durable before the control-plane
+            # callback runs. The callback must only release mutation authority
+            # after this no-active-execution snapshot has been persisted.
+            self._on_terminalized(orchestration_id)
         if persistent_recovery_pending:
             observability.emit(
                 "orchestration_recovery_yielded",
@@ -2727,6 +2738,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                             raw, "criticality"
                         ),
                         parallel_safe=bool(raw.get("parallel_safe", False)),
+                        release_delivery=bool(raw.get("release_delivery", False)),
                         reconciles_work_unit_id=(
                             str(raw.get("reconciles_work_unit_id")).strip()
                             if raw.get("reconciles_work_unit_id") is not None

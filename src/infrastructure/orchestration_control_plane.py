@@ -100,6 +100,56 @@ class FileOrchestrationControlPlane:
         self._save(orchestration_id, payload)
         return payload
 
+    def mark_terminal(
+        self,
+        *,
+        orchestration_id: str,
+        checkpoint: dict[str, Any],
+        reason: str,
+    ) -> dict[str, Any]:
+        """Release controller authority after a durable terminal snapshot.
+
+        Terminalization is distinct from an operator pause: it must not rewrite
+        the checkpoint's desired state, and it is safe only after the terminal
+        checkpoint proves that no execution remains active.
+        """
+        if checkpoint.get("terminal") is not True:
+            raise OrchestrationControlPlaneError(
+                "Controller terminalization requires terminal=true."
+            )
+        active = checkpoint.get("active_executions")
+        if not isinstance(active, list) or active:
+            raise OrchestrationControlPlaneError(
+                "Controller terminalization requires no active executions."
+            )
+        existing = self.load(orchestration_id)
+        if existing is not None and existing.get("state") == "QUIESCENT":
+            return existing
+        now = time.time()
+        history = list(existing.get("history", [])) if isinstance(existing, dict) else []
+        history.append(
+            {
+                "event": "TERMINAL",
+                "at": now,
+                "reason": reason,
+                "desired_state": checkpoint.get("desired_state"),
+                "active_execution_count": 0,
+            }
+        )
+        payload = {
+            "schema_version": self.SCHEMA_VERSION,
+            "orchestration_id": orchestration_id,
+            "state": "QUIESCENT",
+            "mutation_authority_released": True,
+            "desired_state": checkpoint.get("desired_state"),
+            "active_execution_count": 0,
+            "recorded_at": now,
+            "reason": reason,
+            "history": history,
+        }
+        self._save(orchestration_id, payload)
+        return payload
+
     def activate(self, *, orchestration_id: str, reason: str) -> dict[str, Any]:
         """Record a governed resume without deleting prior quiescence evidence."""
         existing = self.load(orchestration_id)
