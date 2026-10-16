@@ -8,6 +8,7 @@ from domain.delegation_context import DelegationContext
 from domain.execution_policy import ExecutionPolicy
 from domain.release_artifact_policy import release_artifact_policy_directives
 from domain.resource_configuration import ResourceConfiguration
+from domain.verification_efficiency_policy import verification_efficiency_policy_directives
 
 
 class TaskPackageError(ValueError):
@@ -58,6 +59,7 @@ class TaskPackage:
             )
 
         policy_directives = (
+            *verification_efficiency_policy_directives(),
             *api_generation_policy_directives(
                 objective=self.objective,
                 scope=self.scope,
