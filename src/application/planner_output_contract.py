@@ -75,6 +75,7 @@ PLANNER_OUTPUT_SCHEMA_V1: dict[str, Any] = {
                     "priority": {"type": "integer", "minimum": 0},
                     "criticality": {"type": "integer", "minimum": 0},
                     "parallel_safe": {"type": "boolean"},
+                    "release_delivery": {"type": "boolean"},
                     "reconciles_work_unit_id": {
                         "type": ["string", "null"],
                         "minLength": 1,

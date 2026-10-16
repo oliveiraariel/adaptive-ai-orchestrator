@@ -786,6 +786,7 @@ def _migration_work_unit(raw: object) -> MigrationWorkUnit:
         priority=int(raw["priority"]),
         criticality=int(raw["criticality"]),
         parallel_safe=bool(raw["parallel_safe"]),
+        release_delivery=bool(raw.get("release_delivery", False)),
         reconciles_work_unit_id=(
             str(raw["reconciles_work_unit_id"]).strip()
             if raw.get("reconciles_work_unit_id") is not None
@@ -825,6 +826,7 @@ def _planned_work_unit_from_payload(raw: Mapping[str, Any]) -> PlannedWorkUnit:
         priority=_nonnegative_int(raw.get("priority", 0), "priority"),
         criticality=_nonnegative_int(raw.get("criticality", 0), "criticality"),
         parallel_safe=bool(raw.get("parallel_safe", True)),
+        release_delivery=bool(raw.get("release_delivery", False)),
         reconciles_work_unit_id=(
             str(raw["reconciles_work_unit_id"]).strip()
             if raw.get("reconciles_work_unit_id") is not None
@@ -864,6 +866,7 @@ def _planned_work_unit_to_payload(item: PlannedWorkUnit) -> dict[str, Any]:
         "priority": item.priority,
         "criticality": item.criticality,
         "parallel_safe": item.parallel_safe,
+        "release_delivery": item.release_delivery,
         "reconciles_work_unit_id": item.reconciles_work_unit_id,
     }
 

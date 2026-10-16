@@ -133,6 +133,9 @@
           "parallel_safe": {
             "type": "boolean"
           },
+          "release_delivery": {
+            "type": "boolean"
+          },
           "reconciles_work_unit_id": {
             "type": [
               "string",

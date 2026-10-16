@@ -392,6 +392,42 @@ def test_cli_project_status_reports_nonterminal_project_as_running(
     assert payload["unfinished_work_unit_ids"] == ["fix", "gates"]
 
 
+def test_project_status_exposes_verified_release_delivery_fields() -> None:
+    payload = cli._project_checkpoint_status_payload(
+        "orch-release-status",
+        {
+            "work_unit_states": {"release": "COMPLETED"},
+            "active_executions": [],
+            "terminal": True,
+            "desired_state": "RUNNING",
+            "records": [
+                {
+                    "work_unit_id": "release",
+                    "verdict": "ACCEPTED",
+                    "release_manifest_path": "/project/delivery.json",
+                    "release_artifact_path": "/project/release.zip",
+                    "release_report_path": "/project/report.md",
+                    "release_version": "1.0.4",
+                    "release_size_bytes": 42,
+                    "release_sha256": "a" * 64,
+                }
+            ],
+        },
+    )
+    assert payload["release_deliveries"] == [
+        {
+            "work_unit_id": "release",
+            "manifest_path": "/project/delivery.json",
+            "artifact_path": "/project/release.zip",
+            "report_path": "/project/report.md",
+            "version": "1.0.4",
+            "size_bytes": 42,
+            "sha256": "a" * 64,
+            "validated": True,
+        }
+    ]
+
+
 
 def test_runtime_accepts_explicit_null_observability_for_auxiliary_calls(
     monkeypatch, tmp_path

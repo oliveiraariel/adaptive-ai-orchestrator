@@ -80,6 +80,15 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         verdict="ACCEPTED",
     )
     sink.emit(
+        "work_unit_reconciliation_rejected",
+        orchestration_id="orch-1",
+        work_unit_id="wu-release",
+        status="RECOVERY_REQUIRED",
+        verdict="RETURNED",
+        reason="release-delivery-required:release-manifest-unreadable",
+        result_ref="/project/.adaptive/runs/orch-1/wu-release/result.json",
+    )
+    sink.emit(
         "recovery_strategy_analyzed",
         orchestration_id="orch-1",
         work_unit_id="wu-1",
@@ -98,6 +107,17 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         status="COMPLETED",
         verdict="ACCEPTED",
     )
+    events = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    rejected = next(
+        event
+        for event in events
+        if event["event_type"] == "work_unit_reconciliation_rejected"
+    )
+    assert rejected["work_unit_id"] == "wu-release"
+    assert rejected["status"] == "RECOVERY_REQUIRED"
     sink.emit(
         "work_unit_recovery_skipped",
         orchestration_id="orch-1",
@@ -161,6 +181,7 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
     assert [event["event_type"] for event in events] == [
         "worker_recovered",
         "work_unit_reconciled",
+        "work_unit_reconciliation_rejected",
         "recovery_strategy_analyzed",
         "work_unit_practical_test_ready",
         "work_unit_recovery_skipped",
@@ -172,13 +193,13 @@ def test_observability_accepts_recovery_and_learning_events(tmp_path) -> None:
         "checkpoint_reconciliation_classified",
     ]
     assert events[1]["reconciled_by_work_unit_id"] == "wu-fix"
-    assert events[2]["incident_id"] == "INC-1"
-    assert events[2]["recovery_epoch"] == 2
-    assert events[3]["work_unit_id"] == "wu-ui"
-    assert events[5]["question"].startswith("Qual comportamento")
-    assert events[5]["suggested_skills"] == ["grill", "grill-me"]
-    assert events[6]["idle_seconds"] == 31.5
-    assert events[7]["targets"] == [
+    assert events[3]["incident_id"] == "INC-1"
+    assert events[3]["recovery_epoch"] == 2
+    assert events[4]["work_unit_id"] == "wu-ui"
+    assert events[6]["question"].startswith("Qual comportamento")
+    assert events[6]["suggested_skills"] == ["grill", "grill-me"]
+    assert events[7]["idle_seconds"] == 31.5
+    assert events[8]["targets"] == [
         "adaptive:problem-solving",
         "skills:debugging",
     ]

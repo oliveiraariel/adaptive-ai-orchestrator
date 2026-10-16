@@ -1356,6 +1356,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
                         "release_artifact_path": record.release_artifact_path,
                         "release_report_path": record.release_report_path,
                         "release_version": record.release_version,
+                        "release_size_bytes": record.release_size_bytes,
+                        "release_sha256": record.release_sha256,
                         "reason": record.reason,
                         "strategy": record.strategy,
                     }
@@ -1446,12 +1448,42 @@ def _project_checkpoint_status_payload(
             "artifact_path": item.get("release_artifact_path"),
             "report_path": item.get("release_report_path"),
             "version": item.get("release_version"),
+            "size_bytes": item.get("release_size_bytes"),
+            "sha256": item.get("release_sha256"),
             "validated": item.get("verdict") == "ACCEPTED"
-            and bool(item.get("release_manifest_path")),
+            and all(
+                item.get(field) not in (None, "")
+                for field in (
+                    "release_manifest_path",
+                    "release_artifact_path",
+                    "release_report_path",
+                    "release_version",
+                    "release_size_bytes",
+                    "release_sha256",
+                )
+            ),
         }
         for item in (records if isinstance(records, list) else [])
         if isinstance(item, dict) and item.get("release_manifest_path")
     ]
+    decisions = checkpoint.get("reconciliation_decisions")
+    if isinstance(decisions, list):
+        release_deliveries.extend(
+            {
+                "work_unit_id": item.get("work_unit_id"),
+                "manifest_path": item.get("release_manifest_path"),
+                "artifact_path": item.get("release_artifact_path"),
+                "report_path": item.get("release_report_path"),
+                "version": item.get("release_version"),
+                "size_bytes": item.get("release_size_bytes"),
+                "sha256": item.get("release_sha256"),
+                "validated": item.get("release_validated") is True,
+            }
+            for item in decisions
+            if isinstance(item, dict)
+            and item.get("release_manifest_path")
+            and item.get("release_validated") is True
+        )
     payload = {
         "ok": True,
         "mode": "project-status",
@@ -1890,6 +1922,12 @@ def _resume_project(args: argparse.Namespace) -> int:
                         "output": record.output,
                         "result_ref": record.result_ref,
                         "result_authoritative": record.result_authoritative,
+                        "release_manifest_path": record.release_manifest_path,
+                        "release_artifact_path": record.release_artifact_path,
+                        "release_report_path": record.release_report_path,
+                        "release_version": record.release_version,
+                        "release_size_bytes": record.release_size_bytes,
+                        "release_sha256": record.release_sha256,
                         "reason": record.reason,
                         "strategy": record.strategy,
                     }
