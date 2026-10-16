@@ -1926,3 +1926,61 @@ def test_returned_release_audit_emits_precise_read_only_gate_evidence() -> None:
     assert len(audits) == 1
     assert audits[0]["release_valid"] is False
     assert audits[0]["release_reason"] == "release-manifest-canonicality-required"
+
+
+def test_valid_artifact_is_visible_without_forcing_returned_release_acceptance(tmp_path) -> None:
+    import hashlib
+    import json
+    import zipfile
+
+    artifact = tmp_path / "release.zip"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr("plugin/version.txt", "VERSION='1.2.4'\n")
+    report = tmp_path / "report.md"
+    report.write_text("local tests passed", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "schema_version": 1,
+        "platform": "generic",
+        "artifact_path": str(artifact),
+        "report_path": str(report),
+        "source_identity": "repo@commit",
+        "version": "1.2.4",
+        "internal_version": "1.2.4",
+        "version_source": {
+            "kind": "zip-entry",
+            "path": "plugin/version.txt",
+            "pattern": r"VERSION='([^']+)'",
+        },
+        "size_bytes": artifact.stat().st_size,
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "integrity_checked": True,
+        "install_structure_checked": True,
+        "validations": ["zip-check"],
+        "publication": {
+            "canonical": True, "atomic": True,
+            "historical_artifacts_preserved": True,
+            "release_identity": "plugin@1.2.4",
+            "staging_path": str(tmp_path / "staging.zip"),
+        },
+    }), encoding="utf-8")
+    release = replace(
+        wu("T04", role="release"), release_delivery=True,
+        acceptance_criteria=("additional-independent-review-required",),
+    )
+    plan = ProjectExecutionPlan(summary="release pending review", work_units=(release,))
+    runtime = ConcurrentRuntime(
+        outputs={"T04": "ADAPTIVE_WORKER_STATUS: COMPLETE\n"
+                         f"ADAPTIVE_RELEASE_MANIFEST: {manifest}\n"},
+        result_refs={"T04": "authoritative-result-ref"},
+    )
+    result, _ = run(
+        plan, runtime, recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        max_attempts=1,
+    )
+    latest = [item for item in result.records if item.work_unit_id == "T04"][-1]
+    assert latest.verdict != "ACCEPTED"
+    assert latest.release_artifact_path == str(artifact)
+    assert latest.release_manifest_path == str(manifest)
+    assert latest.release_report_path == str(report)
+    assert latest.release_sha256 == hashlib.sha256(artifact.read_bytes()).hexdigest()
