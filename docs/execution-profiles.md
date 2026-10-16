@@ -65,13 +65,36 @@ Após a ativação, `adaptive-orchestrator orchestrate` (inclusive via Bridge)
 A escolha efetiva é persistida no snapshot do checkpoint. Em `plan-only`
 e no resultado da nova orquestração também aparece `execution_profile`.
 
+## Papéis persistentes de agente
+
+Perfis com `quality_direct_fallback=true` resolvem os papéis antes da admissão.
+O Adaptive consulta `openclaw agents list --json`, a interface autoritativa de
+agentes elegíveis. O caminho ativo pode ser definido por `OPENCLAW_CONFIG_PATH`
+(e `ADAPTIVE_OPENCLAW_CONFIG_FILE` continua disponível para testes), enquanto
+a política persistente fica em
+`~/.config/adaptive-ai-orchestrator/agent-role-selection.json` (ou em
+`ADAPTIVE_AGENT_ROLE_SELECTION_FILE`). Configure uma vez, sem alterar o
+perfil nem os snapshots existentes:
+
+```bash
+adaptive-orchestrator agent-roles set-default \
+  --planner adaptive --worker main --authorize --actor user \
+  --reason "Coordenador Adaptive e executor Main para novas orquestrações"
+adaptive-orchestrator agent-roles default
+```
+
+Os IDs são validados pela interface oficial do OpenClaw, e o Adaptive rejeita identidades
+ausentes, inelegíveis ou iguais quando o perfil exige separação. Argumentos
+explícitos válidos continuam prevalecendo; a conversa que iniciou a solicitação
+não altera automaticamente os papéis.
+
 A seleção de **outro** perfil para uma nova orquestração passa a exigir
 autorização explícita e motivo atribuído a um operador:
 
 ```bash
 adaptive-orchestrator orchestrate \
   --project-root "/caminho/projeto" \
-  --agent sgfp --planner-agent adaptive \
+  --agent main \
   --objective "Objetivo autorizado" \
   --execution-profile gpt-terra-medium-low \
   --authorize-profile-override \
@@ -100,8 +123,8 @@ Modificar novamente o padrão exige novo `set-default ... --authorize`.
   coordenador, sem despachar a outro agente. O coordenador continua sujeito ao
   contrato de Work Units, claims, avaliação e Result Store.
 - A passagem por falta de qualidade só é solicitada quando o orçamento de
-  estratégias de resolução se esgota; para os perfis que a permitem, é
-  necessário informar um coordenador distinto com `--planner-agent`.
+  estratégias de resolução se esgota; para os perfis que a permitem, os papéis
+  distintos são resolvidos pela política persistente de agentes.
   Projetos com autonomia que exige revisão/aprovação seguem essas garantias.
 - **Falta de tokens não deve iniciar fallback direto para contornar a cota.**
 
@@ -119,7 +142,6 @@ adaptive-orchestrator execution-profile show gpt-luna-medium-low
 # Iniciar nova orquestração governada:
 adaptive-orchestrator orchestrate \
   --project-root "/caminho/projeto" \
-  --agent sgfp --planner-agent adaptive \
   --execution-profile gpt-luna-medium-low \
   --allow-side-effect filesystem.write \
   --objective "Executar o plano aprovado"
