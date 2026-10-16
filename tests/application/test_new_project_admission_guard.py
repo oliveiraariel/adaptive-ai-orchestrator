@@ -8,7 +8,9 @@ import pytest
 
 from application.new_project_admission_guard import (
     PriorProjectNotQuiescentError,
+    ProjectAdmissionBusyError,
     govern_prior_projects,
+    project_admission_lock,
 )
 from infrastructure.orchestration_control_plane import FileOrchestrationControlPlane
 from infrastructure.project_orchestration_checkpoint import (
@@ -118,3 +120,35 @@ def test_inconsistent_terminal_with_active_worker_blocks_new_admission(tmp_path)
 
     with pytest.raises(PriorProjectNotQuiescentError, match="terminal-with-active-executions"):
         govern_prior_projects(project_root=tmp_path, incoming_orchestration_id="new")
+
+def test_new_project_admission_lock_is_exclusive_and_released(tmp_path):
+    with project_admission_lock(tmp_path):
+        with pytest.raises(ProjectAdmissionBusyError, match="admission"):
+            with project_admission_lock(tmp_path):
+                raise AssertionError("Must not acquire concurrent admission lock")
+    with project_admission_lock(tmp_path):
+        pass
+
+
+def test_pre_reserved_admission_stays_blocked_until_controller_acks(tmp_path):
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    state = {
+        "phase": "ADMITTED",
+        "desired_state": "RUNNING",
+        "terminal": False,
+        "active_executions": [],
+        "request": {"objective": "still planning"},
+    }
+    store.save("old", state)
+
+    with pytest.raises(PriorProjectNotQuiescentError, match="admitted-planner-not-yet-quiescent"):
+        govern_prior_projects(project_root=tmp_path, incoming_orchestration_id="new")
+
+    assert store.load("old")["desired_state"] == "PAUSED"
+    control = FileOrchestrationControlPlane(project_root=tmp_path)
+    control.mark_quiescent(
+        orchestration_id="old",
+        checkpoint=store.load("old"),
+        reason="test-controller-acknowledged",
+    )
+    assert govern_prior_projects(project_root=tmp_path, incoming_orchestration_id="new") == ()
