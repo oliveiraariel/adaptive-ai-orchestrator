@@ -63,7 +63,7 @@ A validation may be reported as `PASS` only when it was actually executed agains
 
 When the purpose is a fix, hotfix, regression retest, or environmental retest, create a **new artifact after the validated change**.
 
-Do not silently reuse an older ZIP/archive and do not ambiguously overwrite an old artifact when doing so would break traceability.
+Do not silently reuse an older ZIP/archive and do not ambiguously overwrite an old artifact when doing so would break traceability. **Exception for reconciliation-only retries:** if no code/source change has occurred, a previously validated canonical ZIP tied to the same exact source can be reused after explicit read-only integrity/manifest revalidation; do not regenerate it or increment the version solely because of a RETURNED caused by missing structured release metadata.
 
 ### 4. Naming and identity
 

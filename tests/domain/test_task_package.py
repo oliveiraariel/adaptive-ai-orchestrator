@@ -112,9 +112,34 @@ def test_task_package_preserves_execution_contract() -> None:
     assert task.context == ("project-baseline",)
     assert task.inputs == ("work-unit-definition",)
     assert task.artifacts == ("specification.md",)
-    assert task.decisions == ("decision-001",)
+    assert "decision-001" in task.decisions
     assert task.dependencies == ("wu-000",)
     assert task.constraints == ("do-not-change-public-contract",)
     assert task.configuration is not None
     assert task.expected_output == ("implementation", "tests")
     assert task.acceptance_criteria == ("all-tests-pass",)
+
+def test_global_verification_rule_is_injected_for_every_delegated_task() -> None:
+    from domain.verification_efficiency_policy import (
+        VERIFICATION_EFFICIENCY_POLICY_MARKER,
+    )
+
+    task = make_task()
+    assert any(
+        VERIFICATION_EFFICIENCY_POLICY_MARKER in decision
+        for decision in task.decisions
+    )
+    assert any("RETURNED" in decision for decision in task.decisions)
+    assert any("NOT_RUN/REUSED" in decision for decision in task.decisions)
+
+
+def test_verification_rule_is_idempotent_for_predeclared_directives() -> None:
+    from dataclasses import replace
+    from domain.verification_efficiency_policy import (
+        verification_efficiency_policy_directives,
+    )
+
+    existing = verification_efficiency_policy_directives()
+    task = replace(make_task(), decisions=("project-rule", *existing))
+    assert task.decisions.count(existing[0]) == 1
+    assert len(task.decisions) == len(existing) + 1
