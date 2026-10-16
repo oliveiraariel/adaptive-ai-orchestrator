@@ -1883,3 +1883,19 @@ def test_checkpoint_plan_round_trip_preserves_release_delivery() -> None:
 
     assert restored.work_units[0].release_delivery is True
     assert release_delivery_work_unit_ids(work_units=restored.work_units) == {"release"}
+
+def test_returned_release_preserves_actionable_manifest_gate_reason() -> None:
+    release = replace(wu("T04", role="release"), release_delivery=True)
+    plan = ProjectExecutionPlan(summary="release gate", work_units=(release,))
+    runtime = ConcurrentRuntime(outputs={"T04": "ADAPTIVE_WORKER_STATUS: COMPLETE\n"})
+    result, _ = run(
+        plan, runtime, recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        max_attempts=1,
+    )
+    assert "T04" not in result.completed_work_unit_ids
+    assert any(
+        "release-delivery-required:release-manifest-canonicality-required"
+        in record.reason
+        for record in result.records
+        if record.work_unit_id == "T04"
+    )
