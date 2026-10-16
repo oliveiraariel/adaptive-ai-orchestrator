@@ -40,6 +40,10 @@ from application.runtime_project_planner import ProjectPlanningError, ProjectPla
 from application.skill_resolution import SkillResolutionError
 from domain.dependency import Dependency, DependencyStatus
 from domain.investigation import RecoveryDisposition
+from domain.release_delivery import (
+    release_delivery_required,
+    release_delivery_work_unit_ids,
+)
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
 from domain.project_execution_plan import (
@@ -170,6 +174,22 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             )
 
         specs = {spec.id: spec for spec in plan.work_units}
+        release_unit_ids = release_delivery_work_unit_ids(
+            work_units=plan.work_units, constraints=request.constraints
+        )
+        if (
+            (checkpoint is None or admission_only)
+            and release_delivery_required(
+                objective=request.objective,
+                scope=request.scope,
+                context=request.context,
+                constraints=request.constraints,
+            )
+            and not release_unit_ids
+        ):
+            raise ProjectOrchestrationError(
+                "Release objective requires a dedicated delivery Work Unit."
+            )
         work_units = {
             spec.id: self._instantiate_work_unit(spec) for spec in plan.work_units
         }
@@ -1729,6 +1749,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                 request.acceptance_mode
                                 is AcceptanceMode.LOCAL_DELIVERY
                             ),
+                            requires_release_delivery=work_unit_id in release_unit_ids,
                         )
                         if (
                             request.recovery_loop_mode
@@ -2765,6 +2786,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "output": item.output,
             "result_ref": item.result_ref,
             "result_authoritative": item.result_authoritative,
+            "release_manifest_path": item.release_manifest_path,
+            "release_artifact_path": item.release_artifact_path,
+            "release_report_path": item.release_report_path,
+            "release_version": item.release_version,
             "reason": item.reason,
             "strategy": item.strategy,
         }
@@ -2797,6 +2822,10 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             result_authoritative=bool(
                 raw.get("result_authoritative", False)
             ),
+            release_manifest_path=optional("release_manifest_path"),
+            release_artifact_path=optional("release_artifact_path"),
+            release_report_path=optional("release_report_path"),
+            release_version=optional("release_version"),
             reason=str(raw.get("reason") or ""),
             strategy=(
                 cls._require_nonnegative_int(raw, "strategy")

@@ -57,6 +57,12 @@ from domain.project_execution_plan import (
 )
 from domain.resource_configuration import ResourceConfiguration
 from domain.result_package import ResultPackage, ResultPackageStatus
+from domain.release_delivery import (
+    ReleaseDeliveryCheck,
+    release_delivery_required,
+    release_delivery_work_unit_ids,
+    validate_release_delivery,
+)
 from domain.skill_profile import SkillProfile
 from domain.task_package import TaskPackage
 from domain.work_unit import WorkUnit, WorkUnitId, WorkUnitKind, WorkUnitState
@@ -221,6 +227,10 @@ class WorkUnitExecutionRecord:
     output: str = ""
     result_ref: str | None = None
     result_authoritative: bool = False
+    release_manifest_path: str | None = None
+    release_artifact_path: str | None = None
+    release_report_path: str | None = None
+    release_version: str | None = None
     reason: str = ""
     strategy: int = 1
 
@@ -311,6 +321,18 @@ class RunProjectOrchestration:
             )
 
         specs = {spec.id: spec for spec in plan.work_units}
+        release_unit_ids = release_delivery_work_unit_ids(
+            work_units=plan.work_units, constraints=request.constraints
+        )
+        if release_delivery_required(
+            objective=request.objective,
+            scope=request.scope,
+            context=request.context,
+            constraints=request.constraints,
+        ) and not release_unit_ids:
+            raise ProjectOrchestrationError(
+                "Release objective requires a dedicated delivery Work Unit."
+            )
         work_units = {
             spec.id: self._instantiate_work_unit(spec) for spec in plan.work_units
         }
@@ -482,6 +504,7 @@ class RunProjectOrchestration:
                             request, specs[work_unit_id]
                         )
                     ),
+                    requires_release_delivery=work_unit_id in release_unit_ids,
                 )
                 records.append(record)
                 if record.output:
@@ -901,6 +924,7 @@ class RunProjectOrchestration:
         pragmatic_low_criticality_acceptance: bool = False,
         practical_test_acceptance: bool = False,
         local_delivery_acceptance: bool = False,
+        requires_release_delivery: bool = False,
     ) -> tuple[WorkUnitExecutionRecord, bool]:
         assert outcome.claim is not None
         assert outcome.execution is not None
@@ -979,6 +1003,12 @@ class RunProjectOrchestration:
         verdict = evaluation.verdict
         reason = "evaluation-returned"
         planning_recovery = False
+        delivery_check = ReleaseDeliveryCheck(True, "not-required")
+        if requires_release_delivery and runtime_status is AgentRuntimeStatus.COMPLETED:
+            delivery_check = validate_release_delivery(raw_result=raw_result, output=output)
+            if not delivery_check.valid:
+                verdict = EvaluationVerdict.RETURNED
+                reason = f"release-delivery-required:{delivery_check.reason}"
         if completion.structured:
             if completion.is_recoverable_planning_blocker:
                 verdict = EvaluationVerdict.RETURNED
@@ -1010,6 +1040,8 @@ class RunProjectOrchestration:
         # failed local check never qualifies for this release.
         if local_delivery_acceptance:
             local_evidence_ok = (
+                delivery_check.valid
+                and
                 runtime_status is AgentRuntimeStatus.COMPLETED
                 and result_authoritative
                 and bool(result_ref)
@@ -1042,6 +1074,8 @@ class RunProjectOrchestration:
         # Explicit runtime/environment/authority/human/planning blockers remain
         # non-acceptable, as do blocking incidents.
         if (
+            delivery_check.valid
+            and
             practical_test_acceptance
             and spec.criticality == 0
             and runtime_status is AgentRuntimeStatus.COMPLETED
@@ -1096,6 +1130,10 @@ class RunProjectOrchestration:
                 output=output,
                 result_ref=result_ref,
                 result_authoritative=result_authoritative,
+                release_manifest_path=delivery_check.manifest_path,
+                release_artifact_path=delivery_check.artifact_path,
+                release_report_path=delivery_check.report_path,
+                release_version=delivery_check.version,
                 reason=reason,
             ),
             (
