@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
+import json
 from dataclasses import replace
 import os
 import time
@@ -116,7 +117,9 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             or checkpoint.get("phase") != "ADMITTED"
             or checkpoint.get("terminal") is True
             or "plan" in checkpoint
-            or checkpoint.get("request") != self._request_to_payload(request)
+            or checkpoint.get("request") != json.loads(
+                json.dumps(self._request_to_payload(request))
+            )
         ):
             raise ProjectOrchestrationError(
                 "Durable admission reservation is missing or mismatches the request."
