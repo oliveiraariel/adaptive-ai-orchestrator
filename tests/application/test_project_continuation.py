@@ -39,6 +39,21 @@ def test_terminal_successor_is_idempotent_and_reuses_only_accepted_work():
     assert store.load("old")["terminal"] is True
 
 
+def test_terminal_successor_preserves_release_delivery_obligation():
+    state = _terminal()
+    state["plan"]["work_units"][1]["release_delivery"] = True
+    store = Store(state)
+
+    result = CreateProjectSuccessor(checkpoint_store=store).execute(
+        predecessor_orchestration_id="old",
+        clarification="deliver the remaining package",
+        actor="human",
+    )
+
+    successor = store.load(result.successor_orchestration_id)
+    assert successor["plan"]["work_units"][0]["release_delivery"] is True
+
+
 def test_nonterminal_predecessor_is_rejected():
     state = _terminal(); state["terminal"] = False
     try:

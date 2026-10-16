@@ -26,6 +26,7 @@ from domain.project_execution_plan import (
     PlannedWorkUnit,
     ProjectExecutionPlan,
 )
+from domain.release_delivery import release_delivery_work_unit_ids
 from domain.task_package import TaskPackage
 from infrastructure.claim_registry import InMemoryClaimRegistry
 
@@ -1871,3 +1872,14 @@ def test_local_delivery_frontend_cannot_fall_back_to_practical_acceptance() -> N
         recovery_loop_mode=RecoveryLoopMode.DISABLED,
     )
     assert "T05" not in result.completed_work_unit_ids
+
+
+def test_checkpoint_plan_round_trip_preserves_release_delivery() -> None:
+    release = replace(wu("release", role="release"), release_delivery=True)
+    plan = ProjectExecutionPlan(summary="release round trip", work_units=(release,))
+
+    payload = RunContinuousProjectOrchestration._plan_to_payload(plan)
+    restored = RunContinuousProjectOrchestration._plan_from_payload(payload)
+
+    assert restored.work_units[0].release_delivery is True
+    assert release_delivery_work_unit_ids(work_units=restored.work_units) == {"release"}

@@ -1237,6 +1237,9 @@ def _orchestrate(args: argparse.Namespace) -> int:
         checkpoint_store = FileProjectOrchestrationCheckpointStore(
             project_root=Path(args.project_root).expanduser().resolve()
         )
+        control_plane = FileOrchestrationControlPlane(
+            project_root=Path(args.project_root).expanduser().resolve()
+        )
         if checkpoint_store.load(orchestration_id) is not None:
             raise ProjectOrchestrationError(
                 "Fresh orchestrate refused an existing orchestration id; "
@@ -1247,6 +1250,19 @@ def _orchestrate(args: argparse.Namespace) -> int:
             orchestration_id=orchestration_id,
             observability=observability,
         )
+
+        def mark_controller_terminalized(orchestration_id: str) -> None:
+            checkpoint = checkpoint_store.load(orchestration_id)
+            if checkpoint is None:
+                raise OrchestrationControlPlaneError(
+                    "Project checkpoint disappeared before controller terminalization."
+                )
+            control_plane.mark_terminal(
+                orchestration_id=orchestration_id,
+                checkpoint=checkpoint,
+                reason="controller-observed-terminal:no-active-executions",
+            )
+
         result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
@@ -1254,6 +1270,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
             persistent_recovery=persistent_recovery,
+            on_terminalized=mark_controller_terminalized,
         ).execute(
             ProjectOrchestrationRequest(
                 objective=args.objective,
@@ -1307,6 +1324,7 @@ def _orchestrate(args: argparse.Namespace) -> int:
         OpenClawGatewayError,
         ResultStoreError,
         ProjectOrchestrationCheckpointError,
+        OrchestrationControlPlaneError,
         ValueError,
     ) as exc:
         observability.emit(
@@ -1875,6 +1893,18 @@ def _resume_project(args: argparse.Namespace) -> int:
                 reason="controller-observed-pause:no-active-executions",
             )
 
+        def mark_controller_terminalized(orchestration_id: str) -> None:
+            checkpoint = checkpoint_store.load(orchestration_id)
+            if checkpoint is None:
+                raise OrchestrationControlPlaneError(
+                    "Project checkpoint disappeared before controller terminalization."
+                )
+            control_plane.mark_terminal(
+                orchestration_id=orchestration_id,
+                checkpoint=checkpoint,
+                reason="controller-observed-terminal:no-active-executions",
+            )
+
         result = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
@@ -1883,6 +1913,7 @@ def _resume_project(args: argparse.Namespace) -> int:
             checkpoint_store=checkpoint_store,
             persistent_recovery=persistent_recovery,
             on_quiescent=mark_controller_quiescent,
+            on_terminalized=mark_controller_terminalized,
         ).resume(
             args.orchestration_id,
             observability=observability,
