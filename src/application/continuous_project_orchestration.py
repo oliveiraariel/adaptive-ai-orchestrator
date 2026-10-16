@@ -1941,8 +1941,6 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     reason=record.reason,
                                     release_valid=audit.valid,
                                     release_reason=audit.reason,
-                                    manifest_path=audit.manifest_path,
-                                    artifact_path=audit.artifact_path,
                                 )
                                 if audit.valid:
                                     feedback = (
