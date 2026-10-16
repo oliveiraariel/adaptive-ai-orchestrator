@@ -1348,6 +1348,12 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 orchestration_id=orchestration_id,
                 reason="new-project:reserved-admission",
             )
+        observability.emit(
+            "orchestration_admitted",
+            orchestration_id=orchestration_id,
+            phase="ADMITTED",
+            mode="project",
+        )
         _start_orchestration_guardian(
             args,
             orchestration_id=orchestration_id,
