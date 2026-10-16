@@ -1,6 +1,7 @@
 import threading
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 from application.agent_runtime import (
     AgentRuntimeResult,
@@ -19,6 +20,7 @@ from application.run_project_orchestration import (
 )
 from application.runtime_project_planner import ProjectPlanningRequest
 from domain.execution_policy import ExecutionPolicy
+from domain.investigation import RecoveryDisposition
 from domain.project_execution_plan import (
     PlannedDependency,
     PlannedWorkUnit,
@@ -1269,6 +1271,98 @@ def test_resume_fails_closed_when_recovered_execution_identity_mismatches() -> N
         executor.resume("orch-recovery")
 
     assert runtime.submitted == []
+
+
+def test_recovery_reconciliation_cannot_accept_release_without_valid_delivery(
+    tmp_path,
+) -> None:
+    release = replace(wu("release", role="release"), release_delivery=True)
+    plan = ProjectExecutionPlan(summary="release recovery", work_units=(release,))
+    request = ProjectOrchestrationRequest(
+        objective="recover release",
+        orchestration_id="orch-release-recovery",
+        plan=plan,
+        pragmatic_low_criticality_acceptance=True,
+        persistent_recovery=True,
+        max_stalled_recovery_cycles=1,
+    )
+
+    class RecoveryProbe:
+        def analyze(self, **kwargs):
+            analysis = SimpleNamespace(
+                human_decision_required=False,
+                disposition=RecoveryDisposition.RETRY_DIFFERENT_STRATEGY,
+                human_question="",
+                recommended_path_id="retry-release",
+                confidence=0.8,
+                planner_guidance=lambda: "Retry after validating the release manifest.",
+            )
+            return SimpleNamespace(
+                incident_id="incident-release-recovery",
+                recovery_epoch=1,
+                analysis=analysis,
+            )
+
+    executor = RunContinuousProjectOrchestration(
+        runtime=ConcurrentRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        persistent_recovery=RecoveryProbe(),
+    )
+    checkpoint = {
+        "orchestration_id": request.orchestration_id,
+        "request": executor._request_to_payload(request),
+        "plan": executor._plan_to_payload(plan),
+        "work_unit_states": {"release": "RECOVERY_REQUIRED"},
+        "dependency_states": [],
+        "attempts": {"release": 1},
+        "strategy_generations": {"release": 1},
+        "outputs": {},
+        "output_refs": {},
+        "revision_feedback": {},
+        "recovery_guidance": {},
+        "recovery_replans_in_epoch": {"release": 0},
+        "recovery_no_progress_counts": {"release": 0},
+        "recovery_epoch_counts": {"release": 0},
+        "records": [
+            {
+                "work_unit_id": "release",
+                "role": "release",
+                "wave": 1,
+                "attempt": 1,
+                "status": "RECOVERY_REQUIRED",
+                "skills": [],
+                "runtime_status": "COMPLETED",
+                "verdict": "RETURNED",
+                "output": (
+                    "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+                    "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+                    "ADAPTIVE_UNMET_CRITERIA: NONE"
+                ),
+                "result_ref": str(tmp_path / "missing-result-manifest.json"),
+                "result_authoritative": True,
+                "reason": "evaluation-returned",
+                "strategy": 1,
+            }
+        ],
+        "dispatch_records": [],
+        "max_parallelism_observed": 0,
+        "replan_count": 0,
+        "dispatch_generation": 1,
+        "pending_replan": False,
+        "replan_feedback": "",
+        "active_executions": [],
+        "terminal": False,
+    }
+    store = MemoryProjectCheckpointStore(checkpoint)
+    executor._checkpoint_store = store
+
+    result = executor.resume(request.orchestration_id)
+
+    assert result.status is not ProjectRunStatus.COMPLETED
+    assert "release" not in result.completed_work_unit_ids
+    assert all(record.reason != "recovery-evidence-reconciled" for record in result.records)
 
 def test_planning_scope_blocker_replans_before_retrying_original_work_unit() -> None:
     planning_block = (

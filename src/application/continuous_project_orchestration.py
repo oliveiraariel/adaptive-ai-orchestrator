@@ -43,6 +43,7 @@ from domain.investigation import RecoveryDisposition
 from domain.release_delivery import (
     release_delivery_required,
     release_delivery_work_unit_ids,
+    validate_release_delivery,
 )
 from domain.evaluation import EvaluationVerdict
 from domain.execution_policy import AutonomyClass, ExecutionPolicy
@@ -428,6 +429,28 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             if candidate is None:
                 return False
 
+            delivery_check = None
+            if work_unit_id in release_unit_ids:
+                delivery_check = validate_release_delivery(
+                    raw_result=(
+                        {"release_manifest": candidate.release_manifest_path}
+                        if candidate.release_manifest_path
+                        else {}
+                    ),
+                    output=candidate.output or "",
+                )
+                if not delivery_check.valid:
+                    observability.emit(
+                        "work_unit_reconciliation_rejected",
+                        orchestration_id=orchestration_id,
+                        work_unit_id=work_unit_id,
+                        status=WorkUnitState.RECOVERY_REQUIRED.value,
+                        verdict="RETURNED",
+                        reason=f"release-delivery-required:{delivery_check.reason}",
+                        result_ref=candidate.result_ref,
+                    )
+                    return False
+
             work_units[work_unit_id].complete_by_reconciliation()
             for dependency in dependencies:
                 if dependency.source_id == work_unit_id:
@@ -458,6 +481,30 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     ),
                     result_ref=candidate.result_ref,
                     result_authoritative=True,
+                    release_manifest_path=(
+                        delivery_check.manifest_path if delivery_check is not None
+                        else None
+                    ),
+                    release_artifact_path=(
+                        delivery_check.artifact_path if delivery_check is not None
+                        else None
+                    ),
+                    release_report_path=(
+                        delivery_check.report_path if delivery_check is not None
+                        else None
+                    ),
+                    release_version=(
+                        delivery_check.version if delivery_check is not None
+                        else None
+                    ),
+                    release_size_bytes=(
+                        delivery_check.size_bytes if delivery_check is not None
+                        else None
+                    ),
+                    release_sha256=(
+                        delivery_check.sha256 if delivery_check is not None
+                        else None
+                    ),
                     reason="recovery-evidence-reconciled",
                     strategy=strategy_generations[work_unit_id],
                 )
