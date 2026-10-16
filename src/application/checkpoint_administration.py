@@ -27,6 +27,10 @@ from infrastructure.project_orchestration_checkpoint import (
     ProjectOrchestrationCheckpointError,
 )
 from infrastructure.result_store import FileResultStore, ResultStoreError
+from domain.release_delivery import (
+    release_delivery_required_for_checkpoint,
+    validate_release_delivery,
+)
 
 
 class CheckpointClassification(str, Enum):
@@ -240,6 +244,10 @@ class CheckpointAdministrator:
                 return False
             if not parse_worker_completion(stored.content).is_terminal_success:
                 return False
+            if release_delivery_required_for_checkpoint(checkpoint, work_unit_id):
+                delivery = validate_release_delivery(raw_result=None, output=stored.content)
+                if not delivery.valid:
+                    return False
         return True
 
     def _controller_is_fresh(self, orchestration_id: str) -> bool:

@@ -480,6 +480,7 @@ class RuntimeProjectPlanner:
             "- Read-only units use requested_side_effects=[] and write_paths=[]. File-editing units request filesystem.write. Do not request deploy/publication/destructive effects unless the user objective explicitly authorizes them.\n"
             "- Use acceptance_criteria=[\"runtime-completed\"] unless a literal machine-verifiable marker is truly available. Put semantic verification into explicit testing/review/integration Work Units instead of pretending string matching proves correctness.\n"
             "- Include fan-in integration or verification units when multiple parallel results must be reconciled.\n"
+            "- For an objective that produces an installable/deployable release, create exactly one Work Unit with release_delivery=true and make it responsible for the final package, report, and delivery manifest. Ordinary implementation, test, and review units must set release_delivery=false.\n"
             "- reconciles_work_unit_id is normally null. Use it only for an evidence-backed corrective unit that can formally satisfy an already-returned/recovery unit without rerunning it, and always pair it with a required corrective -> original dependency edge.\n"
             "- HUMAN_ACTION is for genuine human-only or approval-required work; do not fabricate an agent for it.\n"
             "- requested_skills may contain only ids from AVAILABLE SKILLS. required_capabilities should describe what the Work Unit needs; the orchestrator may minimize the final skill set."
@@ -527,6 +528,7 @@ class RuntimeProjectPlanner:
                     "priority": item.priority,
                     "criticality": item.criticality,
                     "parallel_safe": item.parallel_safe,
+                    "release_delivery": item.release_delivery,
                     "reconciles_work_unit_id": item.reconciles_work_unit_id,
                 }
                 for item in plan.work_units
@@ -633,6 +635,7 @@ class RuntimeProjectPlanner:
             priority=cls._non_negative_int(entry, "priority", default=0),
             criticality=cls._non_negative_int(entry, "criticality", default=0),
             parallel_safe=cls._bool(entry, "parallel_safe", default=True),
+            release_delivery=cls._bool(entry, "release_delivery", default=False),
             reconciles_work_unit_id=(
                 str(entry["reconciles_work_unit_id"]).strip()
                 if entry.get("reconciles_work_unit_id") is not None

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
+import zipfile
 
 import pytest
 
@@ -241,4 +244,115 @@ def test_partial_or_blocked_historical_result_cannot_be_promoted(tmp_path: Path)
             orchestration_id=ORCHESTRATION_ID, work_unit_id="AGENDA",
             decision=ReconciliationDecision.PRACTICAL_TEST_READY,
             reason="not enough evidence", actor="test", policy="test-policy",
+        )
+
+
+def test_release_reconciliation_rechecks_canonical_delivery_gate(tmp_path: Path) -> None:
+    orchestration_id = "orch-release-reconcile"
+    work_unit_id = "release"
+    store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    results = FileResultStore(project_root=tmp_path)
+    artifact = tmp_path / "release.zip"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr(
+            "plugin/plugin.php",
+            "<?php\n/*\n * Plugin Name: Example\n * Version: 1.0.3\n */\n",
+        )
+    report = tmp_path / "report.md"
+    report.write_text("release report", encoding="utf-8")
+    delivery_manifest = tmp_path / "delivery.json"
+    delivery_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "platform": "wordpress",
+                "artifact_path": str(artifact),
+                "report_path": str(report),
+                "source_identity": "repo@abc",
+                "version": "1.0.4",
+                "internal_version": "1.0.4",
+                "version_source": {"kind": "wordpress-plugin-header"},
+                "size_bytes": artifact.stat().st_size,
+                "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "integrity_checked": True,
+                "install_structure_checked": True,
+                "validations": ["zip-check"],
+                "publication": {
+                    "canonical": True,
+                    "atomic": True,
+                    "historical_artifacts_preserved": True,
+                    "release_identity": "plugin@1.0.4",
+                    "staging_path": str(tmp_path / "staging" / "release.zip"),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    target = results.prepare_target(
+        orchestration_id=orchestration_id,
+        work_unit_id=work_unit_id,
+        execution_id="execution-release",
+    )
+    output = (
+        f"ADAPTIVE_RELEASE_MANIFEST: {delivery_manifest}\n"
+        "ADAPTIVE_WORK_STATUS: COMPLETE\n"
+        "ADAPTIVE_BLOCKER_TYPE: NONE\n"
+        "ADAPTIVE_UNMET_CRITERIA: NONE\n"
+    )
+    results.publish(target, content=output)
+    store.save(
+        orchestration_id,
+        {
+            "orchestration_id": orchestration_id,
+            "phase": "EXECUTION",
+            "desired_state": "PAUSED",
+            "terminal": False,
+            "active_executions": [],
+            "plan": {
+                "summary": "release",
+                "work_units": [
+                    {
+                        "id": work_unit_id,
+                        "objective": "Create an installable release",
+                        "role": "release",
+                        "release_delivery": True,
+                        "expected_output": ["release"],
+                        "acceptance_criteria": ["release"],
+                    }
+                ],
+            },
+            "request": {"constraints": []},
+            "work_unit_states": {work_unit_id: "RECOVERY_REQUIRED"},
+            "records": [
+                {
+                    "work_unit_id": work_unit_id,
+                    "execution_id": "execution-release",
+                    "runtime_status": "COMPLETED",
+                    "result_authoritative": True,
+                    "result_ref": str(target.manifest_path),
+                    "verdict": "RETURNED",
+                    "status": "RECOVERY_REQUIRED",
+                    "output": output,
+                }
+            ],
+            "dependency_states": [],
+        },
+    )
+    FileOrchestrationControlPlane(project_root=tmp_path).mark_quiescent(
+        orchestration_id=orchestration_id,
+        checkpoint=store.load(orchestration_id) or {},
+        reason="test",
+    )
+    with pytest.raises(HistoricalWorkUnitReconciliationError, match="Release delivery gate"):
+        ReconcileHistoricalWorkUnit(
+            project_root=tmp_path,
+            checkpoint_store=store,
+            control_plane=FileOrchestrationControlPlane(project_root=tmp_path),
+        ).execute(
+            orchestration_id=orchestration_id,
+            work_unit_id=work_unit_id,
+            decision=ReconciliationDecision.ACCEPTED,
+            reason="test",
+            actor="test",
+            policy="test",
         )

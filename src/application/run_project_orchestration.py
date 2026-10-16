@@ -61,6 +61,7 @@ from domain.release_delivery import (
     ReleaseDeliveryCheck,
     release_delivery_required,
     release_delivery_work_unit_ids,
+    release_delivery_worker_directives,
     validate_release_delivery,
 )
 from domain.skill_profile import SkillProfile
@@ -231,6 +232,8 @@ class WorkUnitExecutionRecord:
     release_artifact_path: str | None = None
     release_report_path: str | None = None
     release_version: str | None = None
+    release_size_bytes: int | None = None
+    release_sha256: str | None = None
     reason: str = ""
     strategy: int = 1
 
@@ -861,6 +864,10 @@ class RunProjectOrchestration:
                 "Do not write outside these repository-relative path prefixes: "
                 + ", ".join(spec.write_paths),
             )
+        if spec.id in release_delivery_work_unit_ids(
+            work_units=(spec,), constraints=request.constraints
+        ):
+            constraints = (*constraints, *release_delivery_worker_directives())
 
         task = TaskPackage(
             task_id=f"project:{orchestration_id}:wave:{wave}:{spec.id}:attempt:{work_unit.state.value}",
@@ -1134,6 +1141,8 @@ class RunProjectOrchestration:
                 release_artifact_path=delivery_check.artifact_path,
                 release_report_path=delivery_check.report_path,
                 release_version=delivery_check.version,
+                release_size_bytes=delivery_check.size_bytes,
+                release_sha256=delivery_check.sha256,
                 reason=reason,
             ),
             (

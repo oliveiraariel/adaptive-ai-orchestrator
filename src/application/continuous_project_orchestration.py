@@ -2619,6 +2619,7 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                     "priority": item.priority,
                     "criticality": item.criticality,
                     "parallel_safe": item.parallel_safe,
+                    "release_delivery": item.release_delivery,
                     "reconciles_work_unit_id": item.reconciles_work_unit_id,
                 }
                 for item in plan.work_units
@@ -2790,6 +2791,8 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             "release_artifact_path": item.release_artifact_path,
             "release_report_path": item.release_report_path,
             "release_version": item.release_version,
+            "release_size_bytes": item.release_size_bytes,
+            "release_sha256": item.release_sha256,
             "reason": item.reason,
             "strategy": item.strategy,
         }
@@ -2826,6 +2829,12 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
             release_artifact_path=optional("release_artifact_path"),
             release_report_path=optional("release_report_path"),
             release_version=optional("release_version"),
+            release_size_bytes=(
+                int(raw["release_size_bytes"])
+                if raw.get("release_size_bytes") is not None
+                else None
+            ),
+            release_sha256=optional("release_sha256"),
             reason=str(raw.get("reason") or ""),
             strategy=(
                 cls._require_nonnegative_int(raw, "strategy")

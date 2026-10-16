@@ -12,6 +12,10 @@ from typing import Any
 from application.completion_integrity import parse_worker_completion
 from application.project_orchestration_checkpoint import ProjectOrchestrationCheckpointStore
 from domain.dependency import DependencyStatus
+from domain.release_delivery import (
+    release_delivery_required_for_checkpoint,
+    validate_release_delivery,
+)
 from domain.work_unit import WorkUnitState
 from infrastructure.orchestration_control_plane import FileOrchestrationControlPlane
 from infrastructure.result_store import FileResultStore, ResultStoreError
@@ -163,6 +167,19 @@ class ReconcileHistoricalWorkUnit:
             execution_id=execution_id,
             result_ref=result_ref,
         )
+        delivery = None
+        if release_delivery_required_for_checkpoint(checkpoint, work_unit_id):
+            stored = self._results.read_manifest_ref(
+                orchestration_id=orchestration_id,
+                work_unit_id=work_unit_id,
+                execution_id=execution_id,
+                manifest_ref=result_ref,
+            )
+            delivery = validate_release_delivery(raw_result=None, output=stored.content)
+            if not delivery.valid:
+                raise HistoricalWorkUnitReconciliationError(
+                    f"Release delivery gate failed during reconciliation: {delivery.reason}"
+                )
         completion = parse_worker_completion(str(candidate.get("output") or ""))
         if not completion.is_terminal_success:
             raise HistoricalWorkUnitReconciliationError(
@@ -185,6 +202,18 @@ class ReconcileHistoricalWorkUnit:
             "reason": reason,
             "recorded_at": time.time(),
         }
+        if delivery is not None:
+            audit.update(
+                {
+                    "release_manifest_path": delivery.manifest_path,
+                    "release_artifact_path": delivery.artifact_path,
+                    "release_report_path": delivery.report_path,
+                    "release_version": delivery.version,
+                    "release_size_bytes": delivery.size_bytes,
+                    "release_sha256": delivery.sha256,
+                    "release_validated": True,
+                }
+            )
         decisions.append(audit)
         # COMPLETED is the graph's dependency-satisfaction state. The audit
         # decision preserves whether this was normal ACCEPTED or practical-test

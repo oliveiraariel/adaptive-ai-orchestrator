@@ -46,6 +46,7 @@ class PlannedWorkUnit:
     priority: int = 0
     criticality: int = 0
     parallel_safe: bool = True
+    release_delivery: bool = False
     reconciles_work_unit_id: str | None = None
 
     def __post_init__(self) -> None:
