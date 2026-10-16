@@ -116,5 +116,7 @@ def test_non_packaging_work_is_unchanged() -> None:
         acceptance_criteria=("handoff-updated",),
     )
 
-    assert task.decisions == ("keep-history",)
+    assert "keep-history" in task.decisions
+    assert not any("ADAPTIVE_RELEASE_ARTIFACT_POLICY_V1" in item for item in task.decisions)
+    assert any("ADAPTIVE_VERIFICATION_EFFICIENCY_V1" in item for item in task.decisions)
     assert task.constraints == ("preserve-history",)
