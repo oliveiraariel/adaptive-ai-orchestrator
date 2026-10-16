@@ -50,7 +50,16 @@ def govern_prior_projects(*, project_root: Path, incoming_orchestration_id: str)
                 continue
             active = checkpoint.get("active_executions")
             if not isinstance(active, list):
-                blocked.append(f"{prior_id}:invalid-active-executions")
+                if checkpoint.get("phase") == "ADMITTED" and checkpoint.get("terminal") is not True:
+                    # No dispatch inventory exists yet. The planner may still
+                    # be running: request pause, but never assume quiescence.
+                    if checkpoint.get("desired_state") != "PAUSED":
+                        checkpoint["desired_state"] = "PAUSED"
+                        checkpoints.save(prior_id, checkpoint)
+                        held.append(prior_id)
+                    blocked.append(f"{prior_id}:admitted-planner-not-yet-quiescent")
+                else:
+                    blocked.append(f"{prior_id}:invalid-active-executions")
                 continue
             if checkpoint.get("terminal") is True:
                 if active:
