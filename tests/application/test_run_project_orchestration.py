@@ -1984,3 +1984,71 @@ def test_valid_artifact_is_visible_without_forcing_returned_release_acceptance(t
     assert latest.release_manifest_path == str(manifest)
     assert latest.release_report_path == str(report)
     assert latest.release_sha256 == hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+
+def test_reserved_admission_respects_pause_before_first_worker_dispatch(tmp_path) -> None:
+    from infrastructure.project_orchestration_checkpoint import (
+        FileProjectOrchestrationCheckpointStore,
+    )
+    plan = ProjectExecutionPlan(
+        summary="pre-admitted pause",
+        work_units=(wu("T01", role="worker"),),
+    )
+    runtime = ConcurrentRuntime()
+    checkpoint_store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    runner = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=checkpoint_store,
+    )
+    request = ProjectOrchestrationRequest(
+        objective="run a reserved project",
+        orchestration_id="reserved-project",
+        plan=plan,
+    )
+    checkpoint_store.save("reserved-project", {
+        "orchestration_id": "reserved-project",
+        "phase": "ADMITTED",
+        "request": runner._request_to_payload(request),
+        "desired_state": "PAUSED",
+        "terminal": False,
+        "active_executions": [],
+    })
+    result = runner.execute_reserved(request)
+    assert result.status is ProjectRunStatus.PAUSED
+    assert runtime.tasks == []
+    saved = checkpoint_store.load("reserved-project")
+    assert saved["desired_state"] == "PAUSED"
+    assert saved["terminal"] is False
+
+
+def test_reserved_admission_rejects_request_identity_mismatch(tmp_path) -> None:
+    import pytest
+    from infrastructure.project_orchestration_checkpoint import (
+        FileProjectOrchestrationCheckpointStore,
+    )
+    from application.run_project_orchestration import ProjectOrchestrationError
+
+    plan = ProjectExecutionPlan(summary="reservation", work_units=(wu("T01"),))
+    checkpoint_store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    runner = RunContinuousProjectOrchestration(
+        runtime=ConcurrentRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=checkpoint_store,
+    )
+    request = ProjectOrchestrationRequest(
+        objective="expected", orchestration_id="reserved-id", plan=plan,
+    )
+    checkpoint_store.save("reserved-id", {
+        "orchestration_id": "reserved-id", "phase": "ADMITTED",
+        "request": runner._request_to_payload(request),
+        "desired_state": "RUNNING", "terminal": False,
+        "active_executions": [],
+    })
+    changed = replace(request, objective="different objective")
+    with pytest.raises(ProjectOrchestrationError, match="mismatches the request"):
+        runner.execute_reserved(changed)
