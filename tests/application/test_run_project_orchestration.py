@@ -218,6 +218,7 @@ def run(
     max_waves: int = 24,
     recovery_loop_mode: RecoveryLoopMode = RecoveryLoopMode.ENABLED,
     acceptance_mode: AcceptanceMode = AcceptanceMode.STRICT,
+    observability=None,
 ):
     actual_planner = planner or StaticPlanner(plan)
     result = RunContinuousProjectOrchestration(
@@ -243,7 +244,8 @@ def run(
             recovery_loop_mode=recovery_loop_mode,
             acceptance_mode=acceptance_mode,
             plan=plan,
-        )
+        ),
+        observability=observability,
     )
     return result, actual_planner
 
@@ -1883,3 +1885,170 @@ def test_checkpoint_plan_round_trip_preserves_release_delivery() -> None:
 
     assert restored.work_units[0].release_delivery is True
     assert release_delivery_work_unit_ids(work_units=restored.work_units) == {"release"}
+
+def test_returned_release_preserves_actionable_manifest_gate_reason() -> None:
+    release = replace(wu("T04", role="release"), release_delivery=True)
+    plan = ProjectExecutionPlan(summary="release gate", work_units=(release,))
+    runtime = ConcurrentRuntime(outputs={"T04": "ADAPTIVE_WORKER_STATUS: COMPLETE\n"})
+    result, _ = run(
+        plan, runtime, recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        max_attempts=1,
+    )
+    assert "T04" not in result.completed_work_unit_ids
+    assert any(
+        "release-delivery-required:release-manifest-canonicality-required"
+        in record.reason
+        for record in result.records
+        if record.work_unit_id == "T04"
+    )
+
+def test_returned_release_audit_emits_precise_read_only_gate_evidence() -> None:
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event_type, **fields):
+            self.events.append((event_type, fields))
+
+    sink = Sink()
+    release = replace(wu("T04", role="release"), release_delivery=True)
+    plan = ProjectExecutionPlan(summary="release audit", work_units=(release,))
+    runtime = ConcurrentRuntime(outputs={"T04": "ADAPTIVE_WORKER_STATUS: COMPLETE\n"})
+
+    result, _ = run(
+        plan, runtime, observability=sink,
+        recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        max_attempts=1,
+    )
+    audits = [fields for event, fields in sink.events
+              if event == "work_unit_returned_audit"]
+    assert "T04" not in result.completed_work_unit_ids
+    assert len(audits) == 1
+    assert audits[0]["release_valid"] is False
+    assert audits[0]["release_reason"] == "release-manifest-canonicality-required"
+
+
+def test_valid_artifact_is_visible_without_forcing_returned_release_acceptance(tmp_path) -> None:
+    import hashlib
+    import json
+    import zipfile
+
+    artifact = tmp_path / "release.zip"
+    with zipfile.ZipFile(artifact, "w") as archive:
+        archive.writestr("plugin/version.txt", "VERSION='1.2.4'\n")
+    report = tmp_path / "report.md"
+    report.write_text("local tests passed", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "schema_version": 1,
+        "platform": "generic",
+        "artifact_path": str(artifact),
+        "report_path": str(report),
+        "source_identity": "repo@commit",
+        "version": "1.2.4",
+        "internal_version": "1.2.4",
+        "version_source": {
+            "kind": "zip-entry",
+            "path": "plugin/version.txt",
+            "pattern": r"VERSION='([^']+)'",
+        },
+        "size_bytes": artifact.stat().st_size,
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "integrity_checked": True,
+        "install_structure_checked": True,
+        "validations": ["zip-check"],
+        "publication": {
+            "canonical": True, "atomic": True,
+            "historical_artifacts_preserved": True,
+            "release_identity": "plugin@1.2.4",
+            "staging_path": str(tmp_path / "staging.zip"),
+        },
+    }), encoding="utf-8")
+    release = replace(
+        wu("T04", role="release"), release_delivery=True,
+        acceptance_criteria=("additional-independent-review-required",),
+    )
+    plan = ProjectExecutionPlan(summary="release pending review", work_units=(release,))
+    runtime = ConcurrentRuntime(
+        outputs={"T04": "ADAPTIVE_WORKER_STATUS: COMPLETE\n"
+                         f"ADAPTIVE_RELEASE_MANIFEST: {manifest}\n"},
+        result_refs={"T04": "authoritative-result-ref"},
+    )
+    result, _ = run(
+        plan, runtime, recovery_loop_mode=RecoveryLoopMode.DISABLED,
+        max_attempts=1,
+    )
+    latest = [item for item in result.records if item.work_unit_id == "T04"][-1]
+    assert latest.verdict != "ACCEPTED"
+    assert latest.release_artifact_path == str(artifact)
+    assert latest.release_manifest_path == str(manifest)
+    assert latest.release_report_path == str(report)
+    assert latest.release_sha256 == hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+
+def test_reserved_admission_respects_pause_before_first_worker_dispatch(tmp_path) -> None:
+    from infrastructure.project_orchestration_checkpoint import (
+        FileProjectOrchestrationCheckpointStore,
+    )
+    plan = ProjectExecutionPlan(
+        summary="pre-admitted pause",
+        work_units=(wu("T01", role="worker"),),
+    )
+    runtime = ConcurrentRuntime()
+    checkpoint_store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    runner = RunContinuousProjectOrchestration(
+        runtime=runtime,
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=checkpoint_store,
+    )
+    request = ProjectOrchestrationRequest(
+        objective="run a reserved project",
+        orchestration_id="reserved-project",
+        plan=plan,
+    )
+    checkpoint_store.save("reserved-project", {
+        "orchestration_id": "reserved-project",
+        "phase": "ADMITTED",
+        "request": runner._request_to_payload(request),
+        "desired_state": "PAUSED",
+        "terminal": False,
+        "active_executions": [],
+    })
+    result = runner.execute_reserved(request)
+    assert result.status is ProjectRunStatus.PAUSED
+    assert runtime.tasks == []
+    saved = checkpoint_store.load("reserved-project")
+    assert saved["desired_state"] == "PAUSED"
+    assert saved["terminal"] is False
+
+
+def test_reserved_admission_rejects_request_identity_mismatch(tmp_path) -> None:
+    import pytest
+    from infrastructure.project_orchestration_checkpoint import (
+        FileProjectOrchestrationCheckpointStore,
+    )
+    from application.run_project_orchestration import ProjectOrchestrationError
+
+    plan = ProjectExecutionPlan(summary="reservation", work_units=(wu("T01"),))
+    checkpoint_store = FileProjectOrchestrationCheckpointStore(project_root=tmp_path)
+    runner = RunContinuousProjectOrchestration(
+        runtime=ConcurrentRuntime(),
+        claim_registry=InMemoryClaimRegistry(),
+        planner=StaticPlanner(plan),
+        skill_profiles=(),
+        checkpoint_store=checkpoint_store,
+    )
+    request = ProjectOrchestrationRequest(
+        objective="expected", orchestration_id="reserved-id", plan=plan,
+    )
+    checkpoint_store.save("reserved-id", {
+        "orchestration_id": "reserved-id", "phase": "ADMITTED",
+        "request": runner._request_to_payload(request),
+        "desired_state": "RUNNING", "terminal": False,
+        "active_executions": [],
+    })
+    changed = replace(request, objective="different objective")
+    with pytest.raises(ProjectOrchestrationError, match="mismatches the request"):
+        runner.execute_reserved(changed)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
+import json
 from dataclasses import replace
 import os
 import time
@@ -93,6 +94,37 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
         observability: ObservabilitySink | None = None,
     ) -> ProjectOrchestrationResult:
         return self._execute(request, observability=observability, checkpoint=None)
+
+    def execute_reserved(
+        self,
+        request: ProjectOrchestrationRequest,
+        *,
+        observability: ObservabilitySink | None = None,
+    ) -> ProjectOrchestrationResult:
+        """Begin a pre-admitted project without clearing cooperative PAUSED intent.
+
+        The CLI persists the reservation while holding the project admission
+        lock. This method does not overwrite that snapshot or implicitly
+        reactivate the controller (unlike an explicit resume-project action).
+        """
+        if self._checkpoint_store is None or not request.orchestration_id:
+            raise ProjectOrchestrationError(
+                "Reserved execution requires a checkpoint store and orchestration id."
+            )
+        checkpoint = self._checkpoint_store.load(request.orchestration_id)
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("phase") != "ADMITTED"
+            or checkpoint.get("terminal") is True
+            or "plan" in checkpoint
+            or checkpoint.get("request") != json.loads(
+                json.dumps(self._request_to_payload(request))
+            )
+        ):
+            raise ProjectOrchestrationError(
+                "Durable admission reservation is missing or mismatches the request."
+            )
+        return self._execute(request, observability=observability, checkpoint=checkpoint)
 
     def resume(
         self,
@@ -1919,6 +1951,71 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     "valid prior work, and address the evaluator's "
                                     "unmet criteria instead of repeating the same "
                                     "method.\n" + feedback
+                                )
+                            # Read-only authoritative artifact audit on the
+                            # FIRST returned release result, before the next
+                            # worker strategy can repeat packaging and tests.
+                            # A valid ZIP does NOT override a failed evaluator.
+                            if work_unit_id in release_unit_ids:
+                                audit = validate_release_delivery(
+                                    raw_result=(
+                                        {"release_manifest": record.release_manifest_path}
+                                        if record.release_manifest_path else {}
+                                    ),
+                                    output=record.output or "",
+                                )
+                                observability.emit(
+                                    "work_unit_returned_audit",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    wave=record.wave,
+                                    verdict=record.verdict,
+                                    reason=record.reason,
+                                    release_valid=audit.valid,
+                                    release_reason=audit.reason,
+                                )
+                                if audit.valid:
+                                    if record.result_authoritative and record.result_ref:
+                                        # Surface an independently verified artifact
+                                        # to project-status even while acceptance is
+                                        # RETURNED. The verdict stays unchanged:
+                                        # metadata is not permission to publish.
+                                        record = replace(
+                                            record,
+                                            release_manifest_path=audit.manifest_path,
+                                            release_artifact_path=audit.artifact_path,
+                                            release_report_path=audit.report_path,
+                                            release_version=audit.version,
+                                            release_size_bytes=audit.size_bytes,
+                                            release_sha256=audit.sha256,
+                                        )
+                                        records[-1] = record
+                                    feedback = (
+                                        "AUTHORITATIVE READ-ONLY AUDIT: existing release "
+                                        "manifest/ZIP/report are valid. Reuse the "
+                                        "canonical artifact and investigate remaining "
+                                        "acceptance criteria; do not rebuild or bump "
+                                        "version merely because this Work Unit RETURNED. "
+                                        f"Manifest: {audit.manifest_path}. "
+                                        f"Evaluator reason: {record.reason}.\n"
+                                        + feedback
+                                    )
+                                else:
+                                    feedback = (
+                                        "AUTHORITATIVE READ-ONLY RELEASE AUDIT failed: "
+                                        f"{audit.reason}. Diagnose this exact gate "
+                                        "before rebuilding or repeating the full "
+                                        "test suite.\n" + feedback
+                                    )
+                            else:
+                                observability.emit(
+                                    "work_unit_returned_audit",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    wave=record.wave,
+                                    verdict=record.verdict,
+                                    reason=record.reason,
+                                    release_required=False,
                                 )
                             revision_feedback[work_unit_id] = feedback
                         else:

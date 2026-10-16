@@ -30,6 +30,10 @@ from application.investigation_strategy import RuntimeRecoveryStrategist
 from application.persistent_recovery import PersistentRecoveryCoordinator
 from application.learning_analysis import RuntimeSuccessfulRetestLearningAnalyst
 from application.orchestration_supervisor import ProjectOrchestrationSupervisor
+from application.new_project_admission_guard import (
+    govern_prior_projects, project_admission_lock,
+    PriorProjectNotQuiescentError, ProjectAdmissionBusyError,
+)
 from application.checkpoint_administration import (
     CheckpointAdministrationError,
     CheckpointAdministrationAction,
@@ -1240,16 +1244,17 @@ def _orchestrate(args: argparse.Namespace) -> int:
         control_plane = FileOrchestrationControlPlane(
             project_root=Path(args.project_root).expanduser().resolve()
         )
-        if checkpoint_store.load(orchestration_id) is not None:
-            raise ProjectOrchestrationError(
-                "Fresh orchestrate refused an existing orchestration id; "
-                "use resume-project for the durable project instead."
+        def mark_controller_quiescent(orchestration_id: str) -> None:
+            checkpoint = checkpoint_store.load(orchestration_id)
+            if checkpoint is None:
+                raise OrchestrationControlPlaneError(
+                    "Project checkpoint disappeared before quiescence."
+                )
+            control_plane.mark_quiescent(
+                orchestration_id=orchestration_id,
+                checkpoint=checkpoint,
+                reason="controller-observed-pause:no-active-executions",
             )
-        _start_orchestration_guardian(
-            args,
-            orchestration_id=orchestration_id,
-            observability=observability,
-        )
 
         def mark_controller_terminalized(orchestration_id: str) -> None:
             checkpoint = checkpoint_store.load(orchestration_id)
@@ -1263,16 +1268,17 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 reason="controller-observed-terminal:no-active-executions",
             )
 
-        result = RunContinuousProjectOrchestration(
+        runner = RunContinuousProjectOrchestration(
             runtime=runtime,
             claim_registry=claims,
             planner=planner,
             skill_profiles=profiles,
             checkpoint_store=checkpoint_store,
             persistent_recovery=persistent_recovery,
+            on_quiescent=mark_controller_quiescent,
             on_terminalized=mark_controller_terminalized,
-        ).execute(
-            ProjectOrchestrationRequest(
+        )
+        request = ProjectOrchestrationRequest(
                 objective=args.objective,
                 orchestration_id=orchestration_id,
                 agent=args.agent,
@@ -1311,9 +1317,49 @@ def _orchestrate(args: argparse.Namespace) -> int:
                 human_approved=args.human_approved,
                 plan=plan,
                 execution_profile_snapshot=profile.to_dict(),
-            ),
+        )
+        # Atomically reserve the new controller's admission within the same
+        # project-scoped lock as inspection of historical work. The reservation
+        # prevents concurrent new commands from both passing a clean scan.
+        with project_admission_lock(checkpoint_store.project_root):
+            if checkpoint_store.load(orchestration_id) is not None:
+                raise ProjectOrchestrationError(
+                    "Fresh orchestrate refused an existing orchestration id; "
+                    "use resume-project for the durable project instead."
+                )
+            govern_prior_projects(
+                project_root=checkpoint_store.project_root,
+                incoming_orchestration_id=orchestration_id,
+            )
+            checkpoint_store.save(orchestration_id, {
+                "orchestration_id": orchestration_id,
+                "phase": "ADMITTED",
+                "request": runner._request_to_payload(request),
+                "desired_state": "RUNNING",
+                "terminal": False,
+                "active_executions": [],
+                "checkpoint_administration": {
+                    "schema_version": 1,
+                    "global_auto_resume": True,
+                    "reports": [],
+                },
+            })
+            control_plane.activate(
+                orchestration_id=orchestration_id,
+                reason="new-project:reserved-admission",
+            )
+        observability.emit(
+            "orchestration_admitted",
+            orchestration_id=orchestration_id,
+            phase="ADMITTED",
+            mode="project",
+        )
+        _start_orchestration_guardian(
+            args,
+            orchestration_id=orchestration_id,
             observability=observability,
         )
+        result = runner.execute_reserved(request, observability=observability)
     except (
         OSError,
         ProjectOrchestrationError,
@@ -1325,6 +1371,8 @@ def _orchestrate(args: argparse.Namespace) -> int:
         ResultStoreError,
         ProjectOrchestrationCheckpointError,
         OrchestrationControlPlaneError,
+        PriorProjectNotQuiescentError,
+        ProjectAdmissionBusyError,
         ValueError,
     ) as exc:
         observability.emit(
