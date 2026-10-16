@@ -74,15 +74,19 @@ def govern_prior_projects(*, project_root: Path, incoming_orchestration_id: str)
                         reason="new-admission:terminal-control-plane-reconciliation",
                     )
                 continue
+            if active:
+                if checkpoint.get("desired_state") != "PAUSED":
+                    checkpoint["desired_state"] = "PAUSED"
+                    checkpoints.save(prior_id, checkpoint)
+                    held.append(prior_id)
+                blocked.append(f"{prior_id}:active-executions")
+                continue
             if control.is_quiescent(prior_id) and checkpoint.get("desired_state") == "PAUSED":
                 continue
             if checkpoint.get("desired_state") != "PAUSED":
                 checkpoint["desired_state"] = "PAUSED"
                 checkpoints.save(prior_id, checkpoint)
                 held.append(prior_id)
-            if active:
-                blocked.append(f"{prior_id}:active-executions")
-                continue
             if administrator._controller_is_fresh(prior_id):
                 # Never release a fresh controller's mutation authority based
                 # solely on its worker count: it may dispatch the next wave.
