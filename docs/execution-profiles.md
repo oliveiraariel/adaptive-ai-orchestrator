@@ -68,8 +68,10 @@ e no resultado da nova orquestração também aparece `execution_profile`.
 ## Papéis persistentes de agente
 
 Perfis com `quality_direct_fallback=true` resolvem os papéis antes da admissão.
-O Adaptive lê os agentes elegíveis de `~/.openclaw/openclaw.json` (ou de
-`ADAPTIVE_OPENCLAW_CONFIG_FILE`) e usa a política persistente em
+O Adaptive consulta `openclaw agents list --json`, a interface autoritativa de
+agentes elegíveis. O caminho ativo pode ser definido por `OPENCLAW_CONFIG_PATH`
+(e `ADAPTIVE_OPENCLAW_CONFIG_FILE` continua disponível para testes), enquanto
+a política persistente fica em
 `~/.config/adaptive-ai-orchestrator/agent-role-selection.json` (ou em
 `ADAPTIVE_AGENT_ROLE_SELECTION_FILE`). Configure uma vez, sem alterar o
 perfil nem os snapshots existentes:
@@ -81,7 +83,7 @@ adaptive-orchestrator agent-roles set-default \
 adaptive-orchestrator agent-roles default
 ```
 
-Os IDs são validados contra `agents.entries`, e o Adaptive rejeita identidades
+Os IDs são validados pela interface oficial do OpenClaw, e o Adaptive rejeita identidades
 ausentes, inelegíveis ou iguais quando o perfil exige separação. Argumentos
 explícitos válidos continuam prevalecendo; a conversa que iniciou a solicitação
 não altera automaticamente os papéis.

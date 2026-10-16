@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import subprocess
 import tempfile
 
 from application.model_routing_policy import ModelRoutingPolicy
@@ -438,6 +440,9 @@ def agent_role_policy_path() -> Path:
 
 
 def openclaw_config_path() -> Path:
+    raw = os.environ.get("OPENCLAW_CONFIG_PATH")
+    if raw:
+        return Path(raw).expanduser()
     raw = os.environ.get("ADAPTIVE_OPENCLAW_CONFIG_FILE")
     return Path(raw).expanduser() if raw else Path.home() / ".openclaw/openclaw.json"
 
@@ -450,20 +455,41 @@ def _validate_agent_id(value: object, field: str) -> str:
 
 def eligible_openclaw_agents(path: Path | None = None) -> frozenset[str]:
     target = path or openclaw_config_path()
+    command = shlex.split(
+        os.environ.get("ADAPTIVE_OPENCLAW_AGENTS_COMMAND", "openclaw agents list --json")
+    )
+    if not command:
+        raise ExecutionProfileError("Cannot validate agent identities: OpenClaw agent-list command is empty.")
+    environment = os.environ.copy()
+    environment["OPENCLAW_CONFIG_PATH"] = str(target)
     try:
-        data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        completed = subprocess.run(
+            command, check=False, capture_output=True, text=True,
+            env=environment, timeout=float(os.environ.get("ADAPTIVE_OPENCLAW_AGENTS_TIMEOUT", "5")),
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         raise ExecutionProfileError(
-            f"Cannot validate agent identities: OpenClaw config is unavailable at {target}."
+            "Cannot validate agent identities through OpenClaw's authoritative agent-list interface."
         ) from exc
-    entries = data.get("agents", {}).get("entries") if isinstance(data, dict) else None
-    if not isinstance(entries, dict):
-        raise ExecutionProfileError("Cannot validate agent identities: OpenClaw agents.entries is missing.")
+    if completed.returncode != 0:
+        raise ExecutionProfileError(
+            "Cannot validate agent identities through OpenClaw's authoritative agent-list interface."
+        )
+    try:
+        data = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ExecutionProfileError("OpenClaw agent-list interface returned invalid JSON.") from exc
+    entries = data.get("agents") if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        raise ExecutionProfileError("OpenClaw agent-list interface returned no agent list.")
     eligible = set()
-    for agent_id, entry in entries.items():
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        agent_id = entry.get("id") or entry.get("agentId")
         if not isinstance(agent_id, str) or not _AGENT_ID.fullmatch(agent_id):
             continue
-        if isinstance(entry, dict) and entry.get("enabled", True) is not False:
+        if entry.get("enabled", True) is not False and entry.get("eligible", True) is not False:
             eligible.add(agent_id)
     return frozenset(eligible)
 
@@ -531,11 +557,16 @@ def resolve_project_agents(
     config_path: Path | None = None,
 ) -> tuple[str, str | None]:
     """Resolve and validate roles before any project admission side effect."""
-    if not profile.quality_direct_fallback:
-        return requested_worker or "main", requested_planner
-    policy = load_agent_role_policy(policy_path)
-    worker = requested_worker or policy.worker_agent
-    planner = requested_planner or policy.planner_agent
+    if not profile.quality_direct_fallback and not (requested_worker or requested_planner):
+        return "main", None
+    if requested_worker and requested_planner:
+        worker, planner = requested_worker, requested_planner
+    elif not profile.quality_direct_fallback:
+        worker, planner = requested_worker or "main", requested_planner
+    else:
+        policy = load_agent_role_policy(policy_path)
+        worker = requested_worker or policy.worker_agent
+        planner = requested_planner or policy.planner_agent
     eligible = eligible_openclaw_agents(config_path)
     missing = sorted({worker, planner} - eligible)
     if missing:
