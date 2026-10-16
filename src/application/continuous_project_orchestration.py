@@ -1920,6 +1920,58 @@ class RunContinuousProjectOrchestration(RunProjectOrchestration):
                                     "unmet criteria instead of repeating the same "
                                     "method.\n" + feedback
                                 )
+                            # Read-only authoritative artifact audit on the
+                            # FIRST returned release result, before the next
+                            # worker strategy can repeat packaging and tests.
+                            # A valid ZIP does NOT override a failed evaluator.
+                            if work_unit_id in release_unit_ids:
+                                audit = validate_release_delivery(
+                                    raw_result=(
+                                        {"release_manifest": record.release_manifest_path}
+                                        if record.release_manifest_path else {}
+                                    ),
+                                    output=record.output or "",
+                                )
+                                observability.emit(
+                                    "work_unit_returned_audit",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    wave=record.wave,
+                                    verdict=record.verdict,
+                                    reason=record.reason,
+                                    release_valid=audit.valid,
+                                    release_reason=audit.reason,
+                                    manifest_path=audit.manifest_path,
+                                    artifact_path=audit.artifact_path,
+                                )
+                                if audit.valid:
+                                    feedback = (
+                                        "AUTHORITATIVE READ-ONLY AUDIT: existing release "
+                                        "manifest/ZIP/report are valid. Reuse the "
+                                        "canonical artifact and investigate remaining "
+                                        "acceptance criteria; do not rebuild or bump "
+                                        "version merely because this Work Unit RETURNED. "
+                                        f"Manifest: {audit.manifest_path}. "
+                                        f"Evaluator reason: {record.reason}.\n"
+                                        + feedback
+                                    )
+                                else:
+                                    feedback = (
+                                        "AUTHORITATIVE READ-ONLY RELEASE AUDIT failed: "
+                                        f"{audit.reason}. Diagnose this exact gate "
+                                        "before rebuilding or repeating the full "
+                                        "test suite.\n" + feedback
+                                    )
+                            else:
+                                observability.emit(
+                                    "work_unit_returned_audit",
+                                    orchestration_id=orchestration_id,
+                                    work_unit_id=work_unit_id,
+                                    wave=record.wave,
+                                    verdict=record.verdict,
+                                    reason=record.reason,
+                                    release_required=False,
+                                )
                             revision_feedback[work_unit_id] = feedback
                         else:
                             revision_feedback.pop(work_unit_id, None)
