@@ -309,6 +309,11 @@ def delete_profile(name: str, path: Path | None = None) -> None:
 # the historical "original" default without changing any existing project.
 _POLICY_VERSION = 1
 
+# Agent roles are operator policy, not profile content.  Keeping this beside
+# profile selection gives the CLI one authoritative pre-admission resolver.
+_AGENT_ROLE_POLICY_VERSION = 1
+_AGENT_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
 
 @dataclass(frozen=True)
 class ExecutionProfileSelectionPolicy:
@@ -415,3 +420,130 @@ def select_new_project_profile(
                 "--authorize-profile-override, --profile-override-actor and --profile-override-reason."
             )
     return get_profile(chosen)
+
+
+@dataclass(frozen=True)
+class AgentRoleSelectionPolicy:
+    planner_agent: str
+    worker_agent: str
+    actor: str
+    reason: str
+
+
+def agent_role_policy_path() -> Path:
+    raw = os.environ.get("ADAPTIVE_AGENT_ROLE_SELECTION_FILE")
+    return Path(raw).expanduser() if raw else (
+        Path.home() / ".config/adaptive-ai-orchestrator/agent-role-selection.json"
+    )
+
+
+def openclaw_config_path() -> Path:
+    raw = os.environ.get("ADAPTIVE_OPENCLAW_CONFIG_FILE")
+    return Path(raw).expanduser() if raw else Path.home() / ".openclaw/openclaw.json"
+
+
+def _validate_agent_id(value: object, field: str) -> str:
+    if not isinstance(value, str) or not _AGENT_ID.fullmatch(value):
+        raise ExecutionProfileError(f"Invalid {field} agent id.")
+    return value
+
+
+def eligible_openclaw_agents(path: Path | None = None) -> frozenset[str]:
+    target = path or openclaw_config_path()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ExecutionProfileError(
+            f"Cannot validate agent identities: OpenClaw config is unavailable at {target}."
+        ) from exc
+    entries = data.get("agents", {}).get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
+        raise ExecutionProfileError("Cannot validate agent identities: OpenClaw agents.entries is missing.")
+    eligible = set()
+    for agent_id, entry in entries.items():
+        if not isinstance(agent_id, str) or not _AGENT_ID.fullmatch(agent_id):
+            continue
+        if isinstance(entry, dict) and entry.get("enabled", True) is not False:
+            eligible.add(agent_id)
+    return frozenset(eligible)
+
+
+def load_agent_role_policy(path: Path | None = None) -> AgentRoleSelectionPolicy:
+    target = path or agent_role_policy_path()
+    if not target.exists():
+        raise ExecutionProfileError(
+            "Agent role defaults are not configured. Configure planner and worker "
+            "with `agent-roles set-default` before using a quality fallback profile."
+        )
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ExecutionProfileError("Cannot read agent role selection policy.") from exc
+    if (
+        not isinstance(data, dict)
+        or set(data) != {"version", "planner_agent", "worker_agent", "actor", "reason"}
+        or data["version"] != _AGENT_ROLE_POLICY_VERSION
+        or not isinstance(data.get("actor"), str) or not data["actor"].strip()
+        or not isinstance(data.get("reason"), str) or not data["reason"].strip()
+    ):
+        raise ExecutionProfileError("Invalid agent role selection policy.")
+    return AgentRoleSelectionPolicy(
+        planner_agent=_validate_agent_id(data["planner_agent"], "planner"),
+        worker_agent=_validate_agent_id(data["worker_agent"], "worker"),
+        actor=data["actor"].strip(), reason=data["reason"].strip(),
+    )
+
+
+def set_default_agent_roles(
+    planner_agent: str, worker_agent: str, *, authorized: bool, actor: str,
+    reason: str, path: Path | None = None,
+) -> AgentRoleSelectionPolicy:
+    if not authorized or not isinstance(actor, str) or not actor.strip() or not isinstance(reason, str) or not reason.strip():
+        raise ExecutionProfileError("Setting agent role defaults requires explicit operator authorization, actor and reason.")
+    planner = _validate_agent_id(planner_agent, "planner")
+    worker = _validate_agent_id(worker_agent, "worker")
+    eligible = eligible_openclaw_agents()
+    missing = sorted({planner, worker} - eligible)
+    if missing:
+        raise ExecutionProfileError(f"Configured agent(s) do not exist or are ineligible: {', '.join(missing)}.")
+    target = path or agent_role_policy_path()
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = {"version": _AGENT_ROLE_POLICY_VERSION, "planner_agent": planner,
+               "worker_agent": worker, "actor": actor.strip(), "reason": reason.strip()}
+    fd, temporary = tempfile.mkstemp(prefix=".agent-role-selection-", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            os.fchmod(output.fileno(), 0o600)
+            json.dump(payload, output, ensure_ascii=False, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return load_agent_role_policy(target)
+
+
+def resolve_project_agents(
+    profile: ExecutionProfile, *, requested_worker: str | None,
+    requested_planner: str | None, policy_path: Path | None = None,
+    config_path: Path | None = None,
+) -> tuple[str, str | None]:
+    """Resolve and validate roles before any project admission side effect."""
+    if not profile.quality_direct_fallback:
+        return requested_worker or "main", requested_planner
+    policy = load_agent_role_policy(policy_path)
+    worker = requested_worker or policy.worker_agent
+    planner = requested_planner or policy.planner_agent
+    eligible = eligible_openclaw_agents(config_path)
+    missing = sorted({worker, planner} - eligible)
+    if missing:
+        raise ExecutionProfileError(
+            f"Requested/configured agent(s) do not exist or are ineligible: {', '.join(missing)}."
+        )
+    if worker == planner:
+        raise ExecutionProfileError(
+            "Quality-driven fallback direto requires distinct planner and worker agents."
+        )
+    return worker, planner

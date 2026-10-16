@@ -96,6 +96,8 @@ from application.execution_profiles import (
     ExecutionProfile, ExecutionProfileError, get_profile,
     list_profiles, save_profile, delete_profile,
     load_selection_policy, set_default_execution_profile, select_new_project_profile,
+    load_agent_role_policy, set_default_agent_roles,
+    eligible_openclaw_agents, resolve_project_agents,
 )
 
 
@@ -125,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
     save.add_argument("--file", required=True, help="UTF-8 JSON profile snapshot.")
     delete = profile_actions.add_parser("delete")
     delete.add_argument("name")
+
+    roles_cmd = commands.add_parser(
+        "agent-roles", help="Inspect or configure persistent planner/worker defaults."
+    )
+    roles_actions = roles_cmd.add_subparsers(dest="roles_action", required=True)
+    roles_actions.add_parser("default")
+    set_roles = roles_actions.add_parser("set-default")
+    set_roles.add_argument("--planner", required=True)
+    set_roles.add_argument("--worker", required=True)
+    set_roles.add_argument("--authorize", action="store_true")
+    set_roles.add_argument("--actor", required=True)
+    set_roles.add_argument("--reason", required=True)
 
     run = commands.add_parser(
         "run",
@@ -411,7 +425,10 @@ def _add_project_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--session-id", default=os.environ.get("ADAPTIVE_SESSION_ID"))
-    parser.add_argument("--agent", default="main")
+    parser.add_argument(
+        "--agent", default=None,
+        help="Executor agent; otherwise use the persistent role default for quality profiles.",
+    )
     parser.add_argument("--planner-agent")
     parser.add_argument(
         "--execution-profile", default=None,
@@ -637,6 +654,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "execution-profile":
         return _manage_execution_profile(args)
+    if args.command == "agent-roles":
+        return _manage_agent_roles(args)
 
     if args.command == "doctor":
         return _doctor(args.gateway_url)
@@ -1062,6 +1081,36 @@ def _manage_execution_profile(args: argparse.Namespace) -> int:
         return _print_error(exc)
 
 
+def _manage_agent_roles(args: argparse.Namespace) -> int:
+    try:
+        if args.roles_action == "default":
+            policy = load_agent_role_policy()
+            result = {
+                "planner": policy.planner_agent,
+                "worker": policy.worker_agent,
+                "actor": policy.actor,
+                "reason": policy.reason,
+                "eligible_agents": sorted(eligible_openclaw_agents()),
+            }
+        elif args.roles_action == "set-default":
+            policy = set_default_agent_roles(
+                args.planner, args.worker, authorized=args.authorize,
+                actor=args.actor, reason=args.reason,
+            )
+            result = {
+                "planner": policy.planner_agent,
+                "worker": policy.worker_agent,
+                "actor": policy.actor,
+                "reason": policy.reason,
+            }
+        else:
+            raise ExecutionProfileError("Unsupported agent role operation.")
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    except (OSError, ValueError, TypeError) as exc:
+        return _print_error(exc)
+
+
 def _orchestrate(args: argparse.Namespace) -> int:
     try:
         profile = select_new_project_profile(
@@ -1074,14 +1123,10 @@ def _orchestrate(args: argparse.Namespace) -> int:
         # authentication route is unavailable or disabled.
         profile.routing_policy("planner")
         profile.routing_policy("worker")
-        if profile.quality_direct_fallback and (
-            not args.planner_agent or args.planner_agent == args.agent
-        ):
-            raise ExecutionProfileError(
-                "Quality-driven fallback direto requires a distinct "
-                "--planner-agent coordinator (for example --planner-agent adaptive "
-                "--agent sgfp)."
-            )
+        args.agent, args.planner_agent = resolve_project_agents(
+            profile, requested_worker=args.agent,
+            requested_planner=args.planner_agent,
+        )
         if (
             profile.max_concurrency is not None
             and args.max_concurrency not in (4, profile.max_concurrency)

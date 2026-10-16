@@ -12,6 +12,8 @@ from application.execution_profiles import (
     custom_profiles, delete_profile, get_profile, list_profiles, save_profile,
     load_selection_policy, set_default_execution_profile, select_new_project_profile,
     ExecutionProfileSelectionPolicy,
+    AgentRoleSelectionPolicy, load_agent_role_policy, set_default_agent_roles,
+    resolve_project_agents,
 )
 from application.run_project_orchestration import ProjectOrchestrationRequest
 from application.continuous_project_orchestration import RunContinuousProjectOrchestration
@@ -464,6 +466,63 @@ def test_authorized_default_luna_applies_to_new_projects_only(tmp_path):
     assert profile.planner_fallback_models == ()
     assert profile.worker_fallback_models == ()
     assert get_profile("original").name == "original"
+
+
+def _write_openclaw_agents(path, *agent_ids):
+    path.write_text(json.dumps({"agents": {"entries": {
+        agent_id: {"name": agent_id} for agent_id in agent_ids
+    }}}))
+
+
+def test_quality_profile_resolves_persistent_distinct_roles_before_admission(tmp_path, monkeypatch):
+    config = tmp_path / "openclaw.json"
+    policy = tmp_path / "agent-roles.json"
+    _write_openclaw_agents(config, "adaptive", "main")
+    monkeypatch.setenv("ADAPTIVE_OPENCLAW_CONFIG_FILE", str(config))
+    set_default_agent_roles(
+        "adaptive", "main", authorized=True, actor="operator",
+        reason="Use adaptive coordinator and main executor", path=policy,
+    )
+    assert load_agent_role_policy(policy) == AgentRoleSelectionPolicy(
+        "adaptive", "main", "operator", "Use adaptive coordinator and main executor"
+    )
+    assert resolve_project_agents(
+        get_profile("gpt-luna-medium-low"), requested_worker=None,
+        requested_planner=None, policy_path=policy, config_path=config,
+    ) == ("main", "adaptive")
+
+
+def test_quality_profile_preserves_explicit_valid_roles_and_rejects_conflicts(tmp_path):
+    config = tmp_path / "openclaw.json"
+    policy = tmp_path / "agent-roles.json"
+    _write_openclaw_agents(config, "adaptive", "main", "other")
+    policy.write_text(json.dumps({"version": 1, "planner_agent": "adaptive",
+        "worker_agent": "main", "actor": "operator", "reason": "test"}))
+    profile = get_profile("gpt-luna-medium-low")
+    assert resolve_project_agents(profile, requested_worker="other",
+        requested_planner="adaptive", policy_path=policy, config_path=config) == ("other", "adaptive")
+    with pytest.raises(ExecutionProfileError, match="distinct"):
+        resolve_project_agents(profile, requested_worker="adaptive",
+            requested_planner="adaptive", policy_path=policy, config_path=config)
+    with pytest.raises(ExecutionProfileError, match="do not exist"):
+        resolve_project_agents(profile, requested_worker="missing",
+            requested_planner=None, policy_path=policy, config_path=config)
+
+
+def test_quality_profile_without_role_policy_fails_closed(tmp_path):
+    config = tmp_path / "openclaw.json"
+    _write_openclaw_agents(config, "adaptive", "main")
+    with pytest.raises(ExecutionProfileError, match="not configured"):
+        resolve_project_agents(get_profile("gpt-luna-medium-low"),
+            requested_worker=None, requested_planner=None,
+            policy_path=tmp_path / "missing.json", config_path=config)
+
+
+def test_non_quality_profile_keeps_legacy_agent_compatibility(tmp_path):
+    config = tmp_path / "openclaw.json"
+    _write_openclaw_agents(config, "main")
+    assert resolve_project_agents(get_profile("original"),
+        requested_worker=None, requested_planner=None, config_path=config) == ("main", None)
 
 
 def test_nondefault_profile_requires_explicit_operator_attestation(tmp_path):
