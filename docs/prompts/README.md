@@ -213,7 +213,13 @@ Ou, quando quiser tornar a intenção explícita:
 
 Estes prompts não transformam automaticamente todo chat em trabalho orquestrado. Eles instruem explicitamente o OpenClaw a usar a bridge e o Adaptive para trabalho sério de projeto.
 
-Duas governanças mínimas são aplicadas automaticamente quando a Work Unit correspondente existe:
+**Toda Work Unit** recebe também as regras globais de verificação
+proporcional ao risco e reaproveitamento de evidências canônicas, sem
+multiplicar testes equivalentes. Consulte
+[`docs/process/VERIFICATION-EFFICIENCY-GOVERNANCE.md`](../process/VERIFICATION-EFFICIENCY-GOVERNANCE.md).
+
+Além disso, duas políticas específicas são acionadas quando o trabalho se
+encaixa no respectivo domínio:
 
 - criação/alteração de superfície de API → `ADAPTIVE_API_GENERATION_POLICY_V1`;
 - criação/regeneração de artefato instalável/deployable → `ADAPTIVE_RELEASE_ARTIFACT_POLICY_V1`.
