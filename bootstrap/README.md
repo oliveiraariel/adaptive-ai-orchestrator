@@ -4,7 +4,8 @@ This directory turns the Adaptive AI Orchestrator + Ariel Agent Skills + OpenCla
 
 ## New computer: one command
 
-On Linux Mint / Ubuntu / Debian-family systems:
+On Linux Mint / Ubuntu / Debian-family systems with **Python 3.12+** available
+as `python3` (the bootstrap does not upgrade older Python releases):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
@@ -52,9 +53,10 @@ The bootstrap:
 
 Installing recovery launchers **before** the final live E2E is intentional: even if a provider/runtime problem blocks the last gate, the machine already has a stable Setup / Update / Verify recovery path.
 
-## The only unavoidable interactive step
+## User-controlled authentication step
 
-A fresh computer still needs **your model-provider authentication**. When OpenClaw has no valid configuration, the bootstrap launches:
+A fresh computer may need **your model-provider authentication**. When OpenClaw
+has no valid configuration, the bootstrap launches:
 
 ```bash
 openclaw onboard --install-daemon
@@ -91,7 +93,15 @@ skills.entries.adaptive-orchestrator-bridge.apiKey
 
 The bridge declares `OPENCLAW_GATEWAY_TOKEN` as its primary environment variable, so OpenClaw resolves the SecretRef and injects the token only for the skill execution. The token is not committed to either repository.
 
-A machine previously configured with `systemctl --user set-environment OPENCLAW_GATEWAY_TOKEN=...` is migrated without rotating the token: the value is copied directly into the protected SecretRef file without being printed, the Gateway is restarted successfully, and only then is the legacy systemd user environment variable cleared.
+A machine previously configured with `systemctl --user set-environment OPENCLAW_GATEWAY_TOKEN=...` can be migrated without printing the token. The Gateway is restarted and the legacy systemd user environment variable is then cleared.
+
+**Token-source precedence:** if the secret file exists and the current shell's
+`OPENCLAW_GATEWAY_TOKEN` is **unset**, the file is reused. If the shell exports
+`OPENCLAW_GATEWAY_TOKEN`, the setup script instead writes **that value** to the
+secret file, even if a previous file exists. A stale or unrelated shell token
+can therefore change Gateway authentication. Check the environment source
+**without printing its value** before running setup. This precedence deserves
+separate hardening in the bootstrap implementation.
 
 If the Control UI explicitly asks for the token, reveal it locally with:
 
@@ -115,7 +125,7 @@ Script fallback:
 bash bootstrap/verify.sh --e2e
 ```
 
-Checks Git repositories, Python, Adaptive tests, the skills registry, OpenClaw config, Gateway RPC, SecretRef wiring, file permissions, bridge visibility, and all three integration paths.
+Checks Git repositories, Python, Adaptive tests, the skills registry, OpenClaw config, Gateway RPC, SecretRef wiring, file permissions, bridge visibility, and all three integration paths. The live tests call external AI providers and may consume quota or incur charges.
 
 ### Update everything
 
@@ -141,7 +151,7 @@ The updater:
 - does **not** auto-accept new OpenClaw capability requests;
 - runs full verification/E2E afterward by default.
 
-A successful `adaptive-openclaw-update` therefore does **not** need an immediate second Verify run. Use Verify separately when you want a fresh check without updating, or after a targeted repair.
+A successful `adaptive-openclaw-update` therefore does **not** need an immediate second Verify run. Use Verify separately when you want a fresh check without updating, or after a targeted repair. `openclaw update --yes` skips confirmation prompts but **does not** grant new plugin capability consent; official OpenClaw CLI documents `--accept-capabilities` as a separate, explicit option.
 
 #### One-time transition from a pre-self-heal updater
 
@@ -150,11 +160,13 @@ A running shell process keeps executing the script version that was loaded when 
 For that one migration only, after the repository has been updated, refresh the recovery surface explicitly:
 
 ```bash
-bash "$HOME/Área de trabalho/VSCode/Git/adaptive-ai-orchestrator/bootstrap/install-launchers.sh" \
-  --stack-root "$HOME/Área de trabalho/VSCode/Git"
+STACK_ROOT="${ADAPTIVE_STACK_ROOT:-$HOME/Projects/AdaptiveOpenClaw}"
+bash "$STACK_ROOT/adaptive-ai-orchestrator/bootstrap/install-launchers.sh" \
+  --stack-root "$STACK_ROOT"
 ```
 
-Use the actual repository/stack path on machines installed elsewhere.
+If your stack lives elsewhere, set `STACK_ROOT` to its actual parent directory
+before executing these lines.
 
 After this transition, future `adaptive-openclaw-update` runs perform launcher/PATH self-healing automatically; this is **not** a recurring manual step.
 
@@ -297,6 +309,6 @@ For an AI-assisted recovery, use [`RECOVERY-PROMPT.md`](RECOVERY-PROMPT.md). The
 
 ## Source of truth
 
-`bootstrap/manifest.json` records the canonical repositories, minimum runtime versions, security model, launcher/PATH contract, and E2E validation contract.
+`bootstrap/manifest.json` records the canonical repositories, minimum runtime versions, security model, launcher/PATH contract, and E2E validation contract. Start with [the new-machine guide](../COMECE-AQUI-NOVA-MAQUINA.md) for a shorter user-facing procedure.
 
 If future OpenClaw releases change CLI/config contracts, update this bootstrap in Git and let CI validate its static shell/manifest contract before using it on a new machine.
