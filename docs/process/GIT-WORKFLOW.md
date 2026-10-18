@@ -1,4 +1,14 @@
-# Git Workflow
+# Git Workflow — guia histórico do projeto Skill
+
+> **ATENÇÃO — documento legado, não normativo para o Adaptive AI Orchestrator.**
+> Os exemplos abaixo foram escritos para o antigo
+> `Professional-Software-Engineering-Skill`, incluindo o repositório remoto
+> e a especificação `MASTER-SPECIFICATION.md`. Use-os somente como referência
+> geral sobre Git, **não** como comandos específicos para o repositório Adaptive.
+> Para autoridade documental e estado atual, consulte
+> [`CONTEXT.md`](../../CONTEXT.md),
+> [`PROJECT-KNOWLEDGE-MANIFEST.yaml`](../../PROJECT-KNOWLEDGE-MANIFEST.yaml)
+> e [`ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md`](ORCHESTRATOR-SPEC-DRIVEN-DEVELOPMENT.md).
 
 ## 1. Objetivo
 
@@ -799,9 +809,11 @@ Cada versão importante deve possuir:
 
 ---
 
-# 23. Regra específica deste projeto
+# 23. Regra histórica do projeto Skill (não vigente no Adaptive)
 
-O `MASTER-SPECIFICATION.md` é a fonte normativa da especificação da Skill.
+No **projeto legado Skill**, `MASTER-SPECIFICATION.md` foi a fonte normativa
+para aquela especificação. No Adaptive AI Orchestrator atual, esse arquivo é
+**histórico e não autoritativo**. A precedência vigente está em `CONTEXT.md`.
 
 Mudanças conceituais importantes devem ser:
 
