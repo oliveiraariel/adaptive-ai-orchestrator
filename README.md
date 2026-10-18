@@ -90,7 +90,9 @@ The repository keeps presentation, current operational context, architecture, pr
 - `docs/prompts/` — operational prompts;
 - `docs/runbooks/`, `docs/incidents/`, and `docs/reviews/` — diagnostics, field evidence, and reviews;
 - `knowledge/` — governed reusable operational/problem-solving knowledge;
-- `specifications/` — normative project/protocol specifications.
+- `specifications/` — normative project/protocol specifications;
+- [`docs/execution-profiles.md`](docs/execution-profiles.md) — optional execution profiles and operator-authorized defaults;
+- [`docs/model-routing-policy.md`](docs/model-routing-policy.md) — original model-routing and failover policy.
 
 New features should normally update the relevant canonical document and add only a concise summary/link here, rather than inserting a new detailed section above the project overview.
 
@@ -121,8 +123,6 @@ The bootstrap installs or synchronizes the repositories, prepares Python, OpenCl
 
 ---
 
----
-
 ## Starting projects through OpenClaw
 
 Generic master prompts for future projects live under [`docs/prompts/`](docs/prompts/README.md).
@@ -137,8 +137,6 @@ Use:
 - [`PARAR-E-FAZER-HANDOFF.md`](docs/prompts/PARAR-E-FAZER-HANDOFF.md) to stop while preserving continuity.
 
 When a project has its own governance and documentation, prefer that repository's project-specific operational prompt.
-
----
 
 ---
 
@@ -280,29 +278,21 @@ For model/provider/auth policy changes, use the
 Adaptive worker routing from OpenClaw owner-session auth/account state and
 requires an auth-order check plus smoke test before project work resumes.
 
-The current automatic model policy is intentionally economy-first:
+The **original** automatic routing policy is economy-first, with conditional
+provider/model failover. The exact routes, quota-cooldown behavior, credentials,
+and disabled models are documented in
+[the model-routing policy](docs/model-routing-policy.md).
 
-```text
-high complexity
-  -> moonshot/kimi-k2.7-code when ADAPTIVE_KIMI_ENABLED=1
-  -> openai/gpt-5.6-luna primary OAuth
-  -> optional secondary Luna OAuth
-  -> openrouter/poolside/laguna-s-2.1:free
-  -> openrouter/poolside/laguna-xs-2.1:free
+Operators can instead select a saved, opt-in execution profile for **new**
+orchestrations. Its planner model, worker model, concurrency and restricted
+fallback chain take precedence over the original automatic policy; existing
+checkpoints retain their admitted profile. See
+[execution profiles](docs/execution-profiles.md).
 
-medium / low complexity
-  -> openai/gpt-5.6-luna primary OAuth
-  -> optional secondary Luna OAuth
-  -> openrouter/poolside/laguna-s-2.1:free
-  -> openrouter/poolside/laguna-xs-2.1:free
-
-manual-only premium models
-  -> moonshot/kimi-k3
-  -> openai/gpt-5.6-sol
-```
-
-Adaptive-routed Luna work fails closed when the configured OpenAI OAuth profile
-is missing, preventing accidental fallback to a paid OpenAI Platform API key.
+Model identifiers in these documents are configuration targets, **not** proof
+that a given model is enabled, authenticated or available in the local
+OpenClaw catalog. Check the effective profile and runtime preflight before
+dispatch.
 
 ---
 
@@ -333,22 +323,6 @@ python -m pytest -q
 ```
 
 Editable-install metadata is intentionally ignored by Git through `*.egg-info/`.
-
----
-
-## Reproducible machine bootstrap
-
-A new Debian/Ubuntu/Linux Mint machine can reconstruct the Adaptive + Ariel Agent Skills + OpenClaw environment with one command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
-```
-
-The bootstrap installs/synchronizes the repositories and Python environment, installs OpenClaw when needed, configures the skill root and the `adaptive-orchestrator-bridge`, migrates Gateway authentication to a file-backed SecretRef, validates the managed Gateway, runs integration checks, and installs Linux Setup / Update / Verify launchers.
-
-A fresh computer still requires the user's own interactive model-provider authentication when OpenClaw onboarding requests it; credentials are never stored in Git.
-
-See [`bootstrap/README.md`](bootstrap/README.md) for the full recovery, update, verification, security, and dry-run contract.
 
 ---
 
@@ -476,6 +450,7 @@ structured result
 The bridge is responsible only for invocation and result transport. Planning, policy, claims, worker count, concurrency, continuous scheduling, fan-in, evaluation and replanning remain owned by Adaptive.
 
 See [`docs/OPENCLAW-INBOUND-BRIDGE.md`](docs/OPENCLAW-INBOUND-BRIDGE.md) for the bridge contract, security model, and validation procedure.
+
 ### Conversation session identity
 
 Use `--session-id` (or `ADAPTIVE_SESSION_ID`) to associate multiple bounded
