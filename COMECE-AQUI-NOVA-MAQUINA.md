@@ -1,57 +1,29 @@
-# NOVA MÁQUINA — COMECE AQUI
+# Nova máquina — comece aqui
 
-Você **não precisa lembrar nenhum dos comandos usados para montar o ambiente manualmente**.
+Este é o **ponto de entrada** para reconstruir o ambiente
+**Adaptive AI Orchestrator + Ariel Agent Skills + OpenClaw**.
+Abrir esta página no GitHub **não executa a instalação**.
+O procedimento detalhado e as opções de recuperação ficam em
+[`bootstrap/README.md`](bootstrap/README.md).
 
-A fonte de verdade é este repositório.
+## Antes de começar
 
-## O único que você precisa lembrar
+- Use Linux Mint, Ubuntu, Debian ou distribuição compatível com `apt`.
+  O bootstrap é para Linux; não é um instalador nativo para Windows.
+- Tenha acesso à internet, permissões para instalar dependências e
+  **Python 3.12 ou superior** disponível como `python3`.
+  O bootstrap instala dependências de sistema ausentes, mas **não atualiza
+  automaticamente um Python antigo para 3.12**.
+- Reserve acesso à sua própria conta/provedor de IA: a autenticação no
+  OpenClaw pode exigir uma etapa pessoal e interativa.
+- Preserve trabalhos locais existentes: a sincronização Git usa
+  *fast-forward* e recusa alterações que não possam ser preservadas.
+- Os três testes E2E usam modelos/serviços reais e podem consumir
+  cota ou gerar cobrança conforme o provedor configurado.
 
-Meu ambiente **Adaptive + OpenClaw** está documentado no repositório:
+## Instalação recomendada: revisar antes de executar
 
-`oliveiraariel/adaptive-ai-orchestrator`
-
-Se eu estiver em uma máquina nova, **não preciso lembrar dos comandos de instalação**.
-
-Posso simplesmente:
-
-1. entrar no meu GitHub;
-2. abrir `oliveiraariel/adaptive-ai-orchestrator`;
-3. abrir `COMECE-AQUI-NOVA-MAQUINA.md`;
-4. seguir a instrução exibida aqui.
-
-Se estiver usando uma IA, basta dizer:
-
-> Abra meu repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md`, `bootstrap/README.md`, `bootstrap/TROUBLESHOOTING.md` e `bootstrap/RECOVERY-PROMPT.md` e reconstrua meu ambiente seguindo o bootstrap versionado. Não improvise uma configuração paralela e não exponha credenciais.
-
-Depois de instalado, preciso lembrar apenas de três conceitos:
-
-```text
-Setup  → instalar ou reparar
-Update → atualizar tudo com segurança
-Verify → verificar se tudo continua funcionando
-```
-
-Comandos correspondentes:
-
-```text
-adaptive-openclaw-setup
-adaptive-openclaw-update
-adaptive-openclaw-verify
-```
-
-O bootstrap também cria atalhos gráficos correspondentes no Linux.
-
-## Opção rápida: um único comando
-
-Abrir este arquivo no GitHub **não inicia a instalação**. Em uma máquina Linux Mint / Ubuntu / Debian compatível, abra um terminal e execute:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
-```
-
-Esse comando inicia o bootstrap versionado. Ele automatiza as etapas técnicas e pode pausar para a autenticação pessoal do provedor/modelo quando o OpenClaw exigir.
-
-### Se quiser revisar o instalador antes de executar
+Abra um terminal na máquina Linux:
 
 ```bash
 curl -fsSLo adaptive-install.sh \
@@ -60,106 +32,92 @@ less adaptive-install.sh
 bash adaptive-install.sh
 ```
 
-Assim você pode inspecionar exatamente o script que será executado antes de iniciar a configuração.
+O arquivo é obtido da branch `main`, que pode evoluir. Revise-o e,
+se precisar reproduzir exatamente uma versão no futuro, use um commit
+fixo em vez da referência mutável `main`.
 
-Ele reconstrói o ambiente com:
+### Alternativa rápida
 
-- Adaptive AI Orchestrator;
-- Ariel Agent Skills;
-- ambiente Python e `.venv`;
-- dependências de teste e Gateway;
-- OpenClaw, quando ainda não estiver instalado;
-- configuração do catálogo de skills;
-- `adaptive-orchestrator-bridge`;
-- autenticação local do Gateway por SecretRef;
-- serviço do Gateway;
-- launchers de Setup / Update / Verify;
-- persistência de `~/.local/bin` no PATH dos próximos shells;
-- verificações e três testes E2E, incluindo multiagente paralelo e rota inbound pela bridge.
+Se optar por executar diretamente o instalador remoto:
 
-Os launchers são instalados **antes do último E2E**. Assim, se uma falha externa de modelo/runtime bloquear a validação final, o ambiente já possui uma rota estável de reparo.
-
-## A única etapa que continua sendo sua
-
-Em uma máquina realmente nova, o OpenClaw pode abrir o onboarding para que **você autentique sua própria conta/provedor de modelo** (por exemplo OpenAI).
-
-Essa autenticação pessoal não fica no GitHub e não deve ser automatizada copiando credenciais entre máquinas.
-
-Depois de concluir o login solicitado pelo OpenClaw, o bootstrap continua.
-
-## Você nem precisa decorar o comando acima
-
-No futuro, faça apenas isto:
-
-1. entre no seu GitHub;
-2. abra o repositório **`oliveiraariel/adaptive-ai-orchestrator`**;
-3. abra este arquivo **`COMECE-AQUI-NOVA-MAQUINA.md`**;
-4. copie o comando mostrado no início da página.
-
-O `README.md` principal também mantém esse comando em destaque.
-
-## Se estiver usando uma IA
-
-Você pode entregar a ela somente esta instrução:
-
-> Abra o repositório `oliveiraariel/adaptive-ai-orchestrator`, leia `COMECE-AQUI-NOVA-MAQUINA.md`, `bootstrap/README.md`, `bootstrap/TROUBLESHOOTING.md` e `bootstrap/RECOVERY-PROMPT.md`, e me ajude a reconstruir o ambiente seguindo exatamente o bootstrap versionado. Diagnostique a primeira camada que falhar; não reinstale componentes que já estejam funcionando e não exponha credenciais.
-
-A IA deve usar o bootstrap como fonte de verdade, e não tentar reconstruir de memória os passos manuais.
-
-## Depois que a instalação terminar
-
-O bootstrap cria comandos e atalhos gráficos para a manutenção cotidiana:
-
-```text
-adaptive-openclaw-setup
-adaptive-openclaw-update
-adaptive-openclaw-verify
+```bash
+curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
 ```
 
-Use:
+**Execute apenas depois de confiar na origem e no conteúdo do script.**
 
-- **Setup** para instalar/reparar;
-- **Update** para atualizar com segurança e executar a verificação completa automaticamente;
-- **Verify** para comprovar a integração sem precisar atualizar antes.
+Por padrão, a instalação usa:
 
-### Se aparecer `comando não encontrado`
+```text
+~/Projects/AdaptiveOpenClaw/
+├── adaptive-ai-orchestrator/
+└── ariel-agent-skills/
+```
 
-Antes de reinstalar qualquer coisa, confira se os launchers já existem:
+Para escolher outro diretório-base:
+
+```bash
+bash adaptive-install.sh --stack-root "$HOME/MeuDiretorio"
+```
+
+Esse último comando presume que você baixou o instalador conforme a etapa
+recomendada. Em uma máquina nova, o bootstrap pode abrir o onboarding oficial
+do OpenClaw. Não coloque chaves API, tokens ou credenciais no GitHub nem em
+prompts de IA.
+
+## Após a instalação
+
+O bootstrap cria os seguintes comandos no Linux e seus atalhos gráficos:
+
+| Comando | Finalidade |
+| --- | --- |
+| `adaptive-openclaw-setup` | Instalar ou reparar a integração existente |
+| `adaptive-openclaw-update` | Atualizar com segurança e verificar por padrão |
+| `adaptive-openclaw-verify` | Verificar o ambiente sem atualizar |
+
+**Update já executa a verificação completa por padrão**. Não é preciso rodar
+Verify novamente após um Update bem-sucedido, a menos que se deseje uma
+validação independente. Os testes E2E podem utilizar provedores externos.
+
+Se aparecer `comando não encontrado`, primeiro confira se os launchers
+existem:
 
 ```bash
 ls -l ~/.local/bin/adaptive-openclaw-*
 ```
 
-O bootstrap grava `~/.local/bin` nos arquivos de inicialização do shell, mas um processo instalador não consegue alterar o PATH de um terminal pai que já estava aberto.
-
-Se os arquivos existirem, abra um novo terminal. Para usar imediatamente no mesmo terminal antigo:
+Se existirem, abra um terminal novo ou ajuste o `PATH` apenas no terminal
+atual:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Isso é um problema de descoberta pelo shell, não uma instalação ausente.
+Não reinstale a pilha somente por um problema de `PATH`.
 
-## Verificação completa
-
-Quando quiser comprovar toda a integração:
-
-```bash
-adaptive-openclaw-verify
-```
-
-A validação comprova:
+## O que a verificação ao vivo comprova
 
 ```text
 E2E 1 — Adaptive → OpenClaw → Adaptive
 E2E 2 — Adaptive → 3 workers paralelos → fan-in → Adaptive
-E2E 3 — OpenClaw → bridge → Adaptive → workers paralelos → fan-in → OpenClaw
+E2E 3 — OpenClaw → bridge → Adaptive → workers → fan-in → OpenClaw
 ```
 
-O E2E inbound é validado semanticamente. Variações de apresentação como `Max parallelism observed: 3` versus `max_parallelism_observed: 3` não devem mais gerar falso negativo quando o projeto realmente concluiu, o paralelismo exigido ocorreu e o fan-in foi comprovado.
+A terceira etapa usa validação semântica das evidências, sem depender de
+uma frase exata gerada pelo modelo. Um teste falho deve ser diagnosticado
+pela **primeira camada que falhou**, não tratado automaticamente como
+motivo para reinstalação.
 
-## Se alguma verificação falhar
+## Se precisar de ajuda de uma IA
 
-Abra [`bootstrap/TROUBLESHOOTING.md`](bootstrap/TROUBLESHOOTING.md) antes de modificar a máquina. A ordem é diagnosticar a primeira fronteira que falhou — PATH, Git, Python, configuração, Gateway, skill, outbound, multiagente ou inbound — e corrigir somente essa camada.
+> Abra o repositório `oliveiraariel/adaptive-ai-orchestrator`, leia
+> `COMECE-AQUI-NOVA-MAQUINA.md`, `bootstrap/manifest.json`,
+> `bootstrap/README.md`, `bootstrap/TROUBLESHOOTING.md` e
+> `bootstrap/RECOVERY-PROMPT.md`. Use o bootstrap versionado como fonte
+> de verdade. Faça primeiro um diagnóstico de leitura, preserve o trabalho
+> existente, diagnostique a primeira camada com falha e nunca solicite,
+> exiba ou registre credenciais.
 
-O objetivo é que a reconstrução futura dependa de **um ponto de entrada versionado e de diagnósticos reproduzíveis**, e não da memória do processo que foi feito originalmente.
+Para opções, comandos de manutenção, segurança e diagnóstico, consulte
+[`bootstrap/README.md`](bootstrap/README.md) e
+[`bootstrap/TROUBLESHOOTING.md`](bootstrap/TROUBLESHOOTING.md).
