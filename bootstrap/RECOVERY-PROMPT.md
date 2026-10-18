@@ -28,6 +28,7 @@ Procedure:
 9. Do not treat `Capability: read-only` in a Gateway status probe as proof that Adaptive execution is unavailable; use the live E2E boundaries.
 10. Preserve all existing Git work. Never use reset --hard, clean -fd, force push, destructive checkout, or automatic conflict resolution.
 11. Never print, paste, log, commit, or request the contents of the Gateway token, provider API keys, OAuth refresh tokens, passwords, or other credentials.
+11a. Before running setup, check only whether OPENCLAW_GATEWAY_TOKEN is defined in the shell. The script currently overwrites an existing secret file when that shell variable is present. Never inspect or echo the token value; identify the intended credential source before changing it.
 12. The intended Gateway secret contract is a file-backed OpenClaw SecretRef. Do not replace it with plaintext config unless I explicitly authorize a temporary diagnostic exception.
 13. Keep the architecture boundary intact:
     OpenClaw chat → adaptive-orchestrator-bridge → Adaptive CLI/core → OpenClaw Gateway → agents → Adaptive evaluation.
@@ -35,7 +36,7 @@ Procedure:
 15. For automated user-invocable bridge tests, prefer the generic OpenClaw entrypoint `/skill adaptive-orchestrator-bridge ...` instead of assuming a friendly-name direct slash command is registered on every surface/version.
 16. If inbound E2E reports insufficient evidence after the OpenClaw session completed, do not immediately call it a runtime failure. Inspect the session history read-only. The semantic proof is: project COMPLETED + required observed parallelism + fan-in marker. Humanized `Max parallelism observed: 3` is equivalent to `max_parallelism_observed: 3`.
 17. Use `bootstrap/lib/e2e_evidence.py` and the verifier's printed diagnostic session key before manual interpretation. Exact AI phrasing is not authoritative when equivalent semantic evidence exists.
-18. After any repair, run the repository tests, skill registry validation, OpenClaw config validation, Gateway RPC probe, bridge visibility check, and `bootstrap/verify.sh --e2e`.
+18. After any repair, run repository tests, skill registry validation, OpenClaw config validation, Gateway RPC probe and bridge visibility. Before running `bootstrap/verify.sh --e2e`, inform me that it uses external AI providers and may consume quota or incur charges; run live E2E only with authorization.
 19. Do not declare the environment recovered until the semantic verifier reports PASS. If a legacy verifier produced a false negative but session history proves the full semantic contract, update the verifier first and rerun rather than weakening the runtime.
 20. `adaptive-openclaw-update` already runs full verification/E2E by default. Do not redundantly rerun Verify after a successful Update unless a fresh independent verification is desired.
 

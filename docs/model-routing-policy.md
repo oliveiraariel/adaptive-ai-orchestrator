@@ -16,7 +16,10 @@ routing:
 - **GPT-5.6 Sol**.
 
 The policy intentionally optimizes sustainable project execution before maximum
-model strength.
+model strength. This describes the **original** automatic policy. An explicitly
+selected execution profile has its own governed model and quota-fallback chain;
+see [execution profiles](execution-profiles.md). Model names are routing targets,
+not a guarantee of local provider availability.
 
 ## Active routing matrix
 
@@ -104,7 +107,10 @@ identities.
 
 ## Operational failover
 
-Adaptive keeps at most one model-level operational fallback attempt.
+Adaptive chooses the next eligible operational fallback from a finite chain,
+excluding model/auth-profile routes already tried for that Work Unit. It does
+not promise a single fallback attempt. Retries remain bounded by the eligible
+route list and runtime policy.
 
 The automatic route is intentionally asymmetric:
 
@@ -118,20 +124,16 @@ K2.7 Code
 GPT-5.6 Luna OAuth Low
 ```
 
-For medium/low work:
+For medium/low work, Luna OAuth Low is the primary automatic route. When
+it fails, the normal eligible sequence is optional secondary Luna OAuth, then
+Laguna S/XS free routes. There is one important exception: if a renewable
+Luna `quota` or `rate_limit` incident is recorded by the enabled quota-cooldown
+store and `ADAPTIVE_KIMI_ENABLED=1`, K2.7 Code may be considered **before**
+those normal fallbacks. This can incur Moonshot API charges.
 
-```text
-GPT-5.6 Luna OAuth Low
-    |
-    | operational failure
-    v
-surface failure
-```
-
-Luna **does not automatically escalate to paid Kimi**. This prevents routine
-tasks from silently increasing paid-provider spend.
-
-K3 and Sol are never automatic fallback candidates.
+Set `ADAPTIVE_KIMI_ENABLED=0` if Kimi must not be an automatic paid route.
+The original policy's behavior must not be confused with the stricter fallback
+allowlists of opt-in execution profiles.
 
 ## "K2.7 only when balance/availability exists"
 
@@ -167,8 +169,10 @@ unfunded/unavailable route is not retried indefinitely.
 
 ## Bounded automatic fallback chains
 
+The original policy's *normal* candidate order is:
+
 ```text
-HIGH / COMPLEX / CRITICAL
+HIGH / COMPLEX / CRITICAL, if Kimi is enabled
 Kimi K2.7 Code -> Luna OAuth primary -> optional Luna OAuth secondary
 -> Laguna S 2.1 :free -> Laguna XS 2.1 :free -> failure
 
@@ -177,8 +181,16 @@ Luna OAuth primary -> optional Luna OAuth secondary
 -> Laguna S 2.1 :free -> Laguna XS 2.1 :free -> failure
 ```
 
-Kimi K3 and GPT-5.6 Sol remain manual-only. Laguna is always present as the final automatic safety net.
-Critical/security/financial work executed by Laguna still requires the normal independent review and verification gates.
+For a renewable OpenAI quota/rate-limit incident **with quota cooldown enabled**,
+an enabled Kimi K2.7 Code route is considered ahead of the normal Luna/Laguna
+candidates, including for routine work. Failed or previously attempted
+model/auth-profile pairs are excluded. The actual number of retries depends on
+provider health, policy permissions, available credentials and the remaining
+untried routes.
+
+Kimi K3 and GPT-5.6 Sol remain manual-only. Laguna is the last automatic
+safety net when those free routes are available. Critical/security/financial
+work executed by Laguna still requires independent review and verification.
 
 Environment:
 
@@ -299,8 +311,9 @@ Kimi K3
 GPT-5.6 Sol
     -> manual only
 
-Luna failure
-    -> do not silently escalate to a paid Kimi route
+Luna quota/rate-limit failure with cooldown enabled
+    -> may try K2.7 when Kimi is enabled (paid route)
+    -> set ADAPTIVE_KIMI_ENABLED=0 to prevent this automatic escalation
 ```
 
 This policy can be revisited using acceptance rate, retries, task complexity,
