@@ -69,13 +69,15 @@ Documento principal: [`docs/architecture/RECOVERY-LOOP.md`](docs/architecture/RE
 
 ## Nova máquina
 
-Em Linux Mint / Ubuntu / Debian compatível, o ponto de entrada oficial é:
+Para reconstruir o ambiente em Linux Mint, Ubuntu ou Debian compatível,
+consulte [**COMECE-AQUI-NOVA-MAQUINA.md**](COMECE-AQUI-NOVA-MAQUINA.md).
+O guia contém requisitos, instalação revisável, alternativa rápida,
+manutenção e diagnóstico. Detalhes técnicos ficam em
+[**bootstrap/README.md**](bootstrap/README.md).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/oliveiraariel/adaptive-ai-orchestrator/main/install.sh | bash
-```
-
-O bootstrap instala ou sincroniza o Adaptive, Ariel Agent Skills e OpenClaw, prepara o ambiente Python, bridge, Gateway, SecretRefs, verificações E2E e atalhos locais.
+O bootstrap prepara Adaptive, Ariel Agent Skills, OpenClaw, bridge, Gateway,
+SecretRefs e verificações E2E. **Exige Python 3.12+**, pode requerer autenticação
+pessoal do provedor e executar testes que consomem cota ou geram cobrança.
 
 ## Comunicação entre componentes — AMEP v1
 
@@ -99,6 +101,13 @@ O Adaptive utiliza Work Graph, Ready Frontier, workers independentes, avaliaçã
 
 O `max_concurrency` é um teto, não uma meta. Dependências reais, segurança de escrita, qualidade de resultado e custo de coordenação prevalecem sobre maximizar paralelismo.
 
+Para novas orquestrações, o operador pode selecionar **perfis de execução**
+com modelos distintos para planejamento e workers, concorrência e regras próprias
+de fallback, sem alterar orquestrações já admitidas. Veja
+[perfis de execução](docs/execution-profiles.md) e
+[política original de roteamento](docs/model-routing-policy.md).
+A disponibilidade efetiva de modelos e autenticação depende da instalação local.
+
 ## Desenvolvimento local
 
 Python 3.12 ou superior:
@@ -120,6 +129,7 @@ Pontos importantes:
 - `docs/architecture/ADAPTIVE-MESSAGE-EXCHANGE-PROTOCOL.md` — AMEP v1;
 - `docs/runtime-intelligence.md` — diagnóstico de runtime/provider;
 - `docs/problem-solving-learning.md` — aprendizado orientado por experiência;
-- `docs/prompts/` — prompts operacionais.
+- `docs/prompts/` — prompts operacionais;
+- `docs/process/VERIFICATION-EFFICIENCY-GOVERNANCE.md` — verificação proporcional ao risco para Work Units.
 
 Esta página em português existe como ponto de entrada acessível e resumido. A documentação normativa permanece nos arquivos técnicos correspondentes.
