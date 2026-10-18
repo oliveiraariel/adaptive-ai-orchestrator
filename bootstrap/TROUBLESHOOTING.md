@@ -155,3 +155,39 @@ OpenClaw → adaptive-orchestrator-bridge → Adaptive project mode
 ```
 
 The test harness must distinguish **runtime failure** from **presentation-format variation**. Exact phrasing from an AI response is never the source of truth when equivalent structured/semantic evidence is available.
+
+## 9. Python 3.12+ is missing
+
+The bootstrap requires `python3` version 3.12 or newer. Installing
+`python3` from an older Debian/Ubuntu release does **not** guarantee this
+version. Check without changing the machine:
+
+```bash
+python3 --version
+```
+
+If it is older than 3.12, choose a supported Python installation method
+for the distribution and rerun setup afterward. The bootstrap does not
+silently upgrade the system interpreter.
+
+## 10. Gateway token changes unexpectedly after setup
+
+The current `ensure_secret_file` implementation reuses a preexisting secret
+file **only when** the shell variable `OPENCLAW_GATEWAY_TOKEN` is unset.
+If that variable is present, setup writes its value into the protected
+file instead, even when the file already exists. This is a token-precedence
+risk to harden separately; it is not a reason to disclose any token.
+
+Check **presence, not contents**, before re-running setup:
+
+```bash
+if [[ -v OPENCLAW_GATEWAY_TOKEN ]]; then
+  echo 'Shell Gateway token: present (value hidden)'
+else
+  echo 'Shell Gateway token: absent'
+fi
+```
+
+Do not print the value, copy it into an issue, or rotate credentials blindly.
+Identify the intended credential source and diagnose the first failing
+Gateway/authentication boundary before changing configuration.
